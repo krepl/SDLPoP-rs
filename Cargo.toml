@@ -1,0 +1,17 @@
+[package]
+name = "sdlpop"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "prince"
+path = "rust/src/main.rs"
+
+[lib]
+name = "sdlpop"
+path = "rust/src/lib.rs"
+
+[build-dependencies]
+cc = "1"
+bindgen = "0.70"
+pkg-config = "0.3"
