@@ -2,6 +2,10 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
+    // Only re-run this script when C sources or headers change, not on every Rust edit.
+    println!("cargo:rerun-if-changed=src/");
+    println!("cargo:rerun-if-changed=build.rs");
+
     // Probe SDL2 (auto-emits cargo:rustc-link-* directives)
     let sdl2 = pkg_config::Config::new()
         .probe("sdl2")
