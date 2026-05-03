@@ -36,7 +36,7 @@ fn main() {
         "src/seg009.c",
         "src/seqtbl.c",
         "src/replay.c",
-        "src/options.c",
+        "src/sdl_rw_wrappers.c",
         "src/lighting.c",
         "src/screenshot.c",
         "src/menu.c",
