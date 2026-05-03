@@ -82,6 +82,9 @@ src/SDLPoP.desktop
 # backup files
 *~
 
+# Music files
+data/music/*.ogg
+
 # Screenshot saved from the game
 screenshot.png
 screenshots/
