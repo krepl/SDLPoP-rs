@@ -12,7 +12,7 @@ continue to pass, and new tests are added to cover the ported logic.
 `options.c` has 838 lines. Nearly everything is portable — no SDL in the core logic.
 Two small functions at the bottom (`process_rw_write`, `process_rw_read`) take
 `SDL_RWops*`, which is not in our filtered bindings. They are 2 lines each and stay in
-C (moved to a new stub file `src/sdl_rw_stubs.c`). Everything else moves to Rust.
+C (moved to a new wrapper file `src/sdl_rw_wrappers.c`). Everything else moves to Rust.
 
 Functions / groups to port:
 
@@ -29,7 +29,7 @@ Functions / groups to port:
 | `load_dos_exe_modifications` | File I/O + lots of hardcoded EXE offsets |
 | `load_mod_options` | Calls `locate_file`, `show_dialog` via FFI |
 
-Functions staying in C (moved to `src/sdl_rw_stubs.c`):
+Functions staying in C (moved to `src/sdl_rw_wrappers.c`):
 
 | Function | Reason |
 |---|---|
@@ -44,12 +44,12 @@ Functions staying in C (moved to `src/sdl_rw_stubs.c`):
 SDLPoP/
   src/
     options.c          ← deleted from cc build (file stays on disk for reference; remove later)
-    sdl_rw_stubs.c     ← new: process_rw_write, process_rw_read
+    sdl_rw_wrappers.c     ← new: process_rw_write, process_rw_read
   rust/
     src/
       lib.rs           ← add `pub mod options;`
       options.rs       ← new: the full Rust port
-  build.rs             ← swap options.c for sdl_rw_stubs.c in the file list
+  build.rs             ← swap options.c for sdl_rw_wrappers.c in the file list
   docs/plans/
     2-port-options.md  ← this file
 ```
@@ -58,15 +58,15 @@ SDLPoP/
 
 ## Step-by-step checklist
 
-### Step 1 — Create `src/sdl_rw_stubs.c`
+### Step 1 — Create `src/sdl_rw_wrappers.c`
 
-- [ ] Create `src/sdl_rw_stubs.c` containing only `process_rw_write` and `process_rw_read`
+- [ ] Create `src/sdl_rw_wrappers.c` containing only `process_rw_write` and `process_rw_read`
       (copied verbatim from `options.c`), with `#include "common.h"` at the top.
 
 ### Step 2 — Update `build.rs`
 
-- [ ] In the C source file list, replace `"src/options.c"` with `"src/sdl_rw_stubs.c"`.
-- [ ] Add `rerun-if-changed` entries for `src/sdl_rw_stubs.c` and `rust/src/options.rs`.
+- [ ] In the C source file list, replace `"src/options.c"` with `"src/sdl_rw_wrappers.c"`.
+- [ ] Add `rerun-if-changed` entries for `src/sdl_rw_wrappers.c` and `rust/src/options.rs`.
 
 ### Step 3 — Create `rust/src/options.rs`
 
