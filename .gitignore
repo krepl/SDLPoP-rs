@@ -94,3 +94,6 @@ screenshots/
 
 # Rust build output
 target/
+
+# Obsidian workspace
+.obsidian/
