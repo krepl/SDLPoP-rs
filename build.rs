@@ -5,6 +5,7 @@ fn main() {
     // Only re-run this script when C sources or headers change, not on every Rust edit.
     println!("cargo:rerun-if-changed=src/");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=rust/src/seqtbl.rs");
 
     // Probe SDL2 (auto-emits cargo:rustc-link-* directives)
     let sdl2 = pkg_config::Config::new()
@@ -34,7 +35,6 @@ fn main() {
         "src/seg007.c",
         "src/seg008.c",
         "src/seg009.c",
-        "src/seqtbl.c",
         "src/replay.c",
         "src/sdl_rw_wrappers.c",
         "src/lighting.c",
