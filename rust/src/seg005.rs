@@ -53,7 +53,7 @@ pub unsafe extern "C" fn do_fall() {
         play_sound(soundids_sound_1_falling as c_int);
         is_screaming = 1;
     }
-    if (y_land[(Char.curr_row as i32 + 1) as usize] as u16) > (Char.y as u16) {
+    if (y_land_at((Char.curr_row as i32 + 1) as usize) as u16) > (Char.y as u16) {
         check_grab();
 
         // FIX_GLIDE_THROUGH_WALL
@@ -111,7 +111,7 @@ pub unsafe extern "C" fn land() {
         super_jump_fall = 0;
     }
 
-    Char.y = y_land[(Char.curr_row as i32 + 1) as usize] as u8;
+    Char.y = y_land_at((Char.curr_row as i32 + 1) as usize) as u8;
 
     let on_spike_tile = get_tile_at_char() as u8 == tiles_tiles_2_spike as u8;
 
@@ -225,7 +225,7 @@ pub unsafe extern "C" fn land() {
 #[no_mangle]
 pub unsafe extern "C" fn spiked() {
     *curr_room_modif.add(curr_tilepos as usize) = 0xFF;
-    Char.y = y_land[(Char.curr_row as i32 + 1) as usize] as u8;
+    Char.y = y_land_at((Char.curr_row as i32 + 1) as usize) as u8;
 
     // FIX_OFFSCREEN_GUARDS_DISAPPEARING
     if (*fixes).fix_offscreen_guards_disappearing != 0 {
@@ -1224,7 +1224,7 @@ pub unsafe extern "C" fn teleport() {
         Char.curr_col = (dest_tilepos % 10) as i8;
         Char.curr_row = (dest_tilepos / 10) as i8;
         Char.x = (x_bump_at((Char.curr_col as i32 + 5) as usize) as i32 + 14 + 7) as u8;
-        Char.y = y_land[(Char.curr_row as i32 + 1) as usize] as u8;
+        Char.y = y_land_at((Char.curr_row as i32 + 1) as usize) as u8;
         next_room = Char.room as u16;
         clear_coll_rooms();
         // FIX_DISAPPEARING_GUARD_B is not defined — leave_guard() always called.
@@ -1241,7 +1241,7 @@ pub unsafe extern "C" fn teleport() {
         ).unwrap();
         show_dialog(msg.as_ptr());
         Char.x = (x_bump_at((Char.curr_col as i32 + 5) as usize) as i32 + 14) as u8;
-        Char.y = y_land[(Char.curr_row as i32 + 1) as usize] as u8;
+        Char.y = y_land_at((Char.curr_row as i32 + 1) as usize) as u8;
         seqtbl_offset_char(seqids_seq_17_soft_land as c_short);
         play_sound(soundids_sound_0_fell_to_death as c_int);
     }

@@ -5,10 +5,13 @@
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-// x_bump is declared as extern const byte x_bump[] (incomplete array), so
-// bindgen emits [u8; 0]. Index via raw pointer to avoid the zero-length slice panic.
+// x_bump and y_land are extern const incomplete arrays; bindgen emits [T; 0].
+// Index via raw pointer to avoid the zero-length slice panic.
 pub(crate) unsafe fn x_bump_at(idx: usize) -> u8 {
     *core::ptr::addr_of!(x_bump).cast::<u8>().add(idx)
+}
+pub(crate) unsafe fn y_land_at(idx: usize) -> i16 {
+    *core::ptr::addr_of!(y_land).cast::<i16>().add(idx)
 }
 
 pub mod options;
@@ -24,6 +27,19 @@ mod tests {
 
     fn setup() {
         unsafe { set_options_to_default(); }
+    }
+
+    // y_land is extern const short y_land[] — incomplete array, bindgen emits [c_short; 0].
+    // Values are the y pixel positions for each row floor: { -8, 55, 118, 181, 244 }.
+    #[test]
+    fn y_land_readable_via_raw_pointer() {
+        unsafe {
+            assert_eq!(y_land_at(0), -8);   // ceiling / above row 0
+            assert_eq!(y_land_at(1),  55);  // row 0 floor
+            assert_eq!(y_land_at(2), 118);  // row 1 floor
+            assert_eq!(y_land_at(3), 181);  // row 2 floor
+            assert_eq!(y_land_at(4), 244);  // row 3 floor
+        }
     }
 
     // prandom is a linear congruential generator (LCG):
