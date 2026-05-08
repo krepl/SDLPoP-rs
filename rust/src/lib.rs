@@ -5,9 +5,16 @@
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+// x_bump is declared as extern const byte x_bump[] (incomplete array), so
+// bindgen emits [u8; 0]. Index via raw pointer to avoid the zero-length slice panic.
+pub(crate) unsafe fn x_bump_at(idx: usize) -> u8 {
+    *core::ptr::addr_of!(x_bump).cast::<u8>().add(idx)
+}
+
 pub mod options;
 pub mod seqtbl;
 pub mod seg004;
+pub mod seg005;
 
 #[cfg(test)]
 #[allow(static_mut_refs)] // all C globals are static mut; reading them in tests is safe here

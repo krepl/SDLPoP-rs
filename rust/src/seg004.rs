@@ -20,14 +20,6 @@ static mut coll_tile_left_xpos:    i16 = 0;
 const wall_dist_from_left:  [i8; 6] = [0, 10,  0, -1, 0, 0];
 const wall_dist_from_right: [i8; 6] = [0,  0, 10, 13, 0, 0];
 
-// x_bump is declared as extern const byte x_bump[] in data.h — an incomplete
-// array type — so bindgen emits [u8; 0]. Index it via raw pointer to avoid
-// the zero-length slice panic.
-#[inline(always)]
-unsafe fn x_bump_at(idx: usize) -> u8 {
-    *core::ptr::addr_of!(x_bump).cast::<u8>().add(idx)
-}
-
 // ── Exported functions ────────────────────────────────────────────────────────
 
 // seg004:0004
