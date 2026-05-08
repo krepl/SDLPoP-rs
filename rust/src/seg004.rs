@@ -20,14 +20,6 @@ static mut coll_tile_left_xpos:    i16 = 0;
 const wall_dist_from_left:  [i8; 6] = [0, 10,  0, -1, 0, 0];
 const wall_dist_from_right: [i8; 6] = [0,  0, 10, 13, 0, 0];
 
-// x_bump is declared as extern const byte x_bump[] in data.h — an incomplete
-// array type — so bindgen emits [u8; 0]. Index it via raw pointer to avoid
-// the zero-length slice panic.
-#[inline(always)]
-unsafe fn x_bump_at(idx: usize) -> u8 {
-    *core::ptr::addr_of!(x_bump).cast::<u8>().add(idx)
-}
-
 // ── Exported functions ────────────────────────────────────────────────────────
 
 // seg004:0004
@@ -297,11 +289,11 @@ pub unsafe extern "C" fn bumped_fall() {
 pub unsafe extern "C" fn bumped_floor(push_direction: i8) {
     let row_idx = (Char.curr_row as i32 + 1) as usize;
     if Char.sword != sword_status_sword_2_drawn as u8
-        && (y_land[row_idx] as i16).wrapping_sub(Char.y as i16) as u16 >= 15
+        && (y_land_at(row_idx) as i16).wrapping_sub(Char.y as i16) as u16 >= 15
     {
         bumped_fall();
     } else {
-        Char.y = y_land[row_idx] as u8;
+        Char.y = y_land_at(row_idx) as u8;
         if Char.fall_y >= 22 {
             Char.x = char_dx_forward(-5) as u8;
         } else {
@@ -481,7 +473,7 @@ pub unsafe extern "C" fn chomped() {
                 + TILE_MIDX as i32) as u8;
         }
         Char.x = char_dx_forward(7 - (Char.direction == 0) as c_int) as u8;
-        Char.y = y_land[(Char.curr_row as i32 + 1) as usize] as u8;
+        Char.y = y_land_at((Char.curr_row as i32 + 1) as usize) as u8;
         take_hp(100);
         play_sound(soundids_sound_46_chomped as c_int);
         seqtbl_offset_char(seqids_seq_54_chomped as c_short);
