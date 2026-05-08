@@ -289,11 +289,11 @@ pub unsafe extern "C" fn bumped_fall() {
 pub unsafe extern "C" fn bumped_floor(push_direction: i8) {
     let row_idx = (Char.curr_row as i32 + 1) as usize;
     if Char.sword != sword_status_sword_2_drawn as u8
-        && (y_land[row_idx] as i16).wrapping_sub(Char.y as i16) as u16 >= 15
+        && (y_land_at(row_idx) as i16).wrapping_sub(Char.y as i16) as u16 >= 15
     {
         bumped_fall();
     } else {
-        Char.y = y_land[row_idx] as u8;
+        Char.y = y_land_at(row_idx) as u8;
         if Char.fall_y >= 22 {
             Char.x = char_dx_forward(-5) as u8;
         } else {
@@ -473,7 +473,7 @@ pub unsafe extern "C" fn chomped() {
                 + TILE_MIDX as i32) as u8;
         }
         Char.x = char_dx_forward(7 - (Char.direction == 0) as c_int) as u8;
-        Char.y = y_land[(Char.curr_row as i32 + 1) as usize] as u8;
+        Char.y = y_land_at((Char.curr_row as i32 + 1) as usize) as u8;
         take_hp(100);
         play_sound(soundids_sound_46_chomped as c_int);
         seqtbl_offset_char(seqids_seq_54_chomped as c_short);
