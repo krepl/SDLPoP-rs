@@ -1246,3 +1246,106 @@ pub unsafe extern "C" fn teleport() {
         play_sound(soundids_sound_0_fell_to_death as c_int);
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[allow(static_mut_refs)]
+mod tests {
+    use super::*;
+
+    fn setup() {
+        unsafe { set_options_to_default(); }
+    }
+
+    // seqtbl_offset_char loads Char.curr_seq with the offset for a given sequence
+    // index, anchoring the seq-dispatch table used throughout character movement.
+    #[test]
+    fn seqtbl_offset_char_sets_curr_seq() {
+        setup();
+        let cases: &[(usize, &str)] = &[
+            (seqids_seq_1_start_run as usize,         "seq_1_start_run"),
+            (seqids_seq_5_turn as usize,              "seq_5_turn"),
+            (seqids_seq_17_soft_land as usize,        "seq_17_soft_land"),
+            (seqids_seq_90_en_garde as usize,         "seq_90_en_garde"),
+        ];
+        unsafe {
+            for &(idx, name) in cases {
+                let sentinel = 0xDEAD;
+                Char.curr_seq = sentinel;
+                seqtbl_offset_char(idx as c_short);
+                assert_eq!(
+                    Char.curr_seq,
+                    seqtbl::seqtbl_offsets[idx],
+                    "seq index {idx} ({name})"
+                );
+            }
+        }
+    }
+
+    // seqtbl_offset_opp does the same for the opponent character slot.
+    #[test]
+    fn seqtbl_offset_opp_sets_curr_seq() {
+        setup();
+        let cases: &[(usize, &str)] = &[
+            (seqids_seq_58_guard_strike as usize,     "seq_58_guard_strike"),
+            (seqids_seq_87_guard_become_inactive as usize, "seq_87_guard_become_inactive"),
+        ];
+        unsafe {
+            for &(idx, name) in cases {
+                Opp.curr_seq = 0xBEEF;
+                seqtbl_offset_opp(idx as c_int);
+                assert_eq!(
+                    Opp.curr_seq,
+                    seqtbl::seqtbl_offsets[idx],
+                    "seq index {idx} ({name})"
+                );
+            }
+        }
+    }
+
+    // draw_sword selects seq_55_draw_sword for the kid and shadow characters,
+    // and always sets Char.sword = sword_drawn.
+    #[test]
+    fn draw_sword_kid_selects_draw_sword_seq() {
+        setup();
+        unsafe {
+            Char.charid = charids_charid_0_kid as u8;
+            draw_sword();
+            assert_eq!(Char.sword, sword_status_sword_2_drawn as u8);
+            assert_eq!(
+                Char.curr_seq,
+                seqtbl::seqtbl_offsets[seqids_seq_55_draw_sword as usize]
+            );
+        }
+    }
+
+    #[test]
+    fn draw_sword_shadow_selects_draw_sword_seq() {
+        setup();
+        unsafe {
+            Char.charid = charids_charid_1_shadow as u8;
+            draw_sword();
+            assert_eq!(Char.sword, sword_status_sword_2_drawn as u8);
+            assert_eq!(
+                Char.curr_seq,
+                seqtbl::seqtbl_offsets[seqids_seq_55_draw_sword as usize]
+            );
+        }
+    }
+
+    // Guards skip the draw-sword animation and jump straight to en-garde.
+    #[test]
+    fn draw_sword_guard_selects_en_garde_seq() {
+        setup();
+        unsafe {
+            Char.charid = charids_charid_2_guard as u8;
+            draw_sword();
+            assert_eq!(Char.sword, sword_status_sword_2_drawn as u8);
+            assert_eq!(
+                Char.curr_seq,
+                seqtbl::seqtbl_offsets[seqids_seq_90_en_garde as usize]
+            );
+        }
+    }
+}
