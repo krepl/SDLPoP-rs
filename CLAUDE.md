@@ -84,3 +84,156 @@ Runtime bug fixes are controlled by the `fixes` pointer (set in `options.c`). Wh
 ## Data files
 
 Game assets live in `data/`. `.DAT` files are the original DOS archive format. Music goes in `data/music/` as `.ogg` files (filenames listed in `data/music/names.txt`). Mods go in `mods/<ModName>/` and only need to include files that differ from the base game.
+
+---
+
+## Rust port
+
+The game is being incrementally re-implemented in Rust. The Rust crate lives in `rust/` and is also the root crate (Cargo.toml at the project root links to it). Each ported C file becomes a Rust module exporting `#[no_mangle] pub unsafe extern "C"` functions with identical signatures, so the C linker sees no difference.
+
+### Porting status
+
+| C file | Rust module | Notes |
+|--------|-------------|-------|
+| `options.c` | `rust/src/options.rs` | INI parser, option loading |
+| `seqtbl.c` | `rust/src/seqtbl.rs` | Animation bytecode table |
+| `seg004.c` | `rust/src/seg004.rs` | Collision detection |
+| `seg005.c` | `rust/src/seg005.rs` | Character movement |
+| `seg006.c` | `rust/src/seg006.rs` | Tile system, frame data |
+
+When a file is ported, remove it from `src/Makefile` (the `OBJ =` line) and `src/CMakeLists.txt` (`SOURCE_FILES` block).
+
+### Module boilerplate
+
+Every ported module starts with:
+
+```rust
+#![allow(non_upper_case_globals)]
+#![allow(non_snake_case)]
+#![allow(static_mut_refs)]
+
+use std::os::raw::{c_int, c_short};
+use super::*;  // brings in all bindings + helper fns from lib.rs
+```
+
+Every exported function:
+
+```rust
+#[no_mangle]
+pub unsafe extern "C" fn function_name(arg: c_int) -> c_int { ... }
+```
+
+### Compile-time feature flags
+
+All `#ifdef` feature flags are **active** in the Rust port. Do not add conditional compilation — just include the code that would be compiled when the flag is on:
+
+`FIX_CORNER_GRAB`, `USE_REPLAY`, `USE_TELEPORTS`, `FIX_SPRITE_XPOS`, `USE_SUPER_HIGH_JUMP`, `USE_JUMP_GRAB`, `FIX_FEATHER_FALL_AFFECTS_GUARDS`, `FIX_GRAB_FALLING_SPEED` — all on.
+
+### C → Rust type mapping
+
+| C type | Rust type | Notes |
+|--------|-----------|-------|
+| `byte` | `u8` | defined as `Uint8` |
+| `sbyte` | `i8` | defined as `Sint8` |
+| `word` | `u16` | defined as `Uint16` — **not** `i16` |
+| `short` / `c_short` | `i16` | |
+| `int` / `c_int` | `i32` | |
+| `bool` (C99) | `bool` | rare |
+
+**Always grep bindings.rs for globals before writing code** — surprises like `have_sword: word` (u16 not i16) and `fall_frame: byte` (u8 not i16) only cost time at compile. Quick lookup:
+
+```sh
+grep 'pub static mut VARNAME' target/debug/build/sdlpop-*/out/bindings.rs
+```
+
+Known non-obvious global types (do not re-derive):
+
+| Global | Type | |
+|--------|------|-|
+| `curr_room` | `c_short` (i16) | |
+| `current_level` | `word` (u16) | compare with `as u16`, not `as i16` |
+| `have_sword` | `word` (u16) | `-1` in C → `u16::MAX` in Rust |
+| `flash_color` | `word` (u16) | assign color constants `as u16` |
+| `flash_time` | `word` (u16) | |
+| `fall_frame` | `byte` (u8) | NOT i16 |
+| `hitp_delta` | `c_short` (i16) | |
+| `hitp_max` | `word` (u16) | |
+| `guardhp_curr` | `word` (u16) | |
+| `obj_chtab` | `byte` (u8) | |
+| `obj_x` | `c_short` (i16) | |
+| `curr_tilepos` | `byte` (u8) | |
+
+Functions that take `c_short` where you might expect `c_int` (bindgen reflects the C prototype exactly):
+
+| Function | `c_short` params |
+|----------|-----------------|
+| `get_image` | first arg (`chtab_id`) |
+| `set_wipe` / `set_redraw_full` | first arg (`tilepos`) |
+| `start_anim_spike` | both args |
+| `calc_screen_x_coord` | arg and return |
+| `draw_guard_hp` | both args |
+| `seqtbl_offset_char` | arg |
+
+### Bindgen enum naming
+
+bindgen prefixes each enum constant with the enum's type name. The pattern is `{type}_{original_name}`:
+
+| C constant | Rust name |
+|-----------|-----------|
+| `tiles_0_empty` | `tiles_tiles_0_empty` |
+| `tiles_20_wall` | `tiles_tiles_20_wall` |
+| `seq_7_fall` | `seqids_seq_7_fall` |
+| `actions_4_in_freefall` | `actions_actions_4_in_freefall` |
+| `frame_9_run` | `frameids_frame_9_run` |
+| `charid_0_kid` | `charids_charid_0_kid` |
+| `dir_0_right` | `directions_dir_0_right` |
+| `dir_FF_left` | `directions_dir_FF_left` |
+| `dir_56_none` | `directions_dir_56_none` |
+| `sound_23_footstep` | `soundids_sound_23_footstep` |
+| `sword_0_sheathed` | `sword_status_sword_0_sheathed` |
+| `sword_2_drawn` | `sword_status_sword_2_drawn` |
+| `id_chtab_0_sword` | `chtabs_id_chtab_0_sword` |
+| `color_4_red` | `colorids_color_4_red` |
+| `color_14_brightyellow` | `colorids_color_14_brightyellow` |
+| `FRAME_WEIGHT_X` | `frame_flags_FRAME_WEIGHT_X` |
+| `FRAME_THIN` | `frame_flags_FRAME_THIN` |
+| `FRAME_NEEDS_FLOOR` | `frame_flags_FRAME_NEEDS_FLOOR` |
+| `WITH_CTRL` | `key_modifiers_WITH_CTRL` |
+
+Cast to the target field type at use: `tiles_tiles_20_wall as u8`, `seqids_seq_7_fall as c_short`, `directions_dir_FF_left as i8`, `frameids_frame_9_run as u8`.
+
+### Recurring patterns
+
+**Incomplete extern arrays** — bindgen emits `[T; 0]` for `extern const T[]`. Access via raw pointer. `lib.rs` provides `x_bump_at(idx)` and `y_land_at(idx)`; `seg006.rs` provides `dir_front_at`, `dir_behind_at`, `tbl_line_at`, `y_clip_at`. For a new one:
+
+```rust
+unsafe fn foo_at(idx: usize) -> i8 {
+    *core::ptr::addr_of!(foo).cast::<i8>().add(idx)
+}
+```
+
+**Packed struct field → pointer** — `custom_options_type` is 1-byte packed. Taking a reference to a field is UB. Use `addr_of!`:
+
+```rust
+// WRONG:  (*custom).demo_moves.as_ptr()
+// RIGHT:
+core::ptr::addr_of!((*custom).demo_moves) as *const auto_move_type
+```
+
+**`goto` → `loop/continue`** — C `goto again` at the top of a function body becomes a `loop { ...; continue; }`. See `find_room_of_tile` in seg006.rs.
+
+**`SDL_SwapLE16`** — not needed; use `u16::from_le_bytes([lo, hi])`.
+
+**SDL_SCANCODE values** — `SDL_SCANCODE_L = 15u32` (from SDL2 headers; bindgen does not emit these).
+
+### Porting workflow
+
+Follow this order to minimize wasted compile cycles:
+
+1. **Pre-scan types** — before writing any code, grep bindings.rs for every global the C file touches. Build a mental map of `word` vs `c_short` vs `byte`.
+2. **Check function signatures** — grep bindings.rs for every C function *called* by the file being ported; note any `c_short` parameters.
+3. **Script large tables** — do not hand-transcribe arrays with >20 entries. A short Python script reading the C source and emitting Rust syntax is faster and error-free.
+4. **Port in batches of ~10 functions**, then run `cargo check` (faster than `cargo build`). Fix errors before continuing.
+5. **Run `cargo test`** when all functions compile.
+6. **Remove the C file** from `src/Makefile` and `src/CMakeLists.txt`, then do a final `cargo test` to confirm nothing broke.
+7. **Add tests** for pure or near-pure functions (table lookups, math helpers, state machines). See existing test modules in seg004.rs–seg006.rs for style.
