@@ -772,3 +772,136 @@ pub unsafe extern "C" fn remove_flash_if_hurt() {
     }
     remove_flash();
 }
+
+#[cfg(test)]
+#[allow(static_mut_refs)]
+mod tests {
+    use super::*;
+
+    fn setup() {
+        unsafe { set_options_to_default(); }
+    }
+
+    // united_with_shadow skips 0 on its way down: when the decrement would land on 0
+    // the code decrements once more to -1. This prevents 0 from lingering as a
+    // "shadow united" state for an extra frame.
+    #[test]
+    fn timers_united_with_shadow_skips_zero() {
+        setup();
+        unsafe {
+            is_feather_fall = 0;
+            super_jump_timer = 0;
+            leveldoor_open = 0;
+
+            united_with_shadow = 1;
+            timers();
+            assert_eq!(united_with_shadow, -1, "1 -> 0 -> -1 (zero skipped)");
+
+            united_with_shadow = 2;
+            timers();
+            assert_eq!(united_with_shadow, 1, "2 -> 1 (no skip when result != 0)");
+
+            united_with_shadow = -3;
+            timers();
+            assert_eq!(united_with_shadow, -3, "negative: unchanged");
+
+            united_with_shadow = 0;
+            timers();
+            assert_eq!(united_with_shadow, 0, "zero: unchanged (not touched)");
+        }
+    }
+
+    // guard_notice_timer and resurrect_time each decrement by one per frame when
+    // positive, and stop at zero (they are not skipped like united_with_shadow).
+    #[test]
+    fn timers_countdown_timers_decrement_and_stop_at_zero() {
+        setup();
+        unsafe {
+            is_feather_fall = 0;
+            super_jump_timer = 0;
+            leveldoor_open = 0;
+            united_with_shadow = 0;
+
+            guard_notice_timer = 3;
+            resurrect_time = 5;
+            timers();
+            assert_eq!(guard_notice_timer, 2);
+            assert_eq!(resurrect_time, 4);
+
+            guard_notice_timer = 1;
+            resurrect_time = 1;
+            timers();
+            assert_eq!(guard_notice_timer, 0, "stops at 0");
+            assert_eq!(resurrect_time, 0, "stops at 0");
+
+            // Verify a second call at 0 leaves them at 0.
+            timers();
+            assert_eq!(guard_notice_timer, 0, "stays at 0");
+            assert_eq!(resurrect_time, 0, "stays at 0");
+        }
+    }
+
+    // pos_guards sets guards_x to x_bump[(tile_col + FIRST_ONSCREEN_COLUMN)] + TILE_SIZEX
+    // and resets guards_seq_hi to 0 for any guard slot whose tile < 30.
+    #[test]
+    fn pos_guards_initializes_active_guard_slots() {
+        setup();
+        unsafe {
+            level.guards_tile[0] = 7;   // tile_col = 7 % 10 = 7
+            level.guards_seq_hi[0] = 0xFF;
+
+            pos_guards();
+
+            assert_eq!(level.guards_seq_hi[0], 0, "seq_hi cleared for active slot");
+            let expected_x = x_bump_at(7 + FIRST_ONSCREEN_COLUMN as usize)
+                .wrapping_add(TILE_SIZEX as u8);
+            assert_eq!(
+                level.guards_x[0], expected_x,
+                "guards_x = x_bump[tile_col + FIRST_ONSCREEN_COLUMN] + TILE_SIZEX"
+            );
+        }
+    }
+
+    // Guard slots with tile >= 30 have no guard; pos_guards must leave them alone.
+    #[test]
+    fn pos_guards_skips_inactive_guard_slots() {
+        setup();
+        unsafe {
+            level.guards_tile[2] = 30;
+            level.guards_x[2] = 0xAB;
+            level.guards_seq_hi[2] = 0xCD;
+
+            pos_guards();
+
+            assert_eq!(level.guards_x[2], 0xAB, "guards_x unchanged for inactive slot");
+            assert_eq!(level.guards_seq_hi[2], 0xCD, "seq_hi unchanged for inactive slot");
+        }
+    }
+
+    // When Guard is the mouse character, check_can_guard_see_kid returns immediately
+    // with can_guard_see_kid = 0. The mouse handles visibility differently.
+    #[test]
+    fn check_can_guard_see_kid_mouse_guard_always_blind() {
+        setup();
+        unsafe {
+            Guard.charid = charids_charid_24_mouse as u8;
+            can_guard_see_kid = 2; // pre-load non-zero to confirm it gets cleared
+            check_can_guard_see_kid();
+            assert_eq!(can_guard_see_kid, 0);
+        }
+    }
+
+    // A guard whose direction is dir_56_none is not placed in any room; the visibility
+    // condition requires a real direction, so can_guard_see_kid must be 0.
+    #[test]
+    fn check_can_guard_see_kid_no_direction_means_blind() {
+        setup();
+        unsafe {
+            Guard.charid = charids_charid_2_guard as u8;
+            Guard.direction = directions_dir_56_none as i8;
+            can_guard_see_kid = 2;
+            check_can_guard_see_kid();
+            assert_eq!(can_guard_see_kid, 0);
+        }
+    }
+}
