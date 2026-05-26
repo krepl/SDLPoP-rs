@@ -2074,3 +2074,220 @@ pub unsafe extern "C" fn char_opp_dist() -> c_int {
 pub unsafe extern "C" fn inc_curr_row() {
     Char.curr_row += 1;
 }
+
+#[cfg(test)]
+#[allow(static_mut_refs)]
+mod tests {
+    use super::*;
+    use std::os::raw::c_int;
+
+    fn setup() {
+        unsafe { set_options_to_default(); }
+    }
+
+    // TILE_DIV_TBL and TILE_MOD_TBL each cover the full 0-255 byte range used
+    // by the DOS version's tile_div_tbl/tile_mod_tbl.  The frame tables are
+    // indexed directly by frame number so wrong sizes silently truncate
+    // animations.  SWORD_TBL has one entry per sword frame (0-50).
+    #[test]
+    fn table_sizes_are_correct() {
+        assert_eq!(TILE_DIV_TBL.len(), 256);
+        assert_eq!(TILE_MOD_TBL.len(), 256);
+        assert_eq!(FRAME_TABLE_KID.len(), 241);
+        assert_eq!(FRAME_TBL_GUARD.len(),  41);
+        assert_eq!(SWORD_TBL.len(),        51);
+    }
+
+    // get_tile_div_mod converts a pixel x-position into a tile column (return
+    // value) and a sub-tile pixel offset stored in obj_xl (0..13).
+    // The screen coordinate origin is SCREENSPACE_X=58; tiles are 14 px wide.
+    #[test]
+    fn get_tile_div_mod_column_and_offset() {
+        // (xpos, expected_col, expected_obj_xl)
+        let cases: &[(c_int, c_int, u8)] = &[
+            (58,   0,  0),  // leftmost pixel of column 0
+            (65,   0,  7),  // mid-column 0 (65-58=7)
+            (71,   0, 13),  // rightmost pixel of column 0
+            (72,   1,  0),  // leftmost pixel of column 1
+            (100,  3,  0),  // (100-58)=42, 42/14=3 rem 0
+            (101,  3,  1),  // offset 1 within column 3
+            (226, 12,  0),  // (226-58)=168, 168/14=12
+            (44,  -1,  0),  // (44-58)=-14, column -1 (off-screen left)
+            (30,  -2,  0),  // (30-58)=-28, column -2
+        ];
+        unsafe {
+            for &(xpos, want_col, want_xl) in cases {
+                let col = get_tile_div_mod(xpos);
+                assert_eq!(col,    want_col, "xpos={xpos}: column");
+                assert_eq!(obj_xl, want_xl,  "xpos={xpos}: obj_xl");
+            }
+        }
+    }
+
+    // y_to_row_mod4 maps a pixel y-position to a tile row in 0..2, or -1 for
+    // positions above the room.  Anchored at the exact y_land[] floor values
+    // { -8, 55, 118, 181 } which correspond to rows -1, 0, 1, 2.
+    #[test]
+    fn y_to_row_mod4_at_floor_positions() {
+        // (ypos, expected_row)
+        let cases: &[(c_int, c_int)] = &[
+            ( -8, -1),  // above row 0 (y_land[0])
+            ( 55,  0),  // row 0 floor (y_land[1])
+            (118,  1),  // row 1 floor (y_land[2])
+            (181,  2),  // row 2 floor (y_land[3])
+        ];
+        unsafe {
+            for &(ypos, want) in cases {
+                assert_eq!(y_to_row_mod4(ypos), want, "ypos={ypos}");
+            }
+        }
+    }
+
+    // tile_is_floor returns 0 for the eight tile types that have no walkable
+    // surface (empty, big-pillar top, door top, wall, four lattice variants)
+    // and 1 for everything else.
+    #[test]
+    fn tile_is_floor_classification() {
+        unsafe {
+            let non_floor = [
+                (tiles_tiles_0_empty         as c_int, "empty"),
+                (tiles_tiles_9_bigpillar_top as c_int, "bigpillar_top"),
+                (tiles_tiles_12_doortop      as c_int, "doortop"),
+                (tiles_tiles_20_wall         as c_int, "wall"),
+                (tiles_tiles_26_lattice_down  as c_int, "lattice_down"),
+                (tiles_tiles_27_lattice_small as c_int, "lattice_small"),
+                (tiles_tiles_28_lattice_left  as c_int, "lattice_left"),
+                (tiles_tiles_29_lattice_right as c_int, "lattice_right"),
+            ];
+            for (t, name) in non_floor {
+                assert_eq!(tile_is_floor(t), 0, "{name}");
+            }
+            let floor = [
+                (tiles_tiles_1_floor  as c_int, "floor"),
+                (tiles_tiles_2_spike  as c_int, "spike"),
+                (tiles_tiles_3_pillar as c_int, "pillar"),
+            ];
+            for (t, name) in floor {
+                assert_eq!(tile_is_floor(t), 1, "{name}");
+            }
+        }
+    }
+
+    // get_tilepos maps (col, row) to a flat tile index in 0..29.
+    // Row r begins at r*10 (tbl_line = {0, 10, 20}).
+    // Negative rows return -(col+1) as an "above room" sentinel.
+    // Any out-of-bounds coord (col<0, col>=10, row>=3) returns 30.
+    #[test]
+    fn get_tilepos_normal_and_boundary() {
+        // (col, row, expected)
+        let cases: &[(c_int, c_int, c_int)] = &[
+            ( 0,  0,  0),   // top-left
+            ( 9,  0,  9),   // top-right
+            ( 0,  1, 10),   // row 1 start
+            ( 5,  1, 15),
+            ( 0,  2, 20),   // row 2 start
+            ( 9,  2, 29),   // bottom-right
+            ( 0, -1, -1),   // above row 0: -(0+1)
+            ( 5, -1, -6),   // above row 0: -(5+1)
+            (-1,  0, 30),   // left OOB
+            (10,  0, 30),   // right OOB
+            ( 0,  3, 30),   // below last row
+        ];
+        unsafe {
+            for &(col, row, want) in cases {
+                assert_eq!(get_tilepos(col, row), want, "col={col} row={row}");
+            }
+        }
+    }
+
+    // char_dx_forward adds delta_x to Char.x, negating when facing left.
+    // The result is an i32 pixel position (not wrapped to u8).
+    #[test]
+    fn char_dx_forward_right_and_left() {
+        // (direction, char_x, delta, expected)
+        let cases: &[(i8, u8, c_int, c_int)] = &[
+            (directions_dir_0_right as i8, 100,  5, 105),
+            (directions_dir_0_right as i8, 100, -3,  97),
+            (directions_dir_FF_left as i8, 100,  5,  95),
+            (directions_dir_FF_left as i8, 100, -3, 103),
+        ];
+        unsafe {
+            for &(dir, x, delta, want) in cases {
+                Char.direction = dir;
+                Char.x = x;
+                assert_eq!(char_dx_forward(delta), want, "dir={dir} x={x} delta={delta}");
+            }
+        }
+    }
+
+    // load_frame dispatches to FRAME_TABLE_KID for kid/mouse/shadow and to
+    // FRAME_TBL_GUARD for guard/skeleton (with frame -= 149).
+    // Kid frame 7 is the first running step: FRAME_TABLE_KID[7] = ft(6,0,0,0,0x4A).
+    // Guard frame 150 → FRAME_TBL_GUARD[1]                       = ft(12,0xCD,2,1,0).
+    #[test]
+    fn load_frame_dispatches_by_charid() {
+        unsafe {
+            // Kid frame 7
+            Char.charid = charids_charid_0_kid as u8;
+            Char.frame  = 7;
+            load_frame();
+            assert_eq!(cur_frame.image,  6,    "kid7: image");
+            assert_eq!(cur_frame.dx,     0,    "kid7: dx");
+            assert_eq!(cur_frame.flags, 0x4A,  "kid7: flags");
+
+            // Guard frame 150 → index 1 in FRAME_TBL_GUARD
+            Char.charid = charids_charid_2_guard as u8;
+            Char.frame  = 150;
+            load_frame();
+            assert_eq!(cur_frame.image, 12,    "guard150: image");
+            assert_eq!(cur_frame.dx,     2,    "guard150: dx");
+            assert_eq!(cur_frame.dy,     1,    "guard150: dy");
+
+            // Out-of-bounds frame → sentinel image=255
+            Char.charid = charids_charid_0_kid as u8;
+            Char.frame  = 255;
+            load_frame();
+            assert_eq!(cur_frame.image, 255, "oob frame → sentinel");
+        }
+    }
+
+    // fall_accel increments Char.fall_y by FALLING_SPEED_ACCEL (3) each tick
+    // while in freefall, capping at FALLING_SPEED_MAX (33).  With feather fall
+    // active the increment is 1 and the cap is 4.  Outside freefall: no change.
+    #[test]
+    fn fall_accel_normal_and_feather() {
+        setup();
+        unsafe {
+            Char.charid = charids_charid_0_kid as u8;
+
+            // Not in freefall → no change
+            Char.action = actions_actions_0_stand as u8;
+            Char.fall_y = 5;
+            fall_accel();
+            assert_eq!(Char.fall_y, 5, "stand: fall_y unchanged");
+
+            // Normal freefall: +3 per tick
+            Char.action = actions_actions_4_in_freefall as u8;
+            is_feather_fall = 0;
+            Char.fall_y = 0;
+            fall_accel();
+            assert_eq!(Char.fall_y, 3, "normal: +3 on first tick");
+
+            // Clamp at 33 (31+3=34 → 33)
+            Char.fall_y = 31;
+            fall_accel();
+            assert_eq!(Char.fall_y, 33, "normal: clamped at 33");
+            fall_accel();
+            assert_eq!(Char.fall_y, 33, "normal: stays at 33");
+
+            // Feather fall: +1 per tick, cap 4
+            is_feather_fall = 1;
+            Char.fall_y = 0;
+            fall_accel();
+            assert_eq!(Char.fall_y, 1, "feather: +1 on first tick");
+            Char.fall_y = 4;
+            fall_accel();
+            assert_eq!(Char.fall_y, 4, "feather: clamped at 4");
+        }
+    }
+}
