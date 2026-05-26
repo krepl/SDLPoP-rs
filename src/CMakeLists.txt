@@ -64,7 +64,6 @@ set(SOURCE_FILES
         seg000.c
         seg001.c
         seg002.c
-        seg003.c
         seg004.c
         seg005.c
         seg008.c
