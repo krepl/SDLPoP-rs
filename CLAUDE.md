@@ -226,6 +226,8 @@ core::ptr::addr_of!((*custom).demo_moves) as *const auto_move_type
 
 **SDL_SCANCODE values** — `SDL_SCANCODE_L = 15u32` (from SDL2 headers; bindgen does not emit these).
 
+**C `!` vs Rust `!`** — C's `!` is logical NOT (`!0 == 1`, `!nonzero == 0`). Rust's `!` on integers is bitwise NOT (`!0u8 == 255`). When porting `!(expr)` where `expr` is an integer, use `(expr) == 0` in Rust, not `!expr`. Applying `!` to a masked byte (e.g. `!(x & 0x80)`) is the classic trap: both `0x00` and `0x80` produce nonzero results, making the condition always true.
+
 ### Porting workflow
 
 Follow this order to minimize wasted compile cycles:
@@ -237,3 +239,4 @@ Follow this order to minimize wasted compile cycles:
 5. **Run `cargo test`** when all functions compile.
 6. **Remove the C file** from `src/Makefile` and `src/CMakeLists.txt`, then do a final `cargo test` to confirm nothing broke.
 7. **Add tests** for pure or near-pure functions (table lookups, math helpers, state machines). See existing test modules in seg004.rs–seg006.rs for style.
+8. **Bug fix → regression test** — whenever a runtime bug is fixed, add a test that would have caught it before the fix. The test name should describe the invariant, not the bug. This applies even when the fix is a one-liner.

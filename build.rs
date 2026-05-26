@@ -9,6 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed=rust/src/seg004.rs");
     println!("cargo:rerun-if-changed=rust/src/seg005.rs");
     println!("cargo:rerun-if-changed=rust/src/seg006.rs");
+    println!("cargo:rerun-if-changed=rust/src/seg007.rs");
 
     // Probe SDL2 (auto-emits cargo:rustc-link-* directives)
     let sdl2 = pkg_config::Config::new()
@@ -33,7 +34,6 @@ fn main() {
         "src/seg002.c",
         "src/seg003.c",
 
-        "src/seg007.c",
         "src/seg008.c",
         "src/seg009.c",
         "src/replay.c",

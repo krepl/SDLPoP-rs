@@ -19,6 +19,7 @@ pub mod seqtbl;
 pub mod seg004;
 pub mod seg005;
 pub mod seg006;
+pub mod seg007;
 
 #[cfg(test)]
 #[allow(static_mut_refs)] // all C globals are static mut; reading them in tests is safe here
