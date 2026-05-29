@@ -104,6 +104,7 @@ The game is being incrementally re-implemented in Rust. The Rust crate lives in 
 | `seg005.c` | `rust/src/seg005.rs` | Character movement |
 | `seg006.c` | `rust/src/seg006.rs` | Tile system, frame data |
 | `seg007.c` | `rust/src/seg007.rs` | Animated tiles (trobs, doors, spikes) |
+| `seg008.c` | `rust/src/seg008.rs` | Room renderer (tiles, sprites, walls, UI) |
 
 When a file is ported, remove it from `src/Makefile` (the `OBJ =` line) and `src/CMakeLists.txt` (`SOURCE_FILES` block).
 

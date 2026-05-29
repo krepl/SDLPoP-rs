@@ -64,7 +64,6 @@ set(SOURCE_FILES
         seg000.c
         seg004.c
         seg005.c
-        seg008.c
         seg009.c
         seqtbl.c
         options.c
