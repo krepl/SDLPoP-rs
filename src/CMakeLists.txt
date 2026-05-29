@@ -62,8 +62,6 @@ set(SOURCE_FILES
         proto.h
         types.h
         seg000.c
-        seg001.c
-        seg002.c
         seg004.c
         seg005.c
         seg008.c

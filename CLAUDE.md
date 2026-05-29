@@ -97,9 +97,13 @@ The game is being incrementally re-implemented in Rust. The Rust crate lives in 
 |--------|-------------|-------|
 | `options.c` | `rust/src/options.rs` | INI parser, option loading |
 | `seqtbl.c` | `rust/src/seqtbl.rs` | Animation bytecode table |
+| `seg001.c` | `rust/src/seg001.rs` | Cutscene playback, animation sequencing |
+| `seg002.c` | `rust/src/seg002.rs` | Guard/shadow AI |
+| `seg003.c` | `rust/src/seg003.rs` | Level loop, room redraw |
 | `seg004.c` | `rust/src/seg004.rs` | Collision detection |
 | `seg005.c` | `rust/src/seg005.rs` | Character movement |
 | `seg006.c` | `rust/src/seg006.rs` | Tile system, frame data |
+| `seg007.c` | `rust/src/seg007.rs` | Animated tiles (trobs, doors, spikes) |
 
 When a file is ported, remove it from `src/Makefile` (the `OBJ =` line) and `src/CMakeLists.txt` (`SOURCE_FILES` block).
 
