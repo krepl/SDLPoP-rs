@@ -1168,7 +1168,7 @@ pub unsafe extern "C" fn draw_mid(index: c_int) {
     let ypos = entry.y as c_int;
     let raw_blit = entry.blit;
     let blit_flip = raw_blit & 0x80;
-    let mut blit = raw_blit & 0x7F;
+    let blit = raw_blit & 0x7F;
 
     if chtab_flip_clip[chtab_id as usize] != 0 {
         set_clip_rect(&entry.clip);
@@ -1961,17 +1961,17 @@ pub unsafe extern "C" fn wall_pattern(which_part: c_int, which_table: c_int) {
     let is_dungeon = ((*custom).tbl_level_type[current_level as usize] < 1) || (*custom).enable_wda_in_palace != 0;
     if !is_dungeon && graphics_mode == grmodes_gmMcgaVga as u8 {
         if which_part != 0 {
-            add_wipetable(which_table as i8, (8 * draw_xh) as c_short, (draw_main_y - 40) as c_short, 20, (4 * 8) as c_short, palace_wall_colors[(44 * drawn_row as usize + drawn_col as usize)] as i8);
-            add_wipetable(which_table as i8, (8 * draw_xh) as c_short, (draw_main_y - 19) as c_short, 21, (2 * 8) as c_short, palace_wall_colors[(44 * drawn_row as usize + 11 + drawn_col as usize)] as i8);
-            add_wipetable(which_table as i8, (8 * (draw_xh + 2)) as c_short, (draw_main_y - 19) as c_short, 21, (2 * 8) as c_short, palace_wall_colors[(44 * drawn_row as usize + 12 + drawn_col as usize)] as i8);
-            add_wipetable(which_table as i8, (8 * draw_xh) as c_short, draw_main_y as c_short, 19, (1 * 8) as c_short, palace_wall_colors[(44 * drawn_row as usize + 22 + drawn_col as usize)] as i8);
-            add_wipetable(which_table as i8, (8 * (draw_xh + 1)) as c_short, draw_main_y as c_short, 19, (3 * 8) as c_short, palace_wall_colors[(44 * drawn_row as usize + 23 + drawn_col as usize)] as i8);
+            add_wipetable(which_table as i8, (8 * draw_xh) as c_short, (draw_main_y - 40) as c_short, 20, (4 * 8) as c_short, palace_wall_colors[44 * drawn_row as usize + drawn_col as usize] as i8);
+            add_wipetable(which_table as i8, (8 * draw_xh) as c_short, (draw_main_y - 19) as c_short, 21, (2 * 8) as c_short, palace_wall_colors[44 * drawn_row as usize + 11 + drawn_col as usize] as i8);
+            add_wipetable(which_table as i8, (8 * (draw_xh + 2)) as c_short, (draw_main_y - 19) as c_short, 21, (2 * 8) as c_short, palace_wall_colors[44 * drawn_row as usize + 12 + drawn_col as usize] as i8);
+            add_wipetable(which_table as i8, (8 * draw_xh) as c_short, draw_main_y as c_short, 19, (1 * 8) as c_short, palace_wall_colors[44 * drawn_row as usize + 22 + drawn_col as usize] as i8);
+            add_wipetable(which_table as i8, (8 * (draw_xh + 1)) as c_short, draw_main_y as c_short, 19, (3 * 8) as c_short, palace_wall_colors[44 * drawn_row as usize + 23 + drawn_col as usize] as i8);
             ptr_add_table(RSET_WALL, prandom(2) as c_int + 3, draw_xh as i8 + 3, 0, draw_main_y as c_int - 53, blitters_blitters_46h_mono_6 as c_int, 0);
             ptr_add_table(RSET_WALL, prandom(2) as c_int + 6, draw_xh as i8, 0, draw_main_y as c_int - 34, blitters_blitters_46h_mono_6 as c_int, 0);
             ptr_add_table(RSET_WALL, prandom(2) as c_int + 9, draw_xh as i8, 0, draw_main_y as c_int - 13, blitters_blitters_46h_mono_6 as c_int, 0);
             ptr_add_table(RSET_WALL, prandom(2) as c_int + 12, draw_xh as i8, 0, draw_main_y as c_int, blitters_blitters_46h_mono_6 as c_int, 0);
         }
-        add_wipetable(which_table as i8, (8 * draw_xh) as c_short, draw_bottom_y as c_short, 3, (4 * 8) as c_short, palace_wall_colors[(44 * drawn_row as usize + 33 + drawn_col as usize)] as i8);
+        add_wipetable(which_table as i8, (8 * draw_xh) as c_short, draw_bottom_y as c_short, 3, (4 * 8) as c_short, palace_wall_colors[44 * drawn_row as usize + 33 + drawn_col as usize] as i8);
         ptr_add_table(RSET_WALL, prandom(2) as c_int + 15, draw_xh as i8, 0, draw_bottom_y as c_int, blitters_blitters_46h_mono_6 as c_int, 0);
     } else {
         let middle_divider = prandom(1) as c_int;
@@ -2033,9 +2033,9 @@ pub unsafe extern "C" fn draw_left_mark(decal_variant: u16, arg2: u16, arg1: u16
     let mut image_id = RES_WALL_MARK_TL;
     if decal_variant % 2 != 0 { image_id = RES_WALL_MARK_BL; }
     let lv2 = if decal_variant > 3 {
-        arg1 + 6
+        arg1.wrapping_add(6)
     } else if decal_variant > 1 {
-        arg2 + 6
+        arg2.wrapping_add(6)
     } else {
         0
     };
