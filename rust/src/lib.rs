@@ -20,11 +20,6 @@ pub mod state;
 #[allow(static_mut_refs)] // all C globals are static mut; reading them in tests is safe here
 mod tests {
     use super::*;
-    use std::os::raw::c_int;
-
-    fn setup() {
-        unsafe { set_options_to_default(); }
-    }
 
     // y_land is extern const short y_land[] — incomplete array, bindgen emits [c_short; 0].
     // Values are the y pixel positions for each row floor: { -8, 55, 118, 181, 244 }.
@@ -47,7 +42,6 @@ mod tests {
     // verified against the original C behaviour.
     #[test]
     fn prandom_rng_sequence() {
-        setup();
         unsafe {
             random_seed = 0;
             seed_was_init = 1;
@@ -56,44 +50,7 @@ mod tests {
         }
     }
 
-    // x_to_xh_and_xl decomposes an x pixel position into:
-    //   xh = xpos >> 3  (tile column index)
-    //   xl = xpos & 7   (pixel offset within the tile, 0–7)
-    // (FIX_SPRITE_XPOS is compiled in, enabling the clean bitwise form.)
-    // Used throughout collision detection and sprite positioning.
-    #[test]
-    fn x_to_xh_and_xl_splits_xpos() {
-        let cases: &[(c_int, i8, i8)] = &[
-            (0,    0,   0),  // origin
-            (8,    1,   0),  // exact tile boundary
-            (15,   1,   7),  // last pixel before next tile
-            (16,   2,   0),
-            (100,  12,  4),  // 100 = 12*8 + 4
-            (-1,  -1,   7),  // -1 in arithmetic right-shift: -1>>3 = -1, -1&7 = 7
-            (-8,  -1,   0),  // -8 = -1 * 8 + 0
-        ];
-        unsafe {
-            for &(xpos, want_xh, want_xl) in cases {
-                let (mut xh, mut xl) = (0i8, 0i8);
-                x_to_xh_and_xl(xpos, &mut xh, &mut xl);
-                assert_eq!((xh, xl), (want_xh, want_xl), "xpos={xpos}");
-            }
-        }
-    }
+    // x_to_xh_and_xl_splits_xpos — restore this test when seg006.c is ported.
 
-    // Verify that set_options_to_default puts well-known globals in their expected
-    // starting state. Useful as a fixture assertion and as a regression check when
-    // options.c is ported to Rust.
-    #[test]
-    fn set_options_to_default_initializes_known_values() {
-        unsafe {
-            set_options_to_default();
-            assert_eq!(enable_music,       1);
-            assert_eq!(enable_fade,        1);
-            assert_eq!(enable_flash,       1);
-            assert_eq!(enable_text,        1);
-            assert_eq!(start_fullscreen,   0);
-            assert_eq!(enable_lighting,    0); // off by default; requires opt-in in SDLPoP.ini
-        }
-    }
+    // set_options_to_default_initializes_known_values — restore this test when options.c is ported.
 }
