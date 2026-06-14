@@ -14,16 +14,7 @@ pub(crate) unsafe fn y_land_at(idx: usize) -> i16 {
     *core::ptr::addr_of!(y_land).cast::<i16>().add(idx)
 }
 
-pub mod options;
-pub mod seqtbl;
-pub mod seg004;
-pub mod seg005;
-pub mod seg006;
-pub mod seg007;
-pub mod seg003;
-pub mod seg002;
-pub mod seg001;
-pub mod seg008;
+pub mod state;
 
 #[cfg(test)]
 #[allow(static_mut_refs)] // all C globals are static mut; reading them in tests is safe here

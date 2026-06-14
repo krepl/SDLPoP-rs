@@ -87,6 +87,20 @@ Game assets live in `data/`. `.DAT` files are the original DOS archive format. M
 
 ---
 
+## Restart port — prime directives
+
+The port is being restarted on branch `restart/state-struct` with a new architecture. These rules apply to all porting work:
+
+- **Faithful translation only.** Port each C function block-by-block, statement-by-statement. No refactoring, no idiomatic rewrites, no helper extraction.
+- **`&mut State` everywhere.** All game state lives in `rust/src/state.rs::State`. Every ported function takes `state: &mut State`. Never add new `static mut` state in Rust.
+- **`State` only grows.** Never remove a field from `State` once added.
+- **Use `unsafe` freely.** Every function body should be `unsafe`. Don't fight it.
+- **No behavior changes.** Reproduce weird C behavior exactly. Quirks may be load-bearing.
+- **Fix harness divergence before moving on.** Run `cargo check` after each batch; run the harness before marking a subsystem done.
+- **Subagents**: use `pop-porter` (Haiku) for mechanical porting, `pop-reviewer` (Haiku) for trap-category review. Use Opus only for planning and debugging divergences.
+
+---
+
 ## Rust port
 
 The game is being incrementally re-implemented in Rust. The Rust crate lives in `rust/` and is also the root crate (Cargo.toml at the project root links to it). Each ported C file becomes a Rust module exporting `#[no_mangle] pub unsafe extern "C"` functions with identical signatures, so the C linker sees no difference.
