@@ -19,10 +19,10 @@ make
 
 **Linux (CMake with Ninja — preferred for speed):**
 ```sh
-cd src
-mkdir build && cd build
+cd src/build          # CMakeLists.txt is in src/, not the project root
 cmake -G Ninja ..
 ninja
+# Binary is output to the project root (../prince)
 ```
 
 **Run:**
@@ -33,7 +33,22 @@ ninja
 ./prince mod "Mod Name"     # play a mod from mods/
 ```
 
-There is no automated test suite.
+**Replays and differential harness:**
+
+Replay files live in `replays/`. To play one headlessly (auto-exits, no title screen):
+```sh
+./prince validate replays/foo.p1r
+```
+Important: the replay file must be passed as a plain positional argument after `validate` (space-separated). Do NOT pass a level number alongside `validate` — it breaks replay loading. Do NOT use `seed=` with validate — the replay file must be `argv[1]` for seed to be honoured, which conflicts with `validate`.
+
+The differential harness lives in `scripts/run_harness.sh`:
+```sh
+scripts/run_harness.sh --regen   # regenerate golden trace from current binary
+scripts/run_harness.sh           # run binary, compare output against golden trace
+scripts/run_harness.sh --compare A.trace B.trace  # diff two arbitrary traces
+```
+
+The golden trace (`traces/golden.trace`) was generated from the all-C build and is committed as the correctness reference. `compare_traces.py` supports `--all`, `--tick N`, `--ignore FIELD`.
 
 ## Architecture
 
@@ -105,22 +120,9 @@ The port is being restarted on branch `restart/state-struct` with a new architec
 
 The game is being incrementally re-implemented in Rust. The Rust crate lives in `rust/` and is also the root crate (Cargo.toml at the project root links to it). Each ported C file becomes a Rust module exporting `#[no_mangle] pub unsafe extern "C"` functions with identical signatures, so the C linker sees no difference.
 
-### Porting status
+### Porting status (branch: restart/state-struct)
 
-| C file | Rust module | Notes |
-|--------|-------------|-------|
-| `options.c` | `rust/src/options.rs` | INI parser, option loading |
-| `seqtbl.c` | `rust/src/seqtbl.rs` | Animation bytecode table |
-| `seg001.c` | `rust/src/seg001.rs` | Cutscene playback, animation sequencing |
-| `seg002.c` | `rust/src/seg002.rs` | Guard/shadow AI |
-| `seg003.c` | `rust/src/seg003.rs` | Level loop, room redraw |
-| `seg004.c` | `rust/src/seg004.rs` | Collision detection |
-| `seg005.c` | `rust/src/seg005.rs` | Character movement |
-| `seg006.c` | `rust/src/seg006.rs` | Tile system, frame data |
-| `seg007.c` | `rust/src/seg007.rs` | Animated tiles (trobs, doors, spikes) |
-| `seg008.c` | `rust/src/seg008.rs` | Room renderer (tiles, sprites, walls, UI) |
-
-When a file is ported, remove it from `src/Makefile` (the `OBJ =` line) and `src/CMakeLists.txt` (`SOURCE_FILES` block).
+All C files are currently compiled from C. Porting proceeds one subsystem at a time under the new `State` struct architecture. When a file is ported: add it as a `pub mod` in `rust/src/lib.rs`, remove it from `src/Makefile` (`OBJ =` line) and `src/CMakeLists.txt` (`SOURCE_FILES` block), and run the harness to confirm parity.
 
 ### Module boilerplate
 
@@ -249,13 +251,41 @@ core::ptr::addr_of!((*custom).demo_moves) as *const auto_move_type
 
 ### Porting workflow
 
-Follow this order to minimize wasted compile cycles:
+1. **Pre-scan types** — grep bindings.rs for every global the C file touches. Map `word` vs `c_short` vs `byte` before writing a line of Rust.
+2. **Check function signatures** — grep bindings.rs for every C function *called* by the file; note any `c_short` parameters.
+3. **Script large tables** — do not hand-transcribe arrays with >20 entries. Use a short Python script to emit Rust from C source.
+4. **Port in batches of ~10 functions**, then `cargo check`. Fix errors before continuing.
+5. **After each batch, audit for the two silent traps:**
+   - Integer `!`: `grep -n '!\w' file.rs` — every hit must be on a `bool`
+   - `u16` bare arithmetic: scan `+`/`-` on `word`/`u16` values — add `wrapping_add`/`wrapping_sub`
+6. **Run the harness** (`scripts/run_harness.sh`) before marking the subsystem done.
+7. **Remove the C file** from `src/Makefile` and `src/CMakeLists.txt`. Run `cargo test` and the harness again.
+8. **Write tests aggressively (TDD).** For any function where you can set up `State` to make the output deterministic, write the test *before* porting the function. This includes non-pure functions — set up the relevant `State` fields, call the function, assert on resulting state. Derive expected values from the C source or by running the C binary with equivalent inputs.
 
-1. **Pre-scan types** — before writing any code, grep bindings.rs for every global the C file touches. Build a mental map of `word` vs `c_short` vs `byte`.
-2. **Check function signatures** — grep bindings.rs for every C function *called* by the file being ported; note any `c_short` parameters.
-3. **Script large tables** — do not hand-transcribe arrays with >20 entries. A short Python script reading the C source and emitting Rust syntax is faster and error-free.
-4. **Port in batches of ~10 functions**, then run `cargo check` (faster than `cargo build`). Fix errors before continuing.
-5. **Run `cargo test`** when all functions compile.
-6. **Remove the C file** from `src/Makefile` and `src/CMakeLists.txt`, then do a final `cargo test` to confirm nothing broke.
-7. **Add tests** for pure or near-pure functions (table lookups, math helpers, state machines). See existing test modules in seg004.rs–seg006.rs for style.
-8. **Bug fix → regression test** — whenever a runtime bug is fixed, add a test that would have caught it before the fix. The test name should describe the invariant, not the bug. This applies even when the fix is a one-liner.
+   Each test gets its own `State` on the stack, so `&mut State` tests are naturally isolated from each other. **However**, C globals accessed via FFI are shared across tests and can leak — if your test touches C globals, reset them at the end (or call `set_options_to_default()` as a setup step):
+
+   ```rust
+   #[test]
+   fn get_tile_returns_wall_for_tile_20() {
+       let mut state = State::default();
+       state.level.fg[room_row_col(1, 0, 2)] = tiles_tiles_20_wall as u8;
+       let result = unsafe { get_tile(&mut state, 1, 0, 2) };
+       assert_eq!(result, tiles_tiles_20_wall as u8);
+       // No C globals touched — no cleanup needed.
+   }
+
+   #[test]
+   fn char_takes_damage_reduces_hitp_curr() {
+       unsafe { set_options_to_default(); } // reset shared C globals before test
+       let mut state = State::default();
+       state.kid.hitp_curr = 3;
+       unsafe { take_hp(&mut state, 1); }
+       assert_eq!(state.kid.hitp_curr, 2);
+       unsafe { set_options_to_default(); } // reset after in case of leakage
+   }
+   ```
+
+   The harness is the primary oracle; unit tests are fast-feedback supplements. Skip functions whose side effects depend entirely on not-yet-ported FFI calls — test those at the subsystem level via the harness.
+
+9. **Bug fixes get a regression test** describing the invariant, not the bug.
+10. **Use `rg` not `grep`, `fd` not `find`** in all shell commands.
