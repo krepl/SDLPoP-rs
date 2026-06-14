@@ -73,6 +73,7 @@ set(SOURCE_FILES
         seg009.c
         seqtbl.c
         options.c
+        state_dump.c
         midi.c opl3.c opl3.h
         replay.c
         lighting.c

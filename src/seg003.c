@@ -19,6 +19,7 @@ The authors of this program may be contacted at https://forum.princed.org
 */
 
 #include "common.h"
+#include "state_dump.h"
 
 // data:3D1A
 sbyte distance_mirror;
@@ -370,6 +371,7 @@ int play_level_2() {
 		hitp_delta = 0;
 		timers();
 		play_frame();
+		dump_frame_state();
 
 #ifdef USE_REPLAY
 		// At the exact "end of level" frame, preserve the seed to ensure reproducibility,
