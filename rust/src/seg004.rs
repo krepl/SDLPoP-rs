@@ -558,6 +558,7 @@ pub unsafe extern "C" fn check_chomped_guard() {
     get_tile_at_char();
     if check_chomped_here() == 0 {
         tile_col += 1;
+        get_tile(curr_room as c_int, tile_col as c_int, tile_row as c_int);
         check_chomped_here();
     }
 }
@@ -735,6 +736,120 @@ mod tests {
             room_BL    = 99;
             room_BR    = 99;
             assert_eq!(xpos_in_drawn_room(100), 100 - (TILE_SIZEX * SCREEN_TILECOUNTX) as i32);
+        }
+    }
+
+    // Helper: set a tile and its modifier in the level data for a given room/row/col.
+    unsafe fn set_level_tile(room: usize, row: usize, col: usize, tile: u8, modif: u8) {
+        let idx = (room - 1) * 30 + row * 10 + col;
+        level.fg[idx] = tile;
+        level.bg[idx] = modif;
+    }
+
+    // check_chomped_guard: guard at col 8, row 1, room 3.
+    // Tile (8,1) = floor; tile (9,1) = closed chomper.
+    // After the call, curr_tilepos must equal tbl_line[1]+9 = 19,
+    // because the function calls get_tile for col 9 when (8,1) is not a chomper.
+    #[test]
+    fn check_chomped_guard_advances_curr_tilepos_to_chomper_col() {
+        unsafe {
+            set_options_to_default();
+
+            // Put the guard (Char) at room 3, curr_col=8, curr_row=1.
+            Char.room     = 3;
+            Char.curr_col = 8;
+            Char.curr_row = 1;
+            curr_room     = 3;
+
+            // Floor (not chomper) at (room=3, row=1, col=8) → tilepos 18.
+            set_level_tile(3, 1, 8, 1 /* tiles_1_floor */, 0);
+            // Closed chomper at (room=3, row=1, col=9) → tilepos 19.
+            set_level_tile(3, 1, 9, tiles_tiles_18_chomper as u8, 2 /* closed */);
+            // Ensure no room links needed for find_room_of_tile (col 8 stays in room 3).
+            level.roomlinks[2].left  = 0;
+            level.roomlinks[2].right = 0;
+
+            check_chomped_guard();
+
+            // The function should have called get_tile(room3, 9, 1),
+            // setting curr_tilepos = tbl_line[1] + 9 = 10 + 9 = 19.
+            assert_eq!(curr_tilepos as i32, 19,
+                "curr_tilepos should be 19 (tbl_line[1]+9) after get_tile for chomper col");
+            assert_eq!(tile_col as i32, 9,
+                "tile_col should be 9 after advancing to chomper column");
+
+            set_options_to_default();
+        }
+    }
+
+    // check_guard_bumped: sword=sheathed → function is a no-op.
+    // State from golden trace tick 184: Guard.sword=0, action=1, alive=-1.
+    // Verify curr_tilepos and tile_col are unchanged after the call.
+    #[test]
+    fn check_guard_bumped_noop_when_sword_sheathed() {
+        unsafe {
+            set_options_to_default();
+            Char.action = actions_actions_1_run_jump as u8;
+            Char.alive  = -1i8; // alive
+            Char.sword  = sword_status_sword_0_sheathed as u8; // 0
+            curr_room   = 3;
+            tile_col    = 8;
+            tile_row    = 1;
+            curr_tilepos = 18;
+
+            check_guard_bumped();
+
+            // sword < sword_2_drawn → early return, nothing changed
+            assert_eq!(curr_tilepos as i32, 18, "check_guard_bumped must not modify curr_tilepos when sword is sheathed");
+            assert_eq!(tile_col as i32, 8);
+            set_options_to_default();
+        }
+    }
+
+    // check_gate_push: frame=166, action=1 → none of the entry conditions match → no-op.
+    // State from golden trace tick 184: Guard.frame=166, Guard.action=1.
+    #[test]
+    fn check_gate_push_noop_when_frame_and_action_not_matching() {
+        unsafe {
+            set_options_to_default();
+            Char.action = actions_actions_1_run_jump as u8; // 1, not 7
+            Char.frame  = 166; // not 15, not 108-110
+            curr_room   = 3;
+            tile_col    = 8;
+            tile_row    = 1;
+            curr_tilepos = 18;
+
+            check_gate_push();
+
+            assert_eq!(curr_tilepos as i32, 18, "check_gate_push must not run when frame/action do not match");
+            assert_eq!(tile_col as i32, 8);
+            set_options_to_default();
+        }
+    }
+
+    // check_chomped_guard: guard at col 8, row 1, room 3, tile is NOT a chomper.
+    // After the call: get_tile for col 9 is called → curr_tilepos = tbl_line[1]+9 = 19.
+    // Uses the exact level layout seen in the golden trace at tick 184.
+    #[test]
+    fn check_chomped_guard_no_chomper_at_col8_advances_to_col9() {
+        unsafe {
+            set_options_to_default();
+            Char.room     = 3;
+            Char.curr_col = 8;
+            Char.curr_row = 1;
+            curr_room     = 3;
+            // Tile (8,1) = floor (curr_tile2 from trace = 1), modif=0 → not a chomper
+            set_level_tile(3, 1, 8, 1 /* floor */, 0);
+            // Tile (9,1) = some other tile (curr_tile2=3 from trace), modif=0 → not active chomper
+            set_level_tile(3, 1, 9, 3, 0);
+            level.roomlinks[2].left  = 0;
+            level.roomlinks[2].right = 0;
+
+            check_chomped_guard();
+
+            assert_eq!(tile_col as i32, 9, "tile_col should advance to col 9");
+            assert_eq!(curr_tilepos as i32, 19, "curr_tilepos = tbl_line[1]+9 = 19");
+            set_options_to_default();
         }
     }
 

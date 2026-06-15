@@ -292,3 +292,34 @@ core::ptr::addr_of!((*custom).demo_moves) as *const auto_move_type
 
 9. **Bug fixes get a regression test** describing the invariant, not the bug.
 10. **Use `rg` not `grep`, `fd` not `find`** in all shell commands.
+
+### Debugging harness divergences
+
+When `scripts/run_harness.sh` reports a divergence at tick N:
+
+**Step 1 — always use the harness, never hand-roll a comparison.**
+`run_harness.sh` deletes `tmp/test.trace` before each run and fails if the trace isn't written. A hand-composed `compare_traces.py golden.trace /some/stale.trace` call against an old file is the fastest way to chase a ghost bug. Use the harness.
+
+**Step 2 — dump the divergent tick.**
+```sh
+python3 scripts/compare_traces.py --dump-tick N traces/golden.trace
+```
+This prints every field value (with `char_type` structs decoded into subfields) at tick N. The diverging field and its expected value are right there — no binary decoder, no Python one-liners needed.
+
+**Step 3 — generate a mock test seeded from trace state.**
+```sh
+python3 scripts/compare_traces.py --gen-test N func_name traces/golden.trace
+```
+This emits a Rust `#[test]` stub with every scalar global and every `char_type` subfield pre-set to the values at tick N-1 (the input state). Paste it into the relevant `seg*.rs` file.
+
+The stub has two `// TODO:` placeholders: one for `level.fg`/`level.bg` tiles (not in the trace — read them from `--dump-tick` of the C trace if needed and set manually), and one for the assertion (also read from `--dump-tick N` to see the expected post-call state).
+
+**Step 4 — reproduce, fix, verify.**
+```sh
+cargo test -- test_function_name   # must fail first, confirming the bug is reproduced
+# fix the bug
+cargo test -- test_function_name   # must pass
+scripts/run_harness.sh             # harness must be green
+```
+
+**Level tiles** are the one thing the trace doesn't capture. If the function reads tiles, use `--dump-tick` on both golden and test traces at the divergent tick to compare `curr_tilepos`, `tile_col`, `tile_row`, then look up the tile values in the level data (`level.fg` / `level.bg`) by hand or by adding a temporary print to the C binary.
