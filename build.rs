@@ -31,10 +31,10 @@ fn main() {
         .collect();
 
     // Compile all C sources except main.c (Rust provides main)
+    // Ported to Rust: seg001, seg002, seg003, seg004, seg005, seg006, seg007, seg008
     let sources = [
         "src/data.c",
         "src/seg000.c",
-        // seg008.c ported to Rust
         "src/seg009.c",
         "src/replay.c",
         "src/sdl_rw_wrappers.c",

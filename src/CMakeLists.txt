@@ -62,18 +62,10 @@ set(SOURCE_FILES
         proto.h
         types.h
         seg000.c
-        seg001.c
-        seg002.c
-        seg003.c
-        seg004.c
         seg005.c
-        seg006.c
-        seg007.c
-        seg008.c
         seg009.c
         seqtbl.c
         options.c
-        state_dump.c
         midi.c opl3.c opl3.h
         replay.c
         lighting.c
