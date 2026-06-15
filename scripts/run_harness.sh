@@ -5,7 +5,6 @@
 #   ./scripts/run_harness.sh               # compare Rust binary against golden trace
 #   ./scripts/run_harness.sh --regen       # regenerate golden trace from C oracle
 #   ./scripts/run_harness.sh --compare A B # diff two arbitrary trace files
-#   ./scripts/run_harness.sh --debug       # compare + dump full state + gen-test on first divergence
 #
 # The golden trace is committed at traces/golden.trace.
 # It was generated from the all-C (cmake) build and is the reference oracle.
@@ -39,7 +38,7 @@ case "${1:-}" in
   --compare)
     "${COMPARE[@]}" "${2:?missing file A}" "${3:?missing file B}" "${@:4}"
     ;;
-  ""| --debug)
+  "")
     if [ ! -f "$GOLDEN" ]; then
       echo "No golden trace found at $GOLDEN. Run with --regen first."
       exit 1
@@ -52,9 +51,7 @@ case "${1:-}" in
       exit 1
     fi
     echo "Comparing against golden..."
-    EXTRA_FLAGS=()
-    [ "${1:-}" = "--debug" ] && EXTRA_FLAGS+=(--dump-on-diverge)
-    "${COMPARE[@]}" "$GOLDEN" "$TEST" "${EXTRA_FLAGS[@]}"
+    "${COMPARE[@]}" "$GOLDEN" "$TEST" --dump-on-diverge
     ;;
   *)
     echo "Unknown argument: $1"
