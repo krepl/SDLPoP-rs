@@ -50,6 +50,8 @@ scripts/run_harness.sh --compare A.trace B.trace  # diff two arbitrary traces
 
 The golden trace (`traces/golden.trace`) was generated from the all-C build and is committed as the correctness reference. `compare_traces.py` supports `--all`, `--tick N`, `--ignore FIELD`.
 
+**Harness gotchas:** The game `chdir(exe_dir)` when loading a replay (see `replay.c:277`), so relative paths passed via `POPTRACE_OUT` break. The harness uses absolute paths to work around this. The Rust binary (`target/debug/prince`) resolves data assets relative to its own path, so `target/debug/data` and `target/debug/replays` must be symlinked to the project-root copies — the harness does this automatically.
+
 ## Architecture
 
 All source is in `src/`. The codebase is pure C (C99), structured around the original DOS segments:
@@ -113,6 +115,7 @@ The port is being restarted on branch `restart/state-struct` with a new architec
 - **No behavior changes.** Reproduce weird C behavior exactly. Quirks may be load-bearing.
 - **Fix harness divergence before moving on.** Run `cargo check` after each batch; run the harness before marking a subsystem done.
 - **Subagents**: use `pop-porter` (Haiku) for mechanical porting, `pop-reviewer` (Haiku) for trap-category review. Use Opus only for planning and debugging divergences.
+- **Subagent verification (mandatory).** After any agent returns, immediately run `git log --oneline <worktree-branch>` to confirm new commits exist before treating the work as done. Agent prompts must state the target branch explicitly: "You are working on branch `restart/state-struct`." Do not report a subsystem as ported until `git log` confirms a commit and the harness passes on the merged result.
 
 ---
 

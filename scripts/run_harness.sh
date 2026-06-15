@@ -43,8 +43,13 @@ case "${1:-}" in
       echo "No golden trace found at $GOLDEN. Run with --regen first."
       exit 1
     fi
+    rm -f "$TEST"
     echo "Running Rust binary..."
     POPTRACE_OUT="$TEST" "$BINARY" validate "$REPLAY"
+    if [ ! -f "$TEST" ]; then
+      echo "ERROR: trace file was not written — POPTRACE_OUT failed"
+      exit 1
+    fi
     echo "Comparing against golden..."
     "${COMPARE[@]}" "$GOLDEN" "$TEST"
     ;;

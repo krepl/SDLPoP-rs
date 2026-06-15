@@ -41,6 +41,10 @@ Every exported function:
 pub unsafe extern "C" fn function_name(state: &mut State, arg: c_int) -> c_int { ... }
 ```
 
+## Branch discipline
+
+You are always working on branch `restart/state-struct`. Your worktree is based on that branch. Before writing any code, confirm with `git branch --show-current`. **Commit your work** — uncommitted changes are lost when the session ends. After your final `cargo check` passes and the harness is green, make a git commit.
+
 ## Workflow
 
 1. Read the target C file fully before writing any Rust.
