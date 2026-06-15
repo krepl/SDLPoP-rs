@@ -247,30 +247,32 @@ def gen_test(path, target_tick, func_name):
     _gen_test_from_blob(frames[input_tick], fields, target_tick, f"{func_name}_tick_{target_tick}")
 
 
-def dump_blob(label, blob, fields):
-    """Print all field values from a blob in human-readable form."""
+def dump_blob(label, blob, fields, highlight=()):
+    """Print all field values from a blob in human-readable form.
+    Fields named in highlight are marked with * to indicate divergence."""
     print(f"  [{label}]")
     for name, offset, size in fields:
         raw = blob[offset:offset + size]
+        marker = " *" if name in highlight else ""
         if name in CHAR_BLOB_FIELDS and size == 16:
-            print(f"    {name}:")
+            print(f"    {name}:{marker}")
             for subfname, v, ftype in decode_char_type(raw):
                 print(f"      .{subfname} = {v}  ({ftype})")
         else:
             if size == 1:
                 v = raw[0]
                 sv = struct.unpack("<b", raw)[0]
-                print(f"    {name} = {v}  (u8={v}, i8={sv})")
+                print(f"    {name} = {v}  (u8={v}, i8={sv}){marker}")
             elif size == 2:
                 (v,)  = struct.unpack("<H", raw)
                 (sv,) = struct.unpack("<h", raw)
-                print(f"    {name} = {v}  (u16={v}, i16={sv})")
+                print(f"    {name} = {v}  (u16={v}, i16={sv}){marker}")
             elif size == 4:
                 (v,)  = struct.unpack("<I", raw)
                 (sv,) = struct.unpack("<i", raw)
-                print(f"    {name} = {v}  (u32={v}, i32={sv})")
+                print(f"    {name} = {v}  (u32={v}, i32={sv}){marker}")
             else:
-                print(f"    {name} = {fmt_bytes(raw, size)}")
+                print(f"    {name} = {fmt_bytes(raw, size)}{marker}")
 
 
 def compare(path_a, path_b, show_all=False, start_tick=0, ignore=(),
@@ -316,11 +318,11 @@ def compare(path_a, path_b, show_all=False, start_tick=0, ignore=(),
                     print(f"    A (golden): {fmt_bytes(a, size)}")
                     print(f"    B (test):   {fmt_bytes(b, size)}")
                 if dump_on_diverge:
+                    diverged_names = {name for name, *_ in diffs}
                     print(f"\n--- full state at tick {tick_a} ---")
-                    dump_blob("golden", blob_a, fields)
-                    dump_blob("test",   blob_b, fields)
-                    diverged_fields = "_".join(name for name, *_ in diffs[:2])
-                    stub_name = f"investigate_{diverged_fields}_tick_{tick_a}"
+                    dump_blob("golden", blob_a, fields, highlight=diverged_names)
+                    dump_blob("test",   blob_b, fields, highlight=diverged_names)
+                    stub_name = f"investigate_{'_'.join(name for name, *_ in diffs[:2])}_tick_{tick_a}"
                     print(f"\n--- gen-test stub (fill tiles, add assertions) ---")
                     _gen_test_from_blob(blob_a, fields, tick_a, stub_name)
                 if not show_all:
