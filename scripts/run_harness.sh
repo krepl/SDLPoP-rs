@@ -11,17 +11,23 @@
 
 set -euo pipefail
 
-# Rust binary (cargo build output)
-BINARY="./target/debug/prince"
-# C oracle binary (cmake/ninja build output) — used only for --regen
-C_BINARY="./src/build/prince"
-REPLAY="replays/run_right_and_die_lvl_1.p1r"
-GOLDEN="traces/golden.trace"
-TEST="tmp/test.trace"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-COMPARE=(python3 "$SCRIPT_DIR/compare_traces.py")
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-mkdir -p tmp
+# Rust binary (cargo build output)
+BINARY="$ROOT/target/debug/prince"
+# C oracle binary (cmake/ninja build output) — used only for --regen
+C_BINARY="$ROOT/src/build/prince"
+REPLAY="$ROOT/replays/run_right_and_die_lvl_1.p1r"
+GOLDEN="$ROOT/traces/golden.trace"
+TEST="$ROOT/tmp/test.trace"
+COMPARE=(python3 "$ROOT/scripts/compare_traces.py")
+
+mkdir -p "$ROOT/tmp"
+# The game chdir()s to exe_dir on replay load; symlink data/replays there so it
+# can find assets and so POPTRACE_OUT absolute paths resolve correctly.
+mkdir -p "$ROOT/target/debug"
+ln -sf "$ROOT/data"    "$ROOT/target/debug/data"    2>/dev/null || true
+ln -sf "$ROOT/replays" "$ROOT/target/debug/replays" 2>/dev/null || true
 
 case "${1:-}" in
   --regen)

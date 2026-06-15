@@ -17,6 +17,19 @@ pub(crate) unsafe fn y_land_at(idx: usize) -> i16 {
 pub mod state;
 use state::State;
 
+pub(crate) unsafe fn dir_front_at(idx: usize) -> i8 {
+    *core::ptr::addr_of!(dir_front).cast::<i8>().add(idx)
+}
+pub(crate) unsafe fn dir_behind_at(idx: usize) -> i8 {
+    *core::ptr::addr_of!(dir_behind).cast::<i8>().add(idx)
+}
+pub(crate) unsafe fn tbl_line_at(idx: usize) -> u8 {
+    *core::ptr::addr_of!(tbl_line).cast::<u8>().add(idx)
+}
+pub(crate) unsafe fn y_clip_at(idx: usize) -> i16 {
+    *core::ptr::addr_of!(y_clip).cast::<i16>().add(idx)
+}
+
 pub mod seg004;
 
 /// Single global State instance bridging C interop and Rust internals.
