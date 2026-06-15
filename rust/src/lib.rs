@@ -17,6 +17,8 @@ pub(crate) unsafe fn y_land_at(idx: usize) -> i16 {
 pub mod state;
 use state::State;
 
+pub mod seg004;
+
 /// Single global State instance bridging C interop and Rust internals.
 /// #[no_mangle] wrapper functions delegate to inner fns via &mut STATE.
 pub(crate) static mut STATE: State = unsafe { std::mem::zeroed() };

@@ -97,3 +97,4 @@ target/
 
 # Obsidian workspace
 .obsidian/
+tmp/

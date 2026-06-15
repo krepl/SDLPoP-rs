@@ -31,11 +31,20 @@ fn main() {
         .collect();
 
     // Compile all C sources except main.c (Rust provides main)
-    // Ported to Rust: seg001, seg002, seg003, seg004, seg005, seg006, seg007, seg008
+    // Ported to Rust: seg004
     let sources = [
         "src/data.c",
         "src/seg000.c",
+        "src/seg001.c",
+        "src/seg002.c",
+        "src/seg003.c",
+        "src/seg005.c",
+        "src/seg006.c",
+        "src/seg007.c",
+        "src/seg008.c",
         "src/seg009.c",
+        "src/seqtbl.c",
+        "src/options.c",
         "src/replay.c",
         "src/sdl_rw_wrappers.c",
         "src/lighting.c",
@@ -44,6 +53,7 @@ fn main() {
         "src/midi.c",
         "src/opl3.c",
         "src/stb_vorbis.c",
+        "src/state_dump.c",
     ];
 
     let mut build = cc::Build::new();
