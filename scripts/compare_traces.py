@@ -319,9 +319,10 @@ def compare(path_a, path_b, show_all=False, start_tick=0, ignore=(),
                     print(f"\n--- full state at tick {tick_a} ---")
                     dump_blob("golden", blob_a, fields)
                     dump_blob("test",   blob_b, fields)
-                    print(f"\n--- gen-test stub (rename func, fill tiles, add assertions) ---")
-                    _gen_test_from_blob(blob_a, fields, tick_a,
-                                        f"investigate_tick_{tick_a}")
+                    diverged_fields = "_".join(name for name, *_ in diffs[:2])
+                    stub_name = f"investigate_{diverged_fields}_tick_{tick_a}"
+                    print(f"\n--- gen-test stub (fill tiles, add assertions) ---")
+                    _gen_test_from_blob(blob_a, fields, tick_a, stub_name)
                 if not show_all:
                     print(f"\nStopping at first divergence.")
                     break
