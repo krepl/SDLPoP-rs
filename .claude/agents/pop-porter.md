@@ -44,9 +44,9 @@ pub unsafe extern "C" fn function_name(state: &mut State, arg: c_int) -> c_int {
 ## Workflow
 
 1. Read the target C file fully before writing any Rust.
-2. Grep bindings.rs for every global the C file touches — note `word` (u16) vs `c_short` (i16) vs `byte` (u8).
+2. Use `rg` (not `grep`) to search bindings.rs for every global the C file touches — note `word` (u16) vs `c_short` (i16) vs `byte` (u8). Use `fd` (not `find`) for file discovery.
 3. Check function signatures in bindings.rs for any `c_short` parameters.
 4. Port in batches of ~10 functions.
 5. After each batch: `cargo check` must pass.
-6. After each batch: scan for the traps above (`grep -n '!\w'` for integer NOT, scan `+`/`-` on u16).
+6. After each batch: scan for the traps above (`rg -n '!\w'` for integer NOT, scan `+`/`-` on u16).
 7. When done: run the harness and report any divergences.

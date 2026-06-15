@@ -11,7 +11,7 @@ You review Rust files that were mechanically ported from C Prince of Persia sour
 
 ### 1. Integer logical NOT (`!` on non-bool)
 C `!x` means "is x zero?" Rust `!x` on integers is bitwise NOT — always wrong here.
-- Run: `grep -n '!\w' <file>.rs`
+- Run: `rg -n '!\w' <file>.rs`
 - Flag every hit where the operand is not a `bool`. Example: `!curr_room` should be `curr_room == 0`.
 
 ### 2. Bare `u16` / `word` arithmetic
