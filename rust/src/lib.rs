@@ -14,32 +14,44 @@ pub(crate) unsafe fn y_land_at(idx: usize) -> i16 {
     *core::ptr::addr_of!(y_land).cast::<i16>().add(idx)
 }
 
-pub mod state;
-use state::State;
-
-pub(crate) unsafe fn dir_front_at(idx: usize) -> i8 {
-    *core::ptr::addr_of!(dir_front).cast::<i8>().add(idx)
+pub mod options;
+// Helper to access sound_interruptible — bindgen emits [byte; 0] for extern arrays
+pub(crate) unsafe fn sound_interruptible_at(idx: usize) -> u8 {
+    *core::ptr::addr_of!(sound_interruptible).cast::<u8>().add(idx)
 }
-pub(crate) unsafe fn dir_behind_at(idx: usize) -> i8 {
-    *core::ptr::addr_of!(dir_behind).cast::<i8>().add(idx)
+pub(crate) unsafe fn sound_interruptible_set(idx: usize, val: u8) {
+    *core::ptr::addr_of_mut!(sound_interruptible).cast::<u8>().add(idx) = val;
 }
+// tbl_line is an extern const incomplete array; bindgen emits [T; 0]
 pub(crate) unsafe fn tbl_line_at(idx: usize) -> u8 {
     *core::ptr::addr_of!(tbl_line).cast::<u8>().add(idx)
 }
-pub(crate) unsafe fn y_clip_at(idx: usize) -> i16 {
-    *core::ptr::addr_of!(y_clip).cast::<i16>().add(idx)
+// doorlink1_ad and doorlink2_ad are extern byte arrays; bindgen emits [byte; 0]
+pub(crate) unsafe fn doorlink1_ad_at(idx: usize) -> u8 {
+    *core::ptr::addr_of!(doorlink1_ad).cast::<u8>().add(idx)
 }
-
+pub(crate) unsafe fn doorlink2_ad_at(idx: usize) -> u8 {
+    *core::ptr::addr_of!(doorlink2_ad).cast::<u8>().add(idx)
+}
+pub mod seqtbl;
 pub mod seg004;
-
-/// Single global State instance bridging C interop and Rust internals.
-/// #[no_mangle] wrapper functions delegate to inner fns via &mut STATE.
-pub(crate) static mut STATE: State = unsafe { std::mem::zeroed() };
+pub mod seg005;
+pub mod seg006;
+pub mod seg007;
+pub mod seg003;
+pub mod seg002;
+pub mod seg001;
+pub mod seg008;
 
 #[cfg(test)]
 #[allow(static_mut_refs)] // all C globals are static mut; reading them in tests is safe here
 mod tests {
     use super::*;
+    use std::os::raw::c_int;
+
+    fn setup() {
+        unsafe { set_options_to_default(); }
+    }
 
     // y_land is extern const short y_land[] — incomplete array, bindgen emits [c_short; 0].
     // Values are the y pixel positions for each row floor: { -8, 55, 118, 181, 244 }.
@@ -62,6 +74,7 @@ mod tests {
     // verified against the original C behaviour.
     #[test]
     fn prandom_rng_sequence() {
+        setup();
         unsafe {
             random_seed = 0;
             seed_was_init = 1;
@@ -70,7 +83,44 @@ mod tests {
         }
     }
 
-    // x_to_xh_and_xl_splits_xpos — restore this test when seg006.c is ported.
+    // x_to_xh_and_xl decomposes an x pixel position into:
+    //   xh = xpos >> 3  (tile column index)
+    //   xl = xpos & 7   (pixel offset within the tile, 0–7)
+    // (FIX_SPRITE_XPOS is compiled in, enabling the clean bitwise form.)
+    // Used throughout collision detection and sprite positioning.
+    #[test]
+    fn x_to_xh_and_xl_splits_xpos() {
+        let cases: &[(c_int, i8, i8)] = &[
+            (0,    0,   0),  // origin
+            (8,    1,   0),  // exact tile boundary
+            (15,   1,   7),  // last pixel before next tile
+            (16,   2,   0),
+            (100,  12,  4),  // 100 = 12*8 + 4
+            (-1,  -1,   7),  // -1 in arithmetic right-shift: -1>>3 = -1, -1&7 = 7
+            (-8,  -1,   0),  // -8 = -1 * 8 + 0
+        ];
+        unsafe {
+            for &(xpos, want_xh, want_xl) in cases {
+                let (mut xh, mut xl) = (0i8, 0i8);
+                x_to_xh_and_xl(xpos, &mut xh, &mut xl);
+                assert_eq!((xh, xl), (want_xh, want_xl), "xpos={xpos}");
+            }
+        }
+    }
 
-    // set_options_to_default_initializes_known_values — restore this test when options.c is ported.
+    // Verify that set_options_to_default puts well-known globals in their expected
+    // starting state. Useful as a fixture assertion and as a regression check when
+    // options.c is ported to Rust.
+    #[test]
+    fn set_options_to_default_initializes_known_values() {
+        unsafe {
+            set_options_to_default();
+            assert_eq!(enable_music,       1);
+            assert_eq!(enable_fade,        1);
+            assert_eq!(enable_flash,       1);
+            assert_eq!(enable_text,        1);
+            assert_eq!(start_fullscreen,   0);
+            assert_eq!(enable_lighting,    0); // off by default; requires opt-in in SDLPoP.ini
+        }
+    }
 }
