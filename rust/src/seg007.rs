@@ -255,6 +255,35 @@ pub unsafe extern "C" fn get_trob_right_above_pos_in_drawn_room() -> c_short {
 }
 
 // seg007:03CF
+// seg007:0699
+#[no_mangle]
+pub unsafe extern "C" fn bubble_next_frame(curr: c_short) -> c_short {
+    let next = curr + 1;
+    if next >= 8 { 1 } else { next }
+}
+
+// seg007:06CD
+#[no_mangle]
+pub unsafe extern "C" fn get_torch_frame(curr: c_short) -> c_short {
+    let mut next = prandom(255) as c_short;
+    if next != curr {
+        if next < 9 {
+            return next;
+        } else {
+            next = curr;
+        }
+    }
+    next += 1;
+    if next >= 9 { next = 0; }
+    next
+}
+
+// seg007:0740
+#[no_mangle]
+pub unsafe extern "C" fn get_doorlink_tile(index: c_short) -> c_short {
+    (doorlink1_ad_at(index as usize) & 0x1F) as c_short
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn animate_torch() {
     if (trob.room as u16) == drawn_room || ((trob.room as u16) == room_L && (trob.tilepos as u16 % 10) == 9) {
@@ -737,7 +766,7 @@ pub unsafe extern "C" fn get_doorlink_timer(index: c_short) -> c_short {
 #[no_mangle]
 pub unsafe extern "C" fn set_doorlink_timer(index: c_short, value: u8) -> c_short {
     let idx = index as usize;
-    let addr = core::ptr::addr_of_mut!(doorlink2_ad).cast::<u8>().add(idx);
+    let addr = doorlink2_ad.add(idx);
     let mut val = *addr;
     val &= 0xE0;
     val |= value & 0x1F;

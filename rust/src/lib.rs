@@ -27,10 +27,10 @@ pub(crate) unsafe fn tbl_line_at(idx: usize) -> u8 {
 }
 // doorlink1_ad and doorlink2_ad are extern byte arrays; bindgen emits [byte; 0]
 pub(crate) unsafe fn doorlink1_ad_at(idx: usize) -> u8 {
-    *core::ptr::addr_of!(doorlink1_ad).cast::<u8>().add(idx)
+    *doorlink1_ad.add(idx)
 }
 pub(crate) unsafe fn doorlink2_ad_at(idx: usize) -> u8 {
-    *core::ptr::addr_of!(doorlink2_ad).cast::<u8>().add(idx)
+    *doorlink2_ad.add(idx)
 }
 pub mod seg004;
 pub mod seg005;
