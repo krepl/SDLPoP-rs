@@ -14,7 +14,6 @@ pub(crate) unsafe fn y_land_at(idx: usize) -> i16 {
     *core::ptr::addr_of!(y_land).cast::<i16>().add(idx)
 }
 
-pub mod options;
 // Helper to access sound_interruptible — bindgen emits [byte; 0] for extern arrays
 pub(crate) unsafe fn sound_interruptible_at(idx: usize) -> u8 {
     *core::ptr::addr_of!(sound_interruptible).cast::<u8>().add(idx)
@@ -33,15 +32,10 @@ pub(crate) unsafe fn doorlink1_ad_at(idx: usize) -> u8 {
 pub(crate) unsafe fn doorlink2_ad_at(idx: usize) -> u8 {
     *core::ptr::addr_of!(doorlink2_ad).cast::<u8>().add(idx)
 }
-pub mod seqtbl;
 pub mod seg004;
 pub mod seg005;
 pub mod seg006;
 pub mod seg007;
-pub mod seg003;
-pub mod seg002;
-pub mod seg001;
-pub mod seg008;
 
 #[cfg(test)]
 #[allow(static_mut_refs)] // all C globals are static mut; reading them in tests is safe here
