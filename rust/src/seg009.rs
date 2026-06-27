@@ -4,7 +4,7 @@
 #![allow(static_mut_refs)]
 #![allow(unused_assignments)]
 
-use std::os::raw::{c_char, c_int, c_long, c_short, c_uint, c_void};
+use std::os::raw::{c_char, c_int, c_long, c_short, c_void};
 use core::ptr::null_mut;
 use super::*;
 
@@ -103,7 +103,7 @@ struct SDL_version {
 }
 
 #[repr(C)]
-struct SDL_AudioSpec {
+pub struct SDL_AudioSpec {
     freq: c_int,
     format: u16, // SDL_AudioFormat
     channels: u8,
@@ -1376,7 +1376,7 @@ unsafe fn conv_to_8bpp(in_data: *mut byte, width: c_int, height: c_int, stride: 
             let mut pixel_in_byte = 0;
             while pixel_in_byte < pixels_per_byte && x_pixel < width {
                 shift -= depth;
-                *out_pos = ((((v as c_int) >> shift) & mask) as byte);
+                *out_pos = (((v as c_int) >> shift) & mask) as byte;
                 out_pos = out_pos.add(1);
                 pixel_in_byte += 1;
                 x_pixel += 1;

@@ -7,7 +7,7 @@ use std::os::raw::{c_int, c_short, c_char, c_void};
 use super::*;
 
 extern "C" {
-    fn SDL_ConvertSurface(src: *mut SDL_Surface, fmt: *mut SDL_PixelFormat, flags: u32) -> *mut SDL_Surface;
+    fn SDL_ConvertSurface(src: *mut SDL_Surface, fmt: *const SDL_PixelFormat, flags: u32) -> *mut SDL_Surface;
     fn SDL_SetSurfacePalette(surface: *mut SDL_Surface, palette: *mut SDL_Palette) -> c_int;
     fn SDL_SetSurfaceBlendMode(surface: *mut SDL_Surface, blendMode: c_int) -> c_int;
     fn SDL_SetColorKey(surface: *mut SDL_Surface, flag: c_int, key: u32) -> c_int;
