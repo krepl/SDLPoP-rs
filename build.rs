@@ -35,7 +35,7 @@ fn main() {
     let sources = [
         "src/data.c",
         "src/seg000.c",
-        "src/seg008.c",
+        // seg008.c ported to Rust
         "src/seg009.c",
         "src/seqtbl.c",
         "src/options.c",
