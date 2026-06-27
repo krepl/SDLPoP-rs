@@ -35,9 +35,6 @@ fn main() {
     let sources = [
         "src/data.c",
         "src/seg000.c",
-        "src/seg001.c",
-        "src/seg002.c",
-        "src/seg003.c",
         "src/seg008.c",
         "src/seg009.c",
         "src/seqtbl.c",

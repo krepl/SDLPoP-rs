@@ -16,7 +16,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Rust binary (cargo build output)
 BINARY="$ROOT/target/debug/prince"
 # C oracle binary (cmake/ninja build output) — used only for --regen
-C_BINARY="$ROOT/src/build/prince"
+C_BINARY="$ROOT/prince"
 REPLAY="$ROOT/replays/run_right_and_die_lvl_1.p1r"
 GOLDEN="$ROOT/traces/golden.trace"
 TEST="$ROOT/tmp/test.trace"
@@ -26,8 +26,9 @@ mkdir -p "$ROOT/tmp"
 # The game chdir()s to exe_dir on replay load; symlink data/replays there so it
 # can find assets and so POPTRACE_OUT absolute paths resolve correctly.
 mkdir -p "$ROOT/target/debug"
-ln -sf "$ROOT/data"    "$ROOT/target/debug/data"    2>/dev/null || true
-ln -sf "$ROOT/replays" "$ROOT/target/debug/replays" 2>/dev/null || true
+ln -sf "$ROOT/data"        "$ROOT/target/debug/data"        2>/dev/null || true
+ln -sf "$ROOT/replays"    "$ROOT/target/debug/replays"    2>/dev/null || true
+ln -sf "$ROOT/SDLPoP.ini" "$ROOT/target/debug/SDLPoP.ini" 2>/dev/null || true
 
 case "${1:-}" in
   --regen)
@@ -37,6 +38,10 @@ case "${1:-}" in
     ;;
   --compare)
     "${COMPARE[@]}" "${2:?missing file A}" "${3:?missing file B}" "${@:4}"
+    ;;
+  --build)
+    echo "Building Rust binary..."
+    cargo build --manifest-path "$ROOT/Cargo.toml" 2>&1
     ;;
   "")
     if [ ! -f "$GOLDEN" ]; then

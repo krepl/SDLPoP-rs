@@ -87,7 +87,7 @@ pub unsafe extern "C" fn do_fall() {
 // seg005:0090
 #[no_mangle]
 pub unsafe extern "C" fn land() {
-    let mut seq_id: u16;
+    let seq_id: u16;
     is_screaming = 0;
 
     // USE_SUPER_HIGH_JUMP
@@ -562,7 +562,7 @@ pub unsafe extern "C" fn crouch() {
 // seg005:05BE
 #[no_mangle]
 pub unsafe extern "C" fn back_pressed() {
-    let mut seq_id: u16;
+    let seq_id: u16;
     control_backward = release_arrows() as i8;
     // After turn, Kid will draw sword if ...
     if have_sword == 0
@@ -773,7 +773,7 @@ pub unsafe extern "C" fn grab_up_no_floor_behind() {
 // seg005:08E6
 #[no_mangle]
 pub unsafe extern "C" fn jump_up() {
-    let mut delta_x: u16;
+    let delta_x: u16;
     control_up = release_arrows() as i8;
     let distance = get_edge_distance();
     if distance < 4 && edge_type == EDGE_TYPE_WALL as u8 {
@@ -1037,7 +1037,7 @@ pub unsafe extern "C" fn control_with_sword() {
 // seg005:0CDB
 #[no_mangle]
 pub unsafe extern "C" fn swordfight() {
-    let mut seq_id: u16;
+    let seq_id: u16;
     let frame = Char.frame;
     let charid = Char.charid;
     // frame 161: parry
@@ -1085,7 +1085,7 @@ pub unsafe extern "C" fn swordfight() {
 #[no_mangle]
 pub unsafe extern "C" fn sword_strike() {
     let frame = Char.frame;
-    let mut seq_id: u16;
+    let seq_id: u16;
     if frame == frameids_frame_157_walk_with_sword as u8
         || frame == frameids_frame_158_stand_with_sword as u8
         || frame == frameids_frame_170_stand_with_sword as u8
