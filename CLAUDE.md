@@ -104,18 +104,20 @@ Game assets live in `data/`. `.DAT` files are the original DOS archive format. M
 
 ---
 
-## Restart port — prime directives
+## Port — prime directives
 
-The port is being restarted on branch `restart/state-struct` with a new architecture. These rules apply to all porting work:
+All porting work is on `master`. These rules apply:
 
 - **Faithful translation only.** Port each C function block-by-block, statement-by-statement. No refactoring, no idiomatic rewrites, no helper extraction.
-- **`&mut State` everywhere.** All game state lives in `rust/src/state.rs::State`. Every ported function takes `state: &mut State`. Never add new `static mut` state in Rust.
-- **`State` only grows.** Never remove a field from `State` once added.
 - **Use `unsafe` freely.** Every function body should be `unsafe`. Don't fight it.
 - **No behavior changes.** Reproduce weird C behavior exactly. Quirks may be load-bearing.
 - **Fix harness divergence before moving on.** Run `cargo check` after each batch; run the harness before marking a subsystem done.
-- **Subagents**: use `pop-porter` (Haiku) for mechanical porting, `pop-reviewer` (Haiku) for trap-category review. Use Opus only for planning and debugging divergences.
-- **Subagent verification (mandatory).** After any agent returns, immediately run `git log --oneline <worktree-branch>` to confirm new commits exist before treating the work as done. Agent prompts must state the target branch explicitly: "You are working on branch `restart/state-struct`." Do not report a subsystem as ported until `git log` confirms a commit and the harness passes on the merged result.
+- **Model and effort selection:**
+  - **Porting** (`pop-porter` agents): `model: "opus"`. Sonnet gets stuck on the trap categories in this codebase (signed/unsigned, `word` vs `c_short`, logical `!`). Opus is slower and more expensive but the retry cost with Sonnet is worse.
+  - **Divergence debugging**: Opus + `/effort max` for the main session. Switch when a harness divergence doesn't yield to `--gen-test` + `--dump-tick` within one pass.
+  - **Orchestration** (harness runs, commits, plan reading): Sonnet + `/effort high` is sufficient.
+  - **Trap review** (`pop-reviewer`): Haiku is fine — it's a checklist pass, not reasoning.
+- **Subagent verification (mandatory).** After any agent returns, immediately run `git log --oneline <worktree-branch>` to confirm new commits exist before treating the work as done. Agent prompts must state the target branch explicitly: "You are working on branch `master`." Do not report a subsystem as ported until `git log` confirms a commit and the harness passes on the merged result.
 
 ---
 
@@ -123,9 +125,26 @@ The port is being restarted on branch `restart/state-struct` with a new architec
 
 The game is being incrementally re-implemented in Rust. The Rust crate lives in `rust/` and is also the root crate (Cargo.toml at the project root links to it). Each ported C file becomes a Rust module exporting `#[no_mangle] pub unsafe extern "C"` functions with identical signatures, so the C linker sees no difference.
 
-### Porting status (branch: restart/state-struct)
+### Porting status (branch: master)
 
-All C files are currently compiled from C. Porting proceeds one subsystem at a time under the new `State` struct architecture. When a file is ported: add it as a `pub mod` in `rust/src/lib.rs`, remove it from `src/Makefile` (`OBJ =` line) and `src/CMakeLists.txt` (`SOURCE_FILES` block), and run the harness to confirm parity.
+| File | Status |
+|------|--------|
+| seg001.c | ✅ ported |
+| seg002.c | ✅ ported |
+| seg003.c | ✅ ported |
+| seg004.c | ✅ ported |
+| seg005.c | ✅ ported |
+| seg006.c | ✅ ported |
+| seg007.c | ✅ ported |
+| seg008.c | ⬜ remaining (2068 lines, 27 ifdefs) |
+| seg000.c | ⬜ remaining (2513 lines, 49 ifdefs) |
+| seg009.c | ⬜ remaining (4248 lines, 66 ifdefs) |
+
+Recommended porting order: **seg008 → seg000 → seg009**. seg008 is the most mechanical; seg009 is the most complex (SDL audio, POSIX dir listing, decompression).
+
+When a file is ported: add it as a `pub mod` in `rust/src/lib.rs`, remove it from `build.rs` (the `sources` array), and run the harness to confirm parity.
+
+**Do NOT remove from `src/CMakeLists.txt` or `src/Makefile`.** Those control the pure-C oracle binary used for `--regen`. They must stay complete so the oracle can always be rebuilt.
 
 ### Module boilerplate
 
@@ -226,6 +245,117 @@ bindgen prefixes each enum constant with the enum's type name. The pattern is `{
 
 Cast to the target field type at use: `tiles_tiles_20_wall as u8`, `seqids_seq_7_fall as c_short`, `directions_dir_FF_left as i8`, `frameids_frame_9_run as u8`.
 
+### File-scope variables (not in `data.h`)
+
+Some C files define variables at file scope that are **not** in `data.h` — they are private to that translation unit. These do NOT appear in `bindings.rs`. They become `static mut` in the Rust module.
+
+Confirm a variable is file-local by checking it's absent from bindings.rs:
+```sh
+grep 'pub static mut VARNAME' target/debug/build/sdlpop-*/out/bindings.rs
+```
+
+Known file-local variables by file:
+
+**seg007.c** → `curmob_index: u16`, `curr_tile_temp: u16`
+
+**seg008.c** → `drawn_row: c_short`, `draw_bottom_y: c_short`, `draw_main_y: c_short`, `drawn_col: c_short`, `tile_left: u8`, `modifier_left: u8`, `gate_top_y: u16`, `gate_openness: u16`, `gate_bottom_y: u16`
+
+**seg000.c** → `first_start: u16` (= 1), `setjmp_buf: jmp_buf`
+
+In Rust these become `static mut` at module scope:
+```rust
+static mut drawn_row: c_short = 0;
+static mut ptr_add_table: add_table_fn = add_backtable;
+```
+
+### Function pointer globals
+
+`seg008.c` has one function pointer global:
+```c
+// data:27E0
+add_table_type ptr_add_table = add_backtable;  // add_table_type = int(*)(short,int,sbyte,sbyte,int,int,byte)
+```
+
+bindgen emits `add_table_type` as `Option<unsafe extern "C" fn(...)>`, but for the static we need a plain fn pointer (non-optional). Define a type alias:
+```rust
+type add_table_fn = unsafe extern "C" fn(c_short, c_int, i8, i8, c_int, c_int, u8) -> c_int;
+static mut ptr_add_table: add_table_fn = add_backtable;
+```
+
+Calling it: `ptr_add_table(...)` directly (not through `Option::unwrap`).
+
+### SDL functions not in bindings.rs
+
+bindgen only processes `src/common.h`. SDL functions that `seg008.c` and `seg009.c` call directly must be declared in a module-level `extern "C"` block. Confirmed needed for seg008.rs:
+
+```rust
+extern "C" {
+    fn SDL_ConvertSurface(src: *mut SDL_Surface, fmt: *mut SDL_PixelFormat, flags: u32) -> *mut SDL_Surface;
+    fn SDL_SetSurfacePalette(surface: *mut SDL_Surface, palette: *mut SDL_Palette) -> c_int;
+    fn SDL_SetSurfaceBlendMode(surface: *mut SDL_Surface, blendMode: c_int) -> c_int;
+    fn SDL_SetColorKey(surface: *mut SDL_Surface, flag: c_int, key: u32) -> c_int;
+    fn SDL_SetSurfaceAlphaMod(surface: *mut SDL_Surface, alpha: u8) -> c_int;
+    fn SDL_UpperBlit(src: *mut SDL_Surface, srcrect: *const SDL_Rect, dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int;
+    fn SDL_FreeSurface(surface: *mut SDL_Surface);
+    fn malloc(size: usize) -> *mut c_void;
+    fn free(ptr: *mut c_void);
+    fn memset(s: *mut c_void, c: c_int, n: usize) -> *mut c_void;
+}
+```
+
+For seg009.rs, add POSIX functions too: `opendir`, `readdir`, `closedir`, `scandir`, `alphasort`.
+
+### `setjmp`/`longjmp` (seg000.c)
+
+`seg000.c` uses `setjmp`/`longjmp` for its main restart loop (`start_game` → `process`/`main_loop`). The Rust equivalent declares them in an `extern "C"` block:
+
+```rust
+// seg000.c has file-local:  jmp_buf setjmp_buf;
+// Prefer: use libc::{setjmp, longjmp, jmp_buf}; if libc is in Cargo.toml (check with: grep '^libc' Cargo.toml)
+// Fallback: [u8; 200] covers jmp_buf on x86-64 Linux (verify: grep '_JBLEN' /usr/include/x86_64-linux-gnu/bits/setjmp.h)
+static mut setjmp_buf: [u8; 200] = [0u8; 200];
+
+extern "C" {
+    fn setjmp(env: *mut u8) -> c_int;
+    fn longjmp(env: *mut u8, val: c_int) -> !;
+}
+
+// Usage in port:
+unsafe fn start_game() {
+    if first_start != 0 {
+        first_start = 0;
+        setjmp(setjmp_buf.as_mut_ptr());  // sets the restart point
+    } else {
+        longjmp(setjmp_buf.as_mut_ptr(), -1);  // jumps back to restart point
+    }
+    // ... rest of function
+}
+```
+
+Alternatively, use `libc::setjmp`/`libc::longjmp` if `libc` is a dependency (check `Cargo.toml`).
+
+### `goto` within a match arm (seg008.c)
+
+`seg008.c:1221` has `goto label_wall_continued` — a forward jump that skips past some wall-drawing logic. Pattern: restructure with a labeled block that `break`s out:
+
+```rust
+// C:
+// if (condition) { /* wall setup */ }
+// label_wall_continued:
+// /* common tail */
+
+// Rust:
+'wall_block: {
+    if condition {
+        /* wall setup */
+        break 'wall_block;
+    }
+    /* common tail */
+}
+```
+
+For the `goto shadow` at line 1584 (backward jump to call `draw_shadow_overlay`): use a flag variable or restructure as a function call.
+
 ### Recurring patterns
 
 **Incomplete extern arrays** — bindgen emits `[T; 0]` for `extern const T[]`. Access via raw pointer. `lib.rs` provides `x_bump_at(idx)` and `y_land_at(idx)`; `seg006.rs` provides `dir_front_at`, `dir_behind_at`, `tbl_line_at`, `y_clip_at`. For a new one:
@@ -323,3 +453,131 @@ scripts/run_harness.sh             # harness must be green
 ```
 
 **Level tiles** are the one thing the trace doesn't capture. If the function reads tiles, use `--dump-tick` on both golden and test traces at the divergent tick to compare `curr_tilepos`, `tile_col`, `tile_row`, then look up the tile values in the level data (`level.fg` / `level.bg`) by hand or by adding a temporary print to the C binary.
+
+---
+
+## Remaining files — per-file porting guide
+
+### seg008.c — Room renderer (2068 lines, 27 ifdefs)
+
+**Porting order: port this first** — no setjmp, no audio, no POSIX, pure rendering logic.
+
+**Start of module:**
+```rust
+use std::os::raw::{c_int, c_short, c_void};
+use super::*;
+
+extern "C" {
+    fn SDL_ConvertSurface(src: *mut SDL_Surface, fmt: *mut SDL_PixelFormat, flags: u32) -> *mut SDL_Surface;
+    fn SDL_SetSurfacePalette(surface: *mut SDL_Surface, palette: *mut SDL_Palette) -> c_int;
+    fn SDL_SetSurfaceBlendMode(surface: *mut SDL_Surface, blendMode: c_int) -> c_int;
+    fn SDL_SetColorKey(surface: *mut SDL_Surface, flag: c_int, key: u32) -> c_int;
+    fn SDL_SetSurfaceAlphaMod(surface: *mut SDL_Surface, alpha: u8) -> c_int;
+    fn SDL_UpperBlit(src: *mut SDL_Surface, srcrect: *const SDL_Rect, dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int;
+    fn SDL_FreeSurface(surface: *mut SDL_Surface);
+    fn malloc(size: usize) -> *mut c_void;
+    fn free(ptr: *mut c_void);
+    fn memset(s: *mut c_void, c: c_int, n: usize) -> *mut c_void;
+}
+
+// File-local statics
+static mut drawn_row: c_short = 0;
+static mut draw_bottom_y: c_short = 0;
+static mut draw_main_y: c_short = 0;
+static mut drawn_col: c_short = 0;
+static mut tile_left: u8 = 0;
+static mut modifier_left: u8 = 0;
+static mut gate_top_y: u16 = 0;
+static mut gate_openness: u16 = 0;
+static mut gate_bottom_y: u16 = 0;
+
+type add_table_fn = unsafe extern "C" fn(c_short, c_int, i8, i8, c_int, c_int, u8) -> c_int;
+static mut ptr_add_table: add_table_fn = add_backtable;
+```
+
+**Key patterns to watch:**
+- `tile_table[31]` — 31-entry `piece` struct array. Mechanical, but use a Python script or copy from old branch (`worktree-agent-a99a6259c842dc9b8:rust/src/seg008.rs`) rather than hand-transcribing.
+- `col_xh[10]`, `doortop_fram_top[4]`, `door_fram_top[8]`, `blueline_fram1[4]`, `spikes_fram_right[10]` etc — multiple small static tables.
+- `goto label_wall_continued` (line ~1221) — forward jump; use labeled block + `break`.
+- `goto shadow` (line ~1584) — backward jump; use a bool flag or restructure as function call.
+- `ptr_add_table(...)` — call the function pointer directly (no `Option` unwrap).
+- `LPOS` and `RPOS` are `static const word` inside a function body — declare as `static` inside the Rust function.
+- `add_table_type` in bindings.rs is `Option<fn>`, but the static needs a plain `fn` type alias.
+
+**A working port of seg008 already exists** on branch `worktree-agent-a99a6259c842dc9b8`. Use it as reference: `git show worktree-agent-a99a6259c842dc9b8:rust/src/seg008.rs`
+
+---
+
+### seg000.c — Main loop (2513 lines, 49 ifdefs)
+
+**Port second.** Main challenge is the `setjmp`/`longjmp` restart loop.
+
+**Key file-local statics:**
+```rust
+static mut first_start: u16 = 1;
+static mut setjmp_buf: [u8; 200] = [0u8; 200];  // platform-sized; 200 bytes covers x86-64 Linux
+```
+
+**`setjmp`/`longjmp` declarations:**
+```rust
+extern "C" {
+    fn setjmp(env: *mut u8) -> c_int;
+    fn longjmp(env: *mut u8, val: c_int) -> !;
+}
+```
+
+**`process()` macro (line ~258):** The `#define process(x) ok = ok && process_func(&(x), sizeof(x))` macro in `quick_process` expands to calling `process_func` with a pointer and size for each game field. In Rust, expand each call explicitly:
+```rust
+unsafe fn quick_process(process_func: Option<unsafe extern "C" fn(*mut c_void, usize) -> bool>) -> c_int {
+    let mut ok = true;
+    macro_rules! process {
+        ($x:expr) => { ok = ok && process_func.unwrap()(&mut $x as *mut _ as *mut c_void, std::mem::size_of_val(&$x)); }
+    }
+    process!(level);
+    process!(checkpoint);
+    // ... etc
+    ok as c_int
+}
+```
+
+**SDL timer callback** — `SDL_AddTimer(interval, callback, userdata)` takes a callback `fn(Uint32, *mut c_void) -> Uint32`. Declare in the `extern "C"` block.
+
+**`goto error` pattern** (lines ~2153-2191) — appears in quicksave read/write functions. Use `'block: { ... break 'block; ... return Err; }` or a nested function/closure.
+
+**ifdefs to always enable:** `USE_REPLAY`, `USE_QUICKSAVE`, `USE_COPYPROT`, `USE_FADE`, `USE_FLASH`, `USE_MENU`, `USE_LIGHTING`, `USE_SCREENSHOT`, `USE_SUPER_HIGH_JUMP`, `USE_TELEPORTS`.
+
+---
+
+### seg009.c — Platform layer (4248 lines, 66 ifdefs)
+
+**Port last — most complex.** Full SDL2 init/teardown, audio, POSIX filesystem, decompression.
+
+**File-local functions** (static in C — they don't appear in bindings.rs):
+```rust
+unsafe fn open_dat_from_root_or_data_dir(filename: *const c_char) -> *mut FILE { ... }
+unsafe fn load_font_character_offsets(data: *mut rawfont_type) { ... }
+```
+
+**Audio callback:**
+```rust
+// Declared as SDL callback: void audio_callback(void* userdata, Uint8* stream, int len)
+pub unsafe extern "C" fn audio_callback(userdata: *mut c_void, stream: *mut u8, len: c_int) { ... }
+```
+
+**`hc_font_data`** — large embedded byte array (~150 lines of hex in C). Use a Python script to extract: `python3 -c "import re,sys; ..."`  and emit as a Rust `static` array.
+
+**POSIX dir listing** — `opendir`/`readdir`/`closedir`/`scandir`/`alphasort`:
+```rust
+extern "C" {
+    fn opendir(name: *const c_char) -> *mut libc::DIR;
+    fn readdir(dirp: *mut libc::DIR) -> *mut libc::dirent;
+    fn closedir(dirp: *mut libc::DIR) -> c_int;
+    // or use libc crate if available
+}
+```
+
+**Decompression routines** — pure pointer arithmetic; port mechanically. No external dependencies.
+
+**ifdefs to always enable:** `USE_MIDI`, `USE_REPLAY`, `USE_QUICKSAVE`, `USE_SCREENSHOT`, `USE_LIGHTING`, `USE_MENU`, `USE_MOD_SUPPORT`, `USE_COPYPROT`, all `SDL_*` platform blocks.
+
+**Harness note:** seg009 provides the main SDL init/teardown. Divergences here will manifest as crashes or missed trace output, not field divergences. After porting, run with a replay and verify the trace is written correctly before comparing fields.

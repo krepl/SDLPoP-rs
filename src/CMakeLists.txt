@@ -69,6 +69,7 @@ set(SOURCE_FILES
         seg005.c
         seg006.c
         seg007.c
+        seg008.c
         seg009.c
         seqtbl.c
         options.c
