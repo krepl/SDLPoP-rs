@@ -10,8 +10,6 @@ use super::*;
 // ---------------------------------------------------------------------------
 // SDL / libc externs (not in bindings.rs)
 // ---------------------------------------------------------------------------
-enum FILE {}
-
 extern "C" {
     fn setjmp(env: *mut u8) -> c_int;
     fn longjmp(env: *mut u8, val: c_int) -> !;
@@ -32,14 +30,6 @@ extern "C" {
         ncolors: c_int,
     ) -> c_int;
 
-    fn fopen(path: *const c_char, mode: *const c_char) -> *mut FILE;
-    fn fread(ptr: *mut c_void, size: usize, count: usize, stream: *mut FILE) -> usize;
-    fn fwrite(ptr: *const c_void, size: usize, count: usize, stream: *mut FILE) -> usize;
-    fn fclose(stream: *mut FILE) -> c_int;
-    fn fseek(stream: *mut FILE, offset: c_long, whence: c_int) -> c_int;
-    fn remove(path: *const c_char) -> c_int;
-    fn perror(s: *const c_char);
-    fn getenv(name: *const c_char) -> *mut c_char;
     fn mkdir(path: *const c_char, mode: u32) -> c_int;
     fn strcmp(a: *const c_char, b: *const c_char) -> c_int;
     fn strrchr(s: *const c_char, c: c_int) -> *mut c_char;

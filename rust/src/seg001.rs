@@ -11,15 +11,6 @@ extern "C" {
     fn SDL_FreeSurface(surface: *mut SDL_Surface);
 }
 
-// Opaque FILE type for libc I/O.
-enum FILE {}
-extern "C" {
-    fn fopen(path: *const c_char, mode: *const c_char) -> *mut FILE;
-    fn fwrite(ptr: *const c_void, size: usize, count: usize, stream: *mut FILE) -> usize;
-    fn fread(ptr: *mut c_void, size: usize, count: usize, stream: *mut FILE) -> usize;
-    fn fclose(stream: *mut FILE) -> c_int;
-    fn perror(s: *const c_char);
-}
 
 // File-local state (declared as globals in seg001.c, not in data.c).
 static mut cutscene_wait_frames: c_short = 0;

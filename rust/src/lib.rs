@@ -5,6 +5,21 @@
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+// Shared libc functions used across multiple modules.
+// FILE comes from bindings.rs (pub type FILE = _IO_FILE).
+// Declared once here; modules bring them in via `use super::*`.
+use std::os::raw::{c_char, c_int, c_long, c_void};
+extern "C" {
+    pub fn fopen(path: *const c_char, mode: *const c_char) -> *mut FILE;
+    pub fn fread(ptr: *mut c_void, size: usize, count: usize, stream: *mut FILE) -> usize;
+    pub fn fwrite(ptr: *const c_void, size: usize, count: usize, stream: *mut FILE) -> usize;
+    pub fn fclose(stream: *mut FILE) -> c_int;
+    pub fn fseek(stream: *mut FILE, offset: c_long, whence: c_int) -> c_int;
+    pub fn remove(path: *const c_char) -> c_int;
+    pub fn perror(s: *const c_char);
+    pub fn getenv(name: *const c_char) -> *mut c_char;
+}
+
 // x_bump and y_land are extern const incomplete arrays; bindgen emits [T; 0].
 // Index via raw pointer to avoid the zero-length slice panic.
 pub(crate) unsafe fn x_bump_at(idx: usize) -> u8 {
