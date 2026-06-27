@@ -37,7 +37,7 @@ fn main() {
         "src/data.c",
         // seg000.c ported to Rust
         // seg008.c ported to Rust
-        "src/seg009.c",
+        // seg009.c ported to Rust
         "src/seqtbl.c",
         "src/options.c",
         "src/replay.c",
