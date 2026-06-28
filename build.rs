@@ -54,10 +54,8 @@ fn main() {
         // lighting.c ported to Rust
         // screenshot.c ported to Rust
         "src/menu.c",
-        "src/midi.c",
-        // opl3.c ported to Rust
         // midi.c ported to Rust
-        "src/opl3.c",
+        // opl3.c ported to Rust
         "src/stb_vorbis.c",
         // state_dump.c ported to Rust
     ];
