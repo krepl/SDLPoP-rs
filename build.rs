@@ -21,6 +21,7 @@ fn main() {
     println!("cargo:rerun-if-changed=rust/src/state_dump.rs");
     println!("cargo:rerun-if-changed=rust/src/options.rs");
     println!("cargo:rerun-if-changed=rust/src/screenshot.rs");
+    println!("cargo:rerun-if-changed=rust/src/replay.rs");
 
     // Probe SDL2 (auto-emits cargo:rustc-link-* directives)
     let sdl2 = pkg_config::Config::new()
@@ -46,12 +47,9 @@ fn main() {
         // seg009.c ported to Rust
         // seqtbl.c ported to Rust
         // options.c ported to Rust
-        "src/replay.c",
+        // replay.c ported to Rust
         // sdl_rw_wrappers.c ported to Rust
         // lighting.c ported to Rust
-        "src/screenshot.c",
-        "src/sdl_rw_wrappers.c",
-        "src/lighting.c",
         // screenshot.c ported to Rust
         "src/menu.c",
         "src/midi.c",
