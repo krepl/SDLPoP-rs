@@ -60,6 +60,7 @@ pub mod seg009;
 pub mod sdl_rw_wrappers;
 pub mod lighting;
 pub mod state_dump;
+pub mod seqtbl;
 
 #[cfg(test)]
 #[allow(static_mut_refs)] // all C globals are static mut; reading them in tests is safe here
