@@ -38,7 +38,7 @@ fn main() {
         // seg000.c ported to Rust
         // seg008.c ported to Rust
         // seg009.c ported to Rust
-        "src/seqtbl.c",
+        // seqtbl.c ported to Rust
         "src/options.c",
         "src/replay.c",
         "src/sdl_rw_wrappers.c",
