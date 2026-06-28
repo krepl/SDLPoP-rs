@@ -101,7 +101,8 @@ NAMES_LIST(row_names, {"top", "middle", "bottom"});
 KEY_VALUE_LIST(direction_names, {{"left", dir_FF_left}, {"right", dir_0_right}});
 NAMES_LIST(entry_pose_names, {"turning", "falling", "running"});
 // 16 is higher than any level, so some options can be disabled by setting it to this value
-KEY_VALUE_LIST(never_is_16, {{"Never", 16}});
+// never_is_16_list is defined in sdl_rw_wrappers.c (and its Rust port); declared here.
+extern names_list_type never_is_16_list;
 
 #define INI_NO_VALID_NAME (-9999)
 
@@ -826,13 +827,7 @@ void load_mod_options() {
 	turn_custom_options_on_off(use_custom_options);
 }
 
-int process_rw_write(SDL_RWops* rw, void* data, size_t data_size) {
-	return (int)SDL_RWwrite(rw, data, data_size, 1);
-}
-
-int process_rw_read(SDL_RWops* rw, void* data, size_t data_size) {
-	return (int)SDL_RWread(rw, data, data_size, 1);
-	// if this returns 0, most likely the end of the stream has been reached
-}
+// process_rw_write / process_rw_read and never_is_16_list moved to
+// sdl_rw_wrappers.c (ported to Rust as rust/src/sdl_rw_wrappers.rs).
 
 
