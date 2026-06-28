@@ -1111,12 +1111,14 @@ pub unsafe extern "C" fn do_auto_moves(moves_ptr: *const auto_move_type) {
     if demo_time >= 0xFE { return; }
     demo_time += 1;
     let mut demoindex = demo_index as i16;
-    if (*moves_ptr.add(demoindex as usize)).time <= demo_time {
+    // moves_ptr may point into a packed struct (e.g. custom->shad_drink_move),
+    // which can be unaligned. Use read_unaligned to avoid misalignment panics.
+    if std::ptr::read_unaligned(moves_ptr.add(demoindex as usize)).time <= demo_time {
         demo_index += 1;
     } else {
         demoindex = demo_index as i16 - 1;
     }
-    let curr_move = (*moves_ptr.add(demoindex as usize)).move_;
+    let curr_move = std::ptr::read_unaligned(moves_ptr.add(demoindex as usize)).move_;
     match curr_move {
         -1 => {}
         0 => move_0_nothing(),

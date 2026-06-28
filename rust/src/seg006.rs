@@ -620,29 +620,37 @@ pub unsafe extern "C" fn find_room_of_tile() -> c_int {
         // FIX_CORNER_GRAB: check tile_row < 0 first
         if tile_row < 0 {
             tile_row += 3;
-            if curr_room != 0 {
+            if curr_room > 0 {
                 curr_room = level.roomlinks[(curr_room - 1) as usize].up as i16;
+            } else {
+                curr_room = 0;
             }
             continue;
         }
         if tile_col < 0 {
             tile_col += 10;
-            if curr_room != 0 {
+            if curr_room > 0 {
                 curr_room = level.roomlinks[(curr_room - 1) as usize].left as i16;
+            } else {
+                curr_room = 0;
             }
             continue;
         }
         if tile_col >= 10 {
             tile_col -= 10;
-            if curr_room != 0 {
+            if curr_room > 0 {
                 curr_room = level.roomlinks[(curr_room - 1) as usize].right as i16;
+            } else {
+                curr_room = 0;
             }
             continue;
         }
         if tile_row >= 3 {
             tile_row -= 3;
-            if curr_room != 0 {
+            if curr_room > 0 {
                 curr_room = level.roomlinks[(curr_room - 1) as usize].down as i16;
+            } else {
+                curr_room = 0;
             }
             continue;
         }

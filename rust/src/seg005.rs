@@ -930,7 +930,7 @@ pub unsafe extern "C" fn run_jump() {
         let xpos = char_dx_forward(4);
         let mut col = get_tile_div_mod_m7(xpos);
         for tiles_forward in 0..2 {
-            col += *core::ptr::addr_of!(dir_front).cast::<i8>().add((Char.direction as usize) + 1) as i32;
+            col += *core::ptr::addr_of!(dir_front).cast::<i8>().add((Char.direction as i8 as i32 + 1) as usize) as i32;
             get_tile(Char.room as c_int, col, Char.curr_row as c_int);
             if curr_tile2 == tiles_tiles_2_spike as u8 || tile_is_floor(curr_tile2 as c_int) == 0 {
                 let mut pos_adjustment =
