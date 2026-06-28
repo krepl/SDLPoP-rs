@@ -20,6 +20,7 @@ fn main() {
     println!("cargo:rerun-if-changed=rust/src/lighting.rs");
     println!("cargo:rerun-if-changed=rust/src/state_dump.rs");
     println!("cargo:rerun-if-changed=rust/src/options.rs");
+    println!("cargo:rerun-if-changed=rust/src/screenshot.rs");
 
     // Probe SDL2 (auto-emits cargo:rustc-link-* directives)
     let sdl2 = pkg_config::Config::new()
@@ -49,6 +50,9 @@ fn main() {
         // sdl_rw_wrappers.c ported to Rust
         // lighting.c ported to Rust
         "src/screenshot.c",
+        "src/sdl_rw_wrappers.c",
+        "src/lighting.c",
+        // screenshot.c ported to Rust
         "src/menu.c",
         "src/midi.c",
         "src/opl3.c",
