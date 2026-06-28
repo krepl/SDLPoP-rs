@@ -780,26 +780,23 @@ pub unsafe extern "C" fn draw_tile_base() {
 // seg008:0B2B
 #[no_mangle]
 pub unsafe extern "C" fn draw_tile_anim() {
-    let color;
-    let pot_size;
+    let mut color;
+    let mut pot_size;
     match curr_tile {
         t if t == tiles_tiles_2_spike as u8 => {
             ptr_add_table(chtabs_id_chtab_6_environment as c_short, spikes_fram_left[get_spike_frame(curr_modifier) as usize] as c_int, draw_xh as i8, 0, draw_main_y as c_int - 2, blitters_blitters_10h_transp as c_int, 0);
         }
         t if t == tiles_tiles_10_potion as u8 => {
+            // C: word color=12, pot_size=0; switch fallthrough: 3|4->color=10, then 2: pot_size=1
+            color = 12;
+            pot_size = 0u32;
             let ptype = (curr_modifier & 0xF8) >> 3;
             match ptype {
                 0 => return,
-                5 | 6 => { color = 9; pot_size = 0u32; }
-                3 | 4 => {
-                    color = 10i32;
-                    pot_size = 1u32;
-                    // fallthrough to add bubble
-                    add_backtable(chtabs_id_chtab_1_flameswordpotion as c_short, 23, draw_xh as i8 + 3, 1, draw_main_y as c_int - (pot_size as c_int * 4) - 14, blitters_blitters_40h_mono as c_int, 0);
-                    add_foretable(chtabs_id_chtab_1_flameswordpotion as c_short, potion_fram_bubb[(curr_modifier & 0x7) as usize] as c_int, draw_xh as i8 + 3, 1, draw_main_y as c_int - (pot_size as c_int * 4) - 14, color + blitters_blitters_40h_mono as c_int, 0);
-                    return;
-                }
-                _ => { color = 12; pot_size = 0u32; } // red
+                5 | 6 => { color = 9; }
+                3 | 4 => { color = 10; pot_size = 1; }
+                2 => { pot_size = 1; }
+                _ => {}
             }
             add_backtable(chtabs_id_chtab_1_flameswordpotion as c_short, 23, draw_xh as i8 + 3, 1, draw_main_y as c_int - (pot_size as c_int * 4) - 14, blitters_blitters_40h_mono as c_int, 0);
             add_foretable(chtabs_id_chtab_1_flameswordpotion as c_short, potion_fram_bubb[(curr_modifier & 0x7) as usize] as c_int, draw_xh as i8 + 3, 1, draw_main_y as c_int - (pot_size as c_int * 4) - 14, color + blitters_blitters_40h_mono as c_int, 0);

@@ -10,9 +10,6 @@
 # Golden traces are committed under traces/.
 # They were generated from the all-C (cmake) build and are the reference oracle.
 #
-# Known rendering divergence: foretable/backtable differ in seg008.rs for some
-# scenes (potion bubble y-offset off by 4px). These fields are ignored in all
-# comparisons until the rendering bug is fixed. All gameplay fields match.
 
 set -euo pipefail
 
@@ -24,8 +21,7 @@ BINARY="$ROOT/target/debug/prince"
 C_BINARY="$ROOT/prince"
 
 COMPARE=(python3 "$ROOT/scripts/compare_traces.py")
-# Fields excluded from comparison: known rendering divergence in seg008.rs
-IGNORE_FIELDS=(--ignore foretable --ignore backtable)
+IGNORE_FIELDS=()
 
 # Registered replay/golden-trace pairs: "replay_path|golden_trace_path"
 PAIRS=(
