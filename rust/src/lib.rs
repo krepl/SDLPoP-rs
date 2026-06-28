@@ -66,6 +66,7 @@ pub mod screenshot;
 pub mod replay;
 pub mod opl3;
 pub mod midi;
+pub mod menu;
 
 #[cfg(test)]
 #[allow(static_mut_refs)] // all C globals are static mut; reading them in tests is safe here

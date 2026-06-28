@@ -53,7 +53,7 @@ fn main() {
         // sdl_rw_wrappers.c ported to Rust
         // lighting.c ported to Rust
         // screenshot.c ported to Rust
-        "src/menu.c",
+        // menu.c ported to Rust
         // midi.c ported to Rust
         // opl3.c ported to Rust
         "src/stb_vorbis.c",
