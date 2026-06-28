@@ -15,6 +15,7 @@ fn main() {
     println!("cargo:rerun-if-changed=rust/src/seg001.rs");
     println!("cargo:rerun-if-changed=rust/src/seg008.rs");
     println!("cargo:rerun-if-changed=rust/src/seg000.rs");
+    println!("cargo:rerun-if-changed=rust/src/opl3.rs");
 
     // Probe SDL2 (auto-emits cargo:rustc-link-* directives)
     let sdl2 = pkg_config::Config::new()
@@ -46,7 +47,7 @@ fn main() {
         "src/screenshot.c",
         "src/menu.c",
         "src/midi.c",
-        "src/opl3.c",
+        // opl3.c ported to Rust
         "src/stb_vorbis.c",
         "src/state_dump.c",
     ];
