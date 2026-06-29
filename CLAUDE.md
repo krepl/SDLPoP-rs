@@ -127,8 +127,11 @@ The game is being incrementally re-implemented in Rust. The Rust crate lives in 
 
 ### Porting status (branch: master)
 
+**Port is complete.** All gameplay C files are ported to Rust. Only `data.c` (global definitions via `#define BODY` trick — no clean Rust equivalent) and `stb_vorbis.c` (third-party Vorbis decoder — not worth hand-porting) remain as C and are intentionally permanent.
+
 | File | Status |
 |------|--------|
+| seg000.c | ✅ ported |
 | seg001.c | ✅ ported |
 | seg002.c | ✅ ported |
 | seg003.c | ✅ ported |
@@ -136,11 +139,20 @@ The game is being incrementally re-implemented in Rust. The Rust crate lives in 
 | seg005.c | ✅ ported |
 | seg006.c | ✅ ported |
 | seg007.c | ✅ ported |
-| seg008.c | ⬜ remaining (2068 lines, 27 ifdefs) |
-| seg000.c | ⬜ remaining (2513 lines, 49 ifdefs) |
-| seg009.c | ⬜ remaining (4248 lines, 66 ifdefs) |
-
-Recommended porting order: **seg008 → seg000 → seg009**. seg008 is the most mechanical; seg009 is the most complex (SDL audio, POSIX dir listing, decompression).
+| seg008.c | ✅ ported |
+| seg009.c | ✅ ported |
+| seqtbl.c | ✅ ported |
+| options.c | ✅ ported |
+| replay.c | ✅ ported |
+| sdl_rw_wrappers.c | ✅ ported |
+| lighting.c | ✅ ported |
+| screenshot.c | ✅ ported |
+| menu.c | ✅ ported |
+| midi.c | ✅ ported |
+| opl3.c | ✅ ported |
+| state_dump.c | ✅ ported |
+| data.c | 🔒 permanent C (global data via `#define BODY`) |
+| stb_vorbis.c | 🔒 permanent C (third-party library) |
 
 When a file is ported: add it as a `pub mod` in `rust/src/lib.rs`, remove it from `build.rs` (the `sources` array), and run the harness to confirm parity.
 
@@ -457,6 +469,8 @@ scripts/run_harness.sh             # harness must be green
 ---
 
 ## Remaining files — per-file porting guide
+
+*Port is complete. This section is retained as historical reference.*
 
 ### seg008.c — Room renderer (2068 lines, 27 ifdefs)
 
