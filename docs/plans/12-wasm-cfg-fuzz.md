@@ -522,12 +522,11 @@ Confirmed covered by `lvl1_complete`:
 - [x] Potion — small red, both used and drunk-at-full-HP
 - [x] Spikes — walked through, and hung above
 - [x] Loose floor tiles (walked over one, one fell on Kid from the ceiling)
+- [x] Level exit door → level 2 transition (confirmed: player exited through it)
 
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
 for `curr_room`/tile changes) before recording a duplicate:
-- [ ] Level exit door → level 2 transition (the "complete" in the filename implies this,
-      but wasn't explicitly confirmed — verify or re-record if not present)
 - [ ] Gate + button
 - [ ] Chomper
 - [ ] Balcony ledge
