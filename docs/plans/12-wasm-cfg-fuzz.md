@@ -467,12 +467,55 @@ done
 
 ---
 
+## Phase 5 — Audio port verification (deferred, low priority)
+
+`opl3.rs` and `midi.rs` were ported but are **not exercised by the trace harness** — the
+state trace captures game state, which audio never affects. This is a real coverage gap,
+but a deliberately low-priority one: **audio is a pure sink** (game state → audio, never the
+reverse), so a synthesis divergence cannot corrupt gameplay — it can only make the game
+sound subtly wrong, which is audible. Finish gameplay coverage (Phase 1.5) first.
+
+**Do NOT verify via a fake/virtual audio device.** Routing through a virtual ALSA/PulseAudio
+sink reintroduces device-driven callback timing, which is nondeterministic tick-to-tick —
+traces would differ between runs for reasons unrelated to correctness. Instead, drive the
+synth deterministically off the game tick. The Nuked OPL3 core is **integer/fixed-point**,
+so C and Rust output should match sample-for-sample (no float tolerance needed):
+
+- **Preferred: synth-core unit tests.** Feed a fixed sequence of OPL3 register writes,
+  render N samples, assert the C and Rust output arrays are byte-identical. No SDL, no
+  timing, isolates the emulator.
+- **Alternative: per-tick sample checksum in the trace.** Render a fixed sample count per
+  game tick and dump a hash as an extra trace field — reuses `compare_traces.py`; a
+  divergence surfaces at the exact tick.
+
+---
+
 ## Order of work
 
-1. **Phase 1** (cfg gates) — annotation pass, no new features, harness must still pass
-2. **Phase 3** (game-beating) and **Phase 2** (WASM) — independent after Phase 1 produces
+1. **Phase 1** (cfg gates) ✅ — annotation pass; harness passes on all replays
+2. **Phase 1.5** (replay coverage) — in progress; lvl1 completion done (see below)
+3. **Phase 3** (game-beating) and **Phase 2** (WASM) — independent after Phase 1 produces
    a headless build; work in parallel
-3. **Phase 4** (CI fuzzing) — start as soon as Phase 1 is done; doesn't need WASM
+4. **Phase 4** (CI fuzzing) — start as soon as Phase 1 is done; doesn't need WASM
+5. **Phase 5** (audio port verification) — deferred, low priority; after Phase 1.5
+
+### Phase 1.5 — current scope
+
+**Done:** `lvl1_complete.p1r` — a full level 1 playthrough covering sword pickup, two
+guard kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above),
+and loose floors. Committed with its golden trace; all 11 harness replays pass.
+
+Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
+primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
+never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
+
+Mechanics still needing future replays: skeleton (lvl4), feather fall (lvl4), poison
+potion, shadow unification (lvl6), mouse (lvl7), vizier/win (lvl13), time-limit expiry.
+
+**Harness hardening done alongside** (see `scripts/run_harness.sh`): `SDL_AUDIODRIVER=dummy`
+on all invocations (SDL's ALSA fallback blocks ~30s when it can't reach an audio server —
+a headless/CI/reduced-env hang, *not* a port bug); skip-missing-replay guard; `timeout 120`
+backstop; `ln -sfn` to stop stray self-links.
 
 ---
 
