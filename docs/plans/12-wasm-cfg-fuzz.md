@@ -501,21 +501,50 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 ### Phase 1.5 — current scope
 
-**Done:** `lvl1_complete.p1r` — a full level 1 playthrough covering sword pickup, two
-guard kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above),
-and loose floors. Committed with its golden trace; all 11 harness replays pass.
+**Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
+kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
+loose floors. Committed with its golden trace; all 11 harness replays pass.
 
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
 never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
 
-Mechanics still needing future replays: skeleton (lvl4), feather fall (lvl4), poison
-potion, shadow unification (lvl6), mouse (lvl7), vizier/win (lvl13), time-limit expiry.
-
 **Harness hardening done alongside** (see `scripts/run_harness.sh`): `SDL_AUDIODRIVER=dummy`
 on all invocations (SDL's ALSA fallback blocks ~30s when it can't reach an audio server —
-a headless/CI/reduced-env hang, *not* a port bug); skip-missing-replay guard; `timeout 120`
+a headless/CI/reduced-env hang, *not* a port bug); skip-missing-replay guard; `timeout 60`
 backstop; `ln -sfn` to stop stray self-links.
+
+### Coverage checklist — pick up here
+
+Confirmed covered by `lvl1_complete`:
+- [x] Sword pickup
+- [x] Guard combat / kill (x2)
+- [x] Potion — small red, both used and drunk-at-full-HP
+- [x] Spikes — walked through, and hung above
+- [x] Loose floor tiles (walked over one, one fell on Kid from the ceiling)
+
+**Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
+`python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
+for `curr_room`/tile changes) before recording a duplicate:
+- [ ] Level exit door → level 2 transition (the "complete" in the filename implies this,
+      but wasn't explicitly confirmed — verify or re-record if not present)
+- [ ] Gate + button
+- [ ] Chomper
+- [ ] Balcony ledge
+
+Not yet recorded — next replays to make, roughly in priority order:
+- [ ] **Lvl 4** — skeleton guard (immune to sword, must be pit-pushed)
+- [ ] **Lvl 4** — feather fall potion (confirm slow descent)
+- [ ] Poison potion (HP → 1, or death)
+- [ ] **Lvl 6** — shadow unification (walk into shadow; sets `united_with_shadow`,
+      persists and affects guard init on later levels)
+- [ ] **Lvl 7** — mouse trigger (opens gates on lvl12)
+- [ ] **Lvl 13** — vizier (Jaffar) sword fight + princess/win sequence
+- [ ] Time-limit expiry (`rem_min` reaches 0 → death)
+- [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
+      save → kill → relaunch with `--load` → compare state)
+- [ ] Long-term save (Ctrl+G, `PRINCE.SAV`) — low priority
+- [ ] Hall of fame write on game completion — low priority
 
 ---
 
