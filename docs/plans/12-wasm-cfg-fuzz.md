@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 13 harness replays pass.
+loose floors. Committed with its golden trace; all 14 harness replays pass.
 
 Also recorded `lvl4_mirror.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -519,6 +519,11 @@ to negate with overflow" — the C source computes `ABS((sbyte)ypos)`, which pro
 in `i8`. Fixed by widening to `i32` first: `(ypos as i8 as i32).abs()`. Added a regression
 test (`draw_mob_room_b_abs_does_not_panic_on_i8_min`). Harness now passes with no
 divergence (2327 frames); all 13 replays green.
+
+Also recorded `lvl7_feather.p1r`: level 7 playthrough, drank the feather-fall potion and
+fell from a height. Confirmed via trace scan: `is_feather_fall` goes nonzero at tick 2702
+(peak value 224), so the slow-descent state is genuinely exercised. Committed with its
+golden trace, no divergence (3011 frames); all 14 replays green.
 
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
@@ -545,6 +550,9 @@ Confirmed covered by `lvl4_mirror`:
 Confirmed covered by `lvl3_skeleton`:
 - [x] Skeleton guard (immune to sword, pit-pushed) — also caught a real `draw_mob` panic bug
 
+Confirmed covered by `lvl7_feather`:
+- [x] Feather fall potion — drunk, confirmed via `is_feather_fall` going nonzero in trace
+
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
 for `curr_room`/tile changes) before recording a duplicate:
@@ -553,11 +561,15 @@ for `curr_room`/tile changes) before recording a duplicate:
 - [ ] Balcony ledge
 
 Not yet recorded — next replays to make, roughly in priority order:
-- [ ] Feather fall potion (confirm slow descent) — level TBD, not level 4 (that's mirror)
+- [ ] **Lvl 8, room 16** — mouse event (`mouse_level=8`/`mouse_room=16` in `data.h`).
+      NOT player-triggered — fires automatically ~12.5s (`mouse_delay=150` ticks) after
+      the level door opens while standing in that room; just wait it out. Correction:
+      an earlier pass of this checklist said "level 7, opens gates on lvl12" — that was
+      wrong/unverified; per `seg003.c:530` (`do_mouse`) there's no gate-opening tie-in
+      visible in the code, just a scripted mouse scurrying across the room.
 - [ ] Poison potion (HP → 1, or death)
 - [ ] **Lvl 6** — shadow unification (walk into shadow; sets `united_with_shadow`,
       persists and affects guard init on later levels)
-- [ ] **Lvl 7** — mouse trigger (opens gates on lvl12)
 - [ ] **Lvl 13** — vizier (Jaffar) sword fight + princess/win sequence
 - [ ] Time-limit expiry (`rem_min` reaches 0 → death)
 - [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
