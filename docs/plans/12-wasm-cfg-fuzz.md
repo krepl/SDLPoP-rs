@@ -503,13 +503,22 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 12 harness replays pass.
+loose floors. Committed with its golden trace; all 13 harness replays pass.
 
 Also recorded `lvl4_mirror.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
 divergence (4990 frames). Note: level 4's mechanic is the **mirror**, not a skeleton
 guard or feather-fall potion — those were mislabeled in an earlier pass of this checklist
 (skeleton guard is actually level 3: `skeleton_level = 3` default in `data.h`).
+
+Also recorded `lvl3_skeleton.p1r`: level 3 playthrough, pushed the skeleton guard into a
+pit. **Found and fixed a real port bug**: `draw_mob` (`seg007.rs`) panicked with "attempt
+to negate with overflow" — the C source computes `ABS((sbyte)ypos)`, which promotes the
+`sbyte` to `int` before negating (so `-128` safely becomes `128`), but the Rust port did
+`(ypos as i8).abs()`, which panics on `i8::MIN` since the negated result doesn't fit back
+in `i8`. Fixed by widening to `i32` first: `(ypos as i8 as i32).abs()`. Added a regression
+test (`draw_mob_room_b_abs_does_not_panic_on_i8_min`). Harness now passes with no
+divergence (2327 frames); all 13 replays green.
 
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
@@ -533,6 +542,9 @@ Confirmed covered by `lvl1_complete`:
 Confirmed covered by `lvl4_mirror`:
 - [x] Mirror / mirror-image encounter (jumped through, HP dropped to 1)
 
+Confirmed covered by `lvl3_skeleton`:
+- [x] Skeleton guard (immune to sword, pit-pushed) — also caught a real `draw_mob` panic bug
+
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
 for `curr_room`/tile changes) before recording a duplicate:
@@ -541,7 +553,6 @@ for `curr_room`/tile changes) before recording a duplicate:
 - [ ] Balcony ledge
 
 Not yet recorded — next replays to make, roughly in priority order:
-- [ ] **Lvl 3** — skeleton guard (immune to sword, must be pit-pushed)
 - [ ] Feather fall potion (confirm slow descent) — level TBD, not level 4 (that's mirror)
 - [ ] Poison potion (HP → 1, or death)
 - [ ] **Lvl 6** — shadow unification (walk into shadow; sets `united_with_shadow`,

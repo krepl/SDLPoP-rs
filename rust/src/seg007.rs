@@ -1145,7 +1145,7 @@ pub unsafe extern "C" fn draw_mob() {
     if curmob.room as u16 == drawn_room {
         if curmob.y as u16 >= 210 { return; }
     } else if curmob.room as u16 == room_B {
-        if (ypos as i8).abs() >= 18 { return; }
+        if (ypos as i8 as i32).abs() >= 18 { return; }
         curmob.y = curmob.y.wrapping_add(192);
         ypos = curmob.y as c_short;
     } else if curmob.room as u16 == room_A {
@@ -1384,5 +1384,28 @@ mod tests {
 
         assert_eq!(result_last, 0, "bit 7 set must return 0 (last entry → break loop)");
         assert_eq!(result_next, 1, "bit 7 clear must return 1 (more entries → continue)");
+    }
+
+    // Regression test: draw_mob's room_B branch computes ABS((sbyte)ypos) — in C this
+    // promotes the sbyte to int before negating, so -128 becomes 128 safely. The Rust
+    // port originally did `(ypos as i8).abs()`, which panics on i8::MIN (-128) since
+    // the negated result doesn't fit back in i8. Widen to i32 first, as C's integer
+    // promotion does. Found via the lvl3_skeleton.p1r harness replay, which crashed
+    // the Rust binary here (C oracle has no such issue due to promotion).
+    #[test]
+    fn draw_mob_room_b_abs_does_not_panic_on_i8_min() {
+        setup();
+        unsafe {
+            curmob.y = 128; // as sbyte, this is -128 (i8::MIN)
+            curmob.room = (room_B as u8).wrapping_add(1); // != drawn_room, != room_A
+            curmob.xh = 0;
+            curmob.speed = 0;
+            curmob.type_ = 0;
+            curmob.row = 0;
+            room_B = curmob.room as word;
+            drawn_room = (room_B + 1) as word; // ensure the first branch is skipped
+            room_A = (room_B + 2) as word; // ensure the room_A branch is skipped
+            draw_mob(); // must not panic
+        }
     }
 }

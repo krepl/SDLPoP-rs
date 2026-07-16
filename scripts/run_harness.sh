@@ -37,6 +37,7 @@ PAIRS=(
   "doc/replays-testcases/trick_153.p1r|traces/doc/trick_153.trace"
   "doc/replays-testcases/lvl1_complete.p1r|traces/doc/lvl1_complete.trace"
   "doc/replays-testcases/lvl4_mirror.p1r|traces/doc/lvl4_mirror.trace"
+  "doc/replays-testcases/lvl3_skeleton.p1r|traces/doc/lvl3_skeleton.trace"
 )
 
 mkdir -p "$ROOT/tmp" "$ROOT/traces/doc"
