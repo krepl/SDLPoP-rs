@@ -36,6 +36,7 @@ PAIRS=(
   "doc/replays-testcases/SNES-PC-set level 11.p1r|traces/doc/SNES-PC-set level 11.trace"
   "doc/replays-testcases/trick_153.p1r|traces/doc/trick_153.trace"
   "doc/replays-testcases/lvl1_complete.p1r|traces/doc/lvl1_complete.trace"
+  "doc/replays-testcases/lvl4_mirror.p1r|traces/doc/lvl4_mirror.trace"
 )
 
 mkdir -p "$ROOT/tmp" "$ROOT/traces/doc"

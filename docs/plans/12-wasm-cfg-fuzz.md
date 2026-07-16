@@ -503,7 +503,13 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 11 harness replays pass.
+loose floors. Committed with its golden trace; all 12 harness replays pass.
+
+Also recorded `lvl4_mirror.p1r`: full level 4 playthrough, jumped through the mirror at
+the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
+divergence (4990 frames). Note: level 4's mechanic is the **mirror**, not a skeleton
+guard or feather-fall potion — those were mislabeled in an earlier pass of this checklist
+(skeleton guard is actually level 3: `skeleton_level = 3` default in `data.h`).
 
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
@@ -524,6 +530,9 @@ Confirmed covered by `lvl1_complete`:
 - [x] Loose floor tiles (walked over one, one fell on Kid from the ceiling)
 - [x] Level exit door → level 2 transition (confirmed: player exited through it)
 
+Confirmed covered by `lvl4_mirror`:
+- [x] Mirror / mirror-image encounter (jumped through, HP dropped to 1)
+
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
 for `curr_room`/tile changes) before recording a duplicate:
@@ -532,8 +541,8 @@ for `curr_room`/tile changes) before recording a duplicate:
 - [ ] Balcony ledge
 
 Not yet recorded — next replays to make, roughly in priority order:
-- [ ] **Lvl 4** — skeleton guard (immune to sword, must be pit-pushed)
-- [ ] **Lvl 4** — feather fall potion (confirm slow descent)
+- [ ] **Lvl 3** — skeleton guard (immune to sword, must be pit-pushed)
+- [ ] Feather fall potion (confirm slow descent) — level TBD, not level 4 (that's mirror)
 - [ ] Poison potion (HP → 1, or death)
 - [ ] **Lvl 6** — shadow unification (walk into shadow; sets `united_with_shadow`,
       persists and affects guard init on later levels)
