@@ -505,13 +505,13 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
 loose floors. Committed with its golden trace; all 14 harness replays pass.
 
-Also recorded `lvl4_mirror.p1r`: full level 4 playthrough, jumped through the mirror at
+Also recorded `lvl4_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
 divergence (4990 frames). Note: level 4's mechanic is the **mirror**, not a skeleton
 guard or feather-fall potion — those were mislabeled in an earlier pass of this checklist
 (skeleton guard is actually level 3: `skeleton_level = 3` default in `data.h`).
 
-Also recorded `lvl3_skeleton.p1r`: level 3 playthrough, pushed the skeleton guard into a
+Also recorded `lvl3_skeleton_complete.p1r`: level 3 playthrough, pushed the skeleton guard into a
 pit. **Found and fixed a real port bug**: `draw_mob` (`seg007.rs`) panicked with "attempt
 to negate with overflow" — the C source computes `ABS((sbyte)ypos)`, which promotes the
 `sbyte` to `int` before negating (so `-128` safely becomes `128`), but the Rust port did
@@ -520,7 +520,7 @@ in `i8`. Fixed by widening to `i32` first: `(ypos as i8 as i32).abs()`. Added a 
 test (`draw_mob_room_b_abs_does_not_panic_on_i8_min`). Harness now passes with no
 divergence (2327 frames); all 13 replays green.
 
-Also recorded `lvl7_feather.p1r`: level 7 playthrough, drank the feather-fall potion and
+Also recorded `lvl7_feather_complete.p1r`: level 7 playthrough, drank the feather-fall potion and
 fell from a height. Confirmed via trace scan: `is_feather_fall` goes nonzero at tick 2702
 (peak value 224), so the slow-descent state is genuinely exercised. Committed with its
 golden trace, no divergence (3011 frames); all 14 replays green.
@@ -534,6 +534,11 @@ on all invocations (SDL's ALSA fallback blocks ~30s when it can't reach an audio
 a headless/CI/reduced-env hang, *not* a port bug); skip-missing-replay guard; `timeout 60`
 backstop; `ln -sfn` to stop stray self-links.
 
+**Naming convention:** replays that reach the level's exit door get a `_complete` suffix
+(e.g. `lvl4_mirror_complete.p1r`); ones that stop early once the target mechanic is shown
+don't. `lvl4_mirror`, `lvl3_skeleton`, and `lvl7_feather` were renamed to add the suffix
+after confirming with the recorder that each was a full clear.
+
 ### Coverage checklist — pick up here
 
 Confirmed covered by `lvl1_complete`:
@@ -544,13 +549,13 @@ Confirmed covered by `lvl1_complete`:
 - [x] Loose floor tiles (walked over one, one fell on Kid from the ceiling)
 - [x] Level exit door → level 2 transition (confirmed: player exited through it)
 
-Confirmed covered by `lvl4_mirror`:
+Confirmed covered by `lvl4_mirror_complete`:
 - [x] Mirror / mirror-image encounter (jumped through, HP dropped to 1)
 
-Confirmed covered by `lvl3_skeleton`:
+Confirmed covered by `lvl3_skeleton_complete`:
 - [x] Skeleton guard (immune to sword, pit-pushed) — also caught a real `draw_mob` panic bug
 
-Confirmed covered by `lvl7_feather`:
+Confirmed covered by `lvl7_feather_complete`:
 - [x] Feather fall potion — drunk, confirmed via `is_feather_fall` going nonzero in trace
 
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
