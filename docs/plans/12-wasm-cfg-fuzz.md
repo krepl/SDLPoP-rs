@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 14 harness replays pass.
+loose floors. Committed with its golden trace; all 15 harness replays pass.
 
 Also recorded `lvl4_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -524,6 +524,15 @@ Also recorded `lvl7_feather_complete.p1r`: level 7 playthrough, drank the feathe
 fell from a height. Confirmed via trace scan: `is_feather_fall` goes nonzero at tick 2702
 (peak value 224), so the slow-descent state is genuinely exercised. Committed with its
 golden trace, no divergence (3011 frames); all 14 replays green.
+
+Also recorded `lvl2_poison_complete.p1r`: full level 2 playthrough, drank a poison potion.
+Static analysis of the raw level files (`data/LEVELS/res20NN.bin`) to pre-identify the
+poison potion's level turned out unreliable (the on-disk modifier bytes didn't cleanly
+match the `>> 3` decode in `seg005.c:654` for most levels), so this was confirmed
+after-the-fact from the trace instead: 4 separate `hitp_curr` drops of exactly 1, each
+coinciding with `Kid.frame == frame_205_drink` and `Guard.guard_notice_timer == 0` /
+`holding_sword == 0` (i.e. not combat damage). Committed with its golden trace, no
+divergence (3441 frames); all 15 replays green.
 
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
@@ -558,6 +567,9 @@ Confirmed covered by `lvl3_skeleton_complete`:
 Confirmed covered by `lvl7_feather_complete`:
 - [x] Feather fall potion — drunk, confirmed via `is_feather_fall` going nonzero in trace
 
+Confirmed covered by `lvl2_poison_complete`:
+- [x] Poison potion — drunk, confirmed via `hitp_curr` drop coinciding with the drink frame
+
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
 for `curr_room`/tile changes) before recording a duplicate:
@@ -572,7 +584,6 @@ Not yet recorded — next replays to make, roughly in priority order:
       an earlier pass of this checklist said "level 7, opens gates on lvl12" — that was
       wrong/unverified; per `seg003.c:530` (`do_mouse`) there's no gate-opening tie-in
       visible in the code, just a scripted mouse scurrying across the room.
-- [ ] Poison potion (HP → 1, or death)
 - [ ] **Lvl 6** — shadow unification (walk into shadow; sets `united_with_shadow`,
       persists and affects guard init on later levels)
 - [ ] **Lvl 13** — vizier (Jaffar) sword fight + princess/win sequence
