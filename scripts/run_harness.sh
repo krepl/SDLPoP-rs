@@ -35,12 +35,14 @@ PAIRS=(
   "doc/replays-testcases/Original level 5 shadow into wall.p1r|traces/doc/Original level 5 shadow into wall.trace"
   "doc/replays-testcases/SNES-PC-set level 11.p1r|traces/doc/SNES-PC-set level 11.trace"
   "doc/replays-testcases/trick_153.p1r|traces/doc/trick_153.trace"
+  # lvlN_* replays, sorted by level number
   "doc/replays-testcases/lvl1_complete.p1r|traces/doc/lvl1_complete.trace"
-  "doc/replays-testcases/lvl4_mirror_complete.p1r|traces/doc/lvl4_mirror_complete.trace"
-  "doc/replays-testcases/lvl3_skeleton_complete.p1r|traces/doc/lvl3_skeleton_complete.trace"
-  "doc/replays-testcases/lvl7_feather_complete.p1r|traces/doc/lvl7_feather_complete.trace"
   "doc/replays-testcases/lvl2_poison_complete.p1r|traces/doc/lvl2_poison_complete.trace"
+  "doc/replays-testcases/lvl3_skeleton_complete.p1r|traces/doc/lvl3_skeleton_complete.trace"
+  "doc/replays-testcases/lvl4_mirror_complete.p1r|traces/doc/lvl4_mirror_complete.trace"
   "doc/replays-testcases/lvl5_shadow_steal_complete.p1r|traces/doc/lvl5_shadow_steal_complete.trace"
+  "doc/replays-testcases/lvl6_shadow_step_fatguard_complete.p1r|traces/doc/lvl6_shadow_step_fatguard_complete.trace"
+  "doc/replays-testcases/lvl7_feather_complete.p1r|traces/doc/lvl7_feather_complete.trace"
 )
 
 mkdir -p "$ROOT/tmp" "$ROOT/traces/doc"

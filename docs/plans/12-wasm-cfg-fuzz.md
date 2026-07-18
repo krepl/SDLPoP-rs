@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 16 harness replays pass.
+loose floors. Committed with its golden trace; all 17 harness replays pass.
 
 Also recorded `lvl4_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -535,10 +535,22 @@ coinciding with `Kid.frame == frame_205_drink` and `Guard.guard_notice_timer == 
 divergence (3441 frames); all 15 replays green.
 
 Also recorded `lvl5_shadow_steal_complete.p1r`: full level 5 playthrough. Level 5 has its
-own distinct shadow mechanic (`shadow_steal_level = 5` in `data.h`) — separate from level
-6's shadow *unification* — where the shadow steals a potion in room 24
-(`shadow_steal_room = 24`). Confirmed via trace: `Guard.charid == 1` (shadow) while
-`curr_room == 24`. Committed with its golden trace, no divergence; all 16 replays green.
+own distinct shadow mechanic (`shadow_steal_level = 5` in `data.h`) — where the shadow
+steals a potion in room 24 (`shadow_steal_room = 24`). Confirmed via trace:
+`Guard.charid == 1` (shadow) while `curr_room == 24`. Committed with its golden trace, no
+divergence; all 16 replays green.
+
+Also recorded `lvl6_shadow_step_fatguard_complete.p1r`: full level 6 playthrough. Another
+correction: level 6 is **not** shadow unification (that was wrong, see below) — it's a
+"shadow step" presentation event (`shadow_step_level = 6`, `shadow_step_room = 1` in
+`data.h`; shadow appears, sets `leveldoor_open = 0x4D`, no union) plus a **Fat** guard
+fight (`tbl_guard_type[6] = 1` = Fat in `data.h`). Confirmed via trace:
+`leveldoor_open == 0x4D` fires at tick 854, and `guardhp_max == 5` during the fight
+(higher than the normal 3 HP). The actual shadow *reunification* (`united_with_shadow`
+set to 42) only happens on **level 12** (`seg002.c:1218`, `check_shadow()`), which needs
+its own separate replay. Committed with its golden trace, no divergence; all 17 replays
+green. Also sorted `scripts/run_harness.sh`'s `lvlN_*` entries by level number for
+readability.
 
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
@@ -579,6 +591,10 @@ Confirmed covered by `lvl2_poison_complete`:
 Confirmed covered by `lvl5_shadow_steal_complete`:
 - [x] Shadow steal encounter (room 24) — confirmed via `Guard.charid == 1` while in that room
 
+Confirmed covered by `lvl6_shadow_step_fatguard_complete`:
+- [x] Shadow step presentation event — confirmed via `leveldoor_open == 0x4D`
+- [x] Fat guard fight (5 HP vs normal 3) — confirmed via `guardhp_max == 5`
+
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
 for `curr_room`/tile changes) before recording a duplicate:
@@ -593,8 +609,11 @@ Not yet recorded — next replays to make, roughly in priority order:
       an earlier pass of this checklist said "level 7, opens gates on lvl12" — that was
       wrong/unverified; per `seg003.c:530` (`do_mouse`) there's no gate-opening tie-in
       visible in the code, just a scripted mouse scurrying across the room.
-- [ ] **Lvl 6** — shadow unification (walk into shadow; sets `united_with_shadow`,
-      persists and affects guard init on later levels)
+- [ ] **Lvl 12** — shadow unification (walk into shadow in room 15; sets
+      `united_with_shadow = 42` in `check_shadow()`, `seg002.c:1218`; persists and affects
+      later checks). Correction: an earlier pass of this checklist said "level 6" — wrong,
+      level 6 is the shadow *step* event (no union), now covered by
+      `lvl6_shadow_step_fatguard_complete`.
 - [ ] **Lvl 13** — vizier (Jaffar) sword fight + princess/win sequence
 - [ ] Time-limit expiry (`rem_min` reaches 0 → death)
 - [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
