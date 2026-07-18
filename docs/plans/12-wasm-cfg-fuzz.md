@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 17 harness replays pass.
+loose floors. Committed with its golden trace; all 18 harness replays pass.
 
 Also recorded `lvl4_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -552,6 +552,32 @@ its own separate replay. Committed with its golden trace, no divergence; all 17 
 green. Also sorted `scripts/run_harness.sh`'s `lvlN_*` entries by level number for
 readability.
 
+Also recorded `lvl8_mouse_gate_complete.p1r`: full level 8 playthrough. Confirms the level
+8 mouse event (`mouse_level=8`, `mouse_room=16`) actually crosses a pressure-plate tile
+and opens a gate — correcting an earlier claim in this checklist that `do_mouse()` has no
+gate tie-in. That claim was too narrow: `do_mouse()` itself has no special gate logic, but
+the mouse's scripted movement path can cross an ordinary button/pressure-plate tile, which
+triggers the *generic* button-trigger system any character can activate — no mouse-specific
+code needed. Confirmed via trace: `Char.charid == 24` (mouse) appears at tick 566.
+Committed with its golden trace, no divergence; all 18 replays green.
+
+**Found and NOT YET fixed: a real Rust vs C divergence in sword-combat sequence
+interpretation.** While processing a related death replay (`lvl8_death_2.p1r`, kept local
+for now, not yet in `PAIRS`), also found and fixed a **harness bug**:
+`scripts/compare_traces.py`'s `compare()` never called `sys.exit(1)` on divergence, so
+`run_harness.sh`'s exit-code check always saw success — the harness could never actually
+fail on a real divergence, it would just print a diff and report PASS. Fixed by adding
+`sys.exit(1)` in the `n_diverged > 0` branch. Re-running all 18 currently-registered
+replays after the fix still shows zero divergences (the fix didn't reveal any prior false
+positives), but `lvl8_death_2` immediately caught a real one: `Kid.curr_seq` diverges at
+tick 2469 during an active sword fight (Kid vs Guard, both in room 12) — golden trace has
+`curr_seq = 6616`, Rust has `curr_seq = 6698`, meaning the sequence bytecode interpreter
+took a completely different branch. Downstream fields (`x`, `curr_col`, `frame`) diverge
+as a consequence. Root cause not yet identified — needs the standard
+`--dump-tick`/`--gen-test` debugging workflow (see "Debugging harness divergences" section
+of `CLAUDE.md`). `lvl8_death_2.p1r`/`.trace` exist locally but are deliberately not
+committed or registered in `PAIRS` until this is fixed, to keep the harness green.
+
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
 never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
@@ -595,6 +621,9 @@ Confirmed covered by `lvl6_shadow_step_fatguard_complete`:
 - [x] Shadow step presentation event — confirmed via `leveldoor_open == 0x4D`
 - [x] Fat guard fight (5 HP vs normal 3) — confirmed via `guardhp_max == 5`
 
+Confirmed covered by `lvl8_mouse_gate_complete`:
+- [x] Mouse event crossing a button tile, opening a gate — confirmed via `Char.charid == 24`
+
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
 for `curr_room`/tile changes) before recording a duplicate:
@@ -603,12 +632,8 @@ for `curr_room`/tile changes) before recording a duplicate:
 - [ ] Balcony ledge
 
 Not yet recorded — next replays to make, roughly in priority order:
-- [ ] **Lvl 8, room 16** — mouse event (`mouse_level=8`/`mouse_room=16` in `data.h`).
-      NOT player-triggered — fires automatically ~12.5s (`mouse_delay=150` ticks) after
-      the level door opens while standing in that room; just wait it out. Correction:
-      an earlier pass of this checklist said "level 7, opens gates on lvl12" — that was
-      wrong/unverified; per `seg003.c:530` (`do_mouse`) there's no gate-opening tie-in
-      visible in the code, just a scripted mouse scurrying across the room.
+- [ ] Fix the sword-combat `curr_seq` divergence found via `lvl8_death_2.p1r` (see above),
+      then register that replay in `PAIRS`
 - [ ] **Lvl 12** — shadow unification (walk into shadow in room 15; sets
       `united_with_shadow = 42` in `check_shadow()`, `seg002.c:1218`; persists and affects
       later checks). Correction: an earlier pass of this checklist said "level 6" — wrong,

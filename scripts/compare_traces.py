@@ -334,6 +334,7 @@ def compare(path_a, path_b, show_all=False, start_tick=0, ignore=(),
             print(f"OK — {n_frames} frames compared, no divergence found.")
         else:
             print(f"\nSummary: {n_diverged} divergent frame(s) out of {n_frames} compared.")
+            sys.exit(1)
 
 
 def main():
