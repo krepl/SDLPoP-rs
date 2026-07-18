@@ -855,8 +855,11 @@ pub unsafe extern "C" fn control_hanging() {
 #[no_mangle]
 pub unsafe extern "C" fn can_climb_up() {
     let mut seq_id = seqids_seq_10_climb_up as u16;
-    control_up = release_arrows() as i8;
+    // C: control_up = control_shift2 = release_arrows();  — a single chained
+    // assignment (release_arrows() called ONCE). Splitting into two calls would
+    // let the second release_arrows() side-effect reset control_up back to 0.
     control_shift2 = release_arrows() as i8;
+    control_up = control_shift2;
     // USE_SUPER_HIGH_JUMP
     if (*fixes).enable_super_high_jump != 0 {
         super_jump_fall = 0;
@@ -984,8 +987,10 @@ pub unsafe extern "C" fn forward_with_sword() {
 #[no_mangle]
 pub unsafe extern "C" fn draw_sword() {
     let mut seq_id = seqids_seq_55_draw_sword as u16;
-    control_forward = release_arrows() as i8;
+    // C: control_forward = control_shift2 = release_arrows();  — single chained
+    // assignment (release_arrows() called ONCE). See can_climb_up for the trap.
     control_shift2 = release_arrows() as i8;
+    control_forward = control_shift2;
     // FIX_UNINTENDED_SWORD_STRIKE
     if (*fixes).fix_unintended_sword_strike != 0 {
         ctrl1_shift2 = CONTROL_IGNORE as i8;

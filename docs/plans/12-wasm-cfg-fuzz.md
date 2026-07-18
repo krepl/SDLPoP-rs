@@ -559,24 +559,31 @@ gate tie-in. That claim was too narrow: `do_mouse()` itself has no special gate 
 the mouse's scripted movement path can cross an ordinary button/pressure-plate tile, which
 triggers the *generic* button-trigger system any character can activate — no mouse-specific
 code needed. Confirmed via trace: `Char.charid == 24` (mouse) appears at tick 566.
-Committed with its golden trace, no divergence; all 18 replays green.
+Committed with its golden trace, no divergence; all 19 replays green.
 
-**Found and NOT YET fixed: a real Rust vs C divergence in sword-combat sequence
-interpretation.** While processing a related death replay (`lvl8_death_2.p1r`, kept local
-for now, not yet in `PAIRS`), also found and fixed a **harness bug**:
-`scripts/compare_traces.py`'s `compare()` never called `sys.exit(1)` on divergence, so
-`run_harness.sh`'s exit-code check always saw success — the harness could never actually
-fail on a real divergence, it would just print a diff and report PASS. Fixed by adding
-`sys.exit(1)` in the `n_diverged > 0` branch. Re-running all 18 currently-registered
-replays after the fix still shows zero divergences (the fix didn't reveal any prior false
-positives), but `lvl8_death_2` immediately caught a real one: `Kid.curr_seq` diverges at
-tick 2469 during an active sword fight (Kid vs Guard, both in room 12) — golden trace has
-`curr_seq = 6616`, Rust has `curr_seq = 6698`, meaning the sequence bytecode interpreter
-took a completely different branch. Downstream fields (`x`, `curr_col`, `frame`) diverge
-as a consequence. Root cause not yet identified — needs the standard
-`--dump-tick`/`--gen-test` debugging workflow (see "Debugging harness divergences" section
-of `CLAUDE.md`). `lvl8_death_2.p1r`/`.trace` exist locally but are deliberately not
-committed or registered in `PAIRS` until this is fixed, to keep the harness green.
+**Found and FIXED: a real Rust vs C divergence in control-input handling, surfaced as a
+sword-combat sequence divergence.** While processing a death replay (`lvl8_death_2.p1r`),
+also found and fixed a **harness bug**: `scripts/compare_traces.py`'s `compare()` never
+called `sys.exit(1)` on divergence, so `run_harness.sh`'s exit-code check always saw
+success — the harness could never actually fail on a real divergence, it would just print a
+diff and report PASS. Fixed by adding `sys.exit(1)` in the `n_diverged > 0` branch. With
+that fix, `lvl8_death_2` caught a real divergence: `Kid.curr_seq` diverged at tick 2469
+during an active sword fight (Kid vs Guard, room 12) — golden `curr_seq = 6616`, Rust
+`6698`, i.e. the Kid entered `fastadvance` while golden stayed in the `ready` stance.
+
+The seed/parse-alignment hypothesis was **wrong** — `random_seed` matched at every tick.
+Root cause was traced (by temporarily adding the `control_*`/`ctrl1_*` globals to the trace
+and re-diffing) to a much earlier untraced divergence: `control_up` first differed at tick
+76, during a climb-up (`control_hanging` → `can_climb_up`). The bug: `can_climb_up` (and
+`draw_sword`) in `rust/src/seg005.rs` ported C's **chained assignment**
+`control_up = control_shift2 = release_arrows();` — which calls `release_arrows()` **once** —
+as **two separate calls**. Since `release_arrows()` side-effect-zeroes
+`control_forward/backward/up/down`, the second call silently reset `control_up` (resp.
+`control_forward`) back to `0` (RELEASED) instead of the intended `1` (IGNORE). That
+corrupted the up-key latch state, which only manifested visibly ~2400 ticks later in
+combat. Fixed both sites to a single `release_arrows()` call with a follow-up copy
+(`control_shift2 = release_arrows(); control_up = control_shift2;`). `lvl8_death_2.p1r`/
+`.trace` are now committed and registered in `PAIRS`; harness fully green at 19/19.
 
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
@@ -632,8 +639,9 @@ for `curr_room`/tile changes) before recording a duplicate:
 - [ ] Balcony ledge
 
 Not yet recorded — next replays to make, roughly in priority order:
-- [ ] Fix the sword-combat `curr_seq` divergence found via `lvl8_death_2.p1r` (see above),
-      then register that replay in `PAIRS`
+- [x] Fix the sword-combat `curr_seq` divergence found via `lvl8_death_2.p1r` (see above) —
+      root cause was the split-chain `release_arrows()` bug in `can_climb_up`/`draw_sword`;
+      replay now registered in `PAIRS`
 - [ ] **Lvl 12** — shadow unification (walk into shadow in room 15; sets
       `united_with_shadow = 42` in `check_shadow()`, `seg002.c:1218`; persists and affects
       later checks). Correction: an earlier pass of this checklist said "level 6" — wrong,

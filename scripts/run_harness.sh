@@ -44,10 +44,7 @@ PAIRS=(
   "doc/replays-testcases/lvl6_shadow_step_fatguard_complete.p1r|traces/doc/lvl6_shadow_step_fatguard_complete.trace"
   "doc/replays-testcases/lvl7_feather_complete.p1r|traces/doc/lvl7_feather_complete.trace"
   "doc/replays-testcases/lvl8_mouse_gate_complete.p1r|traces/doc/lvl8_mouse_gate_complete.trace"
-  # lvl8_death_2 deliberately NOT registered yet: it exposes a real Rust vs C divergence
-  # in sword-combat sequence interpretation (Kid.curr_seq diverges at tick 2469, golden
-  # 6616 vs Rust 6698 -- a different bytecode branch entirely). Under investigation; add
-  # once fixed. See docs/plans/12-wasm-cfg-fuzz.md Phase 1.5 notes.
+  "doc/replays-testcases/lvl8_death_2.p1r|traces/doc/lvl8_death_2.trace"
 )
 
 mkdir -p "$ROOT/tmp" "$ROOT/traces/doc"
