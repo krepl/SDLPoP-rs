@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 15 harness replays pass.
+loose floors. Committed with its golden trace; all 16 harness replays pass.
 
 Also recorded `lvl4_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -533,6 +533,12 @@ after-the-fact from the trace instead: 4 separate `hitp_curr` drops of exactly 1
 coinciding with `Kid.frame == frame_205_drink` and `Guard.guard_notice_timer == 0` /
 `holding_sword == 0` (i.e. not combat damage). Committed with its golden trace, no
 divergence (3441 frames); all 15 replays green.
+
+Also recorded `lvl5_shadow_steal_complete.p1r`: full level 5 playthrough. Level 5 has its
+own distinct shadow mechanic (`shadow_steal_level = 5` in `data.h`) — separate from level
+6's shadow *unification* — where the shadow steals a potion in room 24
+(`shadow_steal_room = 24`). Confirmed via trace: `Guard.charid == 1` (shadow) while
+`curr_room == 24`. Committed with its golden trace, no divergence; all 16 replays green.
 
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
@@ -569,6 +575,9 @@ Confirmed covered by `lvl7_feather_complete`:
 
 Confirmed covered by `lvl2_poison_complete`:
 - [x] Poison potion — drunk, confirmed via `hitp_curr` drop coinciding with the drink frame
+
+Confirmed covered by `lvl5_shadow_steal_complete`:
+- [x] Shadow steal encounter (room 24) — confirmed via `Guard.charid == 1` while in that room
 
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan

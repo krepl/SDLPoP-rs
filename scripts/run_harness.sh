@@ -40,6 +40,7 @@ PAIRS=(
   "doc/replays-testcases/lvl3_skeleton_complete.p1r|traces/doc/lvl3_skeleton_complete.trace"
   "doc/replays-testcases/lvl7_feather_complete.p1r|traces/doc/lvl7_feather_complete.trace"
   "doc/replays-testcases/lvl2_poison_complete.p1r|traces/doc/lvl2_poison_complete.trace"
+  "doc/replays-testcases/lvl5_shadow_steal_complete.p1r|traces/doc/lvl5_shadow_steal_complete.trace"
 )
 
 mkdir -p "$ROOT/tmp" "$ROOT/traces/doc"
