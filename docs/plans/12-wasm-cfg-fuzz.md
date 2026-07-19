@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 18 harness replays pass.
+loose floors. Committed with its golden trace; all 20 harness replays pass.
 
 Also recorded `lvl4_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -585,6 +585,13 @@ combat. Fixed both sites to a single `release_arrows()` call with a follow-up co
 (`control_shift2 = release_arrows(); control_up = control_shift2;`). `lvl8_death_2.p1r`/
 `.trace` are now committed and registered in `PAIRS`; harness fully green at 19/19.
 
+Also recorded `lvl9_invert_complete.p1r`: full level 9 playthrough, drank the invert
+potion (screen-flip effect, `toggle_upside()`/`case 4` in `seg000.c:1885`). `upside_down`
+isn't a traced field, so confirmed indirectly instead: a full crouch-drink-standup sequence
+at ticks 3709–3713 (room 10) with `hitp_curr` unchanged and `is_feather_fall` staying 0,
+ruling out health/life/poison/feather — the only potion type left that fits is invert.
+Committed with its golden trace, no divergence (6326 frames); all 20 replays green.
+
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
 never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
@@ -630,6 +637,9 @@ Confirmed covered by `lvl6_shadow_step_fatguard_complete`:
 
 Confirmed covered by `lvl8_mouse_gate_complete`:
 - [x] Mouse event crossing a button tile, opening a gate — confirmed via `Char.charid == 24`
+
+Confirmed covered by `lvl9_invert_complete`:
+- [x] Invert (upside-down) potion — drunk, confirmed indirectly (no hitp/feather change)
 
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
