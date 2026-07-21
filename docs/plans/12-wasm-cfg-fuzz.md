@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 20 harness replays pass.
+loose floors. Committed with its golden trace; all 21 harness replays pass.
 
 Also recorded `lvl4_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -592,6 +592,13 @@ at ticks 3709–3713 (room 10) with `hitp_curr` unchanged and `is_feather_fall` 
 ruling out health/life/poison/feather — the only potion type left that fits is invert.
 Committed with its golden trace, no divergence (6326 frames); all 20 replays green.
 
+Also recorded `lvl10_prince_disappears_bug.p1r`: a user-found glitch on level 10 where the
+Kid sprite disappears in a specific scenario. Purpose is regression coverage for the bug
+itself (a faithful port must reproduce original-game glitches, not fix them — see "No
+behavior changes" in the porting prime directives). Confirmed: Rust matches the C oracle
+exactly, no divergence (404 frames) — the glitch reproduces identically in the Rust port.
+Committed with its golden trace; all 21 replays green.
+
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
 never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
@@ -640,6 +647,10 @@ Confirmed covered by `lvl8_mouse_gate_complete`:
 
 Confirmed covered by `lvl9_invert_complete`:
 - [x] Invert (upside-down) potion — drunk, confirmed indirectly (no hitp/feather change)
+
+Confirmed covered by `lvl10_prince_disappears_bug`:
+- [x] Regression coverage for a user-found sprite-disappearing glitch — Rust matches C
+      oracle exactly (glitch reproduces identically, as required for a faithful port)
 
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
