@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 21 harness replays pass.
+loose floors. Committed with its golden trace; all 22 harness replays pass.
 
 Also recorded `lvl4_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -597,7 +597,11 @@ Kid sprite disappears in a specific scenario. Purpose is regression coverage for
 itself (a faithful port must reproduce original-game glitches, not fix them — see "No
 behavior changes" in the porting prime directives). Confirmed: Rust matches the C oracle
 exactly, no divergence (404 frames) — the glitch reproduces identically in the Rust port.
-Committed with its golden trace; all 21 replays green.
+Committed with its golden trace.
+
+Also recorded `lvl10_complete.p1r`: a full, non-glitched level 10 playthrough (general
+mechanics coverage for the level, separate from the disappearing-Kid bug replay above).
+Committed with its golden trace, no divergence (2981 frames); all 22 replays green.
 
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
@@ -651,6 +655,9 @@ Confirmed covered by `lvl9_invert_complete`:
 Confirmed covered by `lvl10_prince_disappears_bug`:
 - [x] Regression coverage for a user-found sprite-disappearing glitch — Rust matches C
       oracle exactly (glitch reproduces identically, as required for a faithful port)
+
+Confirmed covered by `lvl10_complete`:
+- [x] Full level 10 playthrough — general mechanics coverage, no divergence
 
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
