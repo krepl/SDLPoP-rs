@@ -54,6 +54,8 @@ PAIRS=(
   "doc/replays-testcases/time_limit_expiry_lvl3.p1r|traces/doc/time_limit_expiry_lvl3.trace"
   "doc/replays-testcases/long_fall_death.p1r|traces/doc/long_fall_death.trace"
   "doc/replays-testcases/impalement_death_lvl1.p1r|traces/doc/impalement_death_lvl1.trace"
+  "doc/replays-testcases/running_impalement_lvl6.p1r|traces/doc/running_impalement_lvl6.trace"
+  "doc/replays-testcases/chomper_death_lvl7.p1r|traces/doc/chomper_death_lvl7.trace"
 )
 
 mkdir -p "$ROOT/tmp" "$ROOT/traces/doc"

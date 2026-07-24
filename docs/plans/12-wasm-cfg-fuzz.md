@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl01_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 28 harness replays pass.
+loose floors. Committed with its golden trace; all 30 harness replays pass.
 
 Also recorded `lvl04_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -652,6 +652,15 @@ via trace: `Kid.frame` hits `177` (`frame_177_spiked`) at tick 279 with `hitp_cu
 straight to 0, followed by the expected level restart at tick 339. Committed with its
 golden trace, no divergence (343 frames); all 28 replays green.
 
+Also recorded `running_impalement_lvl6.p1r` (fatal spike impalement while running, level 6)
+and `chomper_death_lvl7.p1r` (fatal chomper contact, level 7). Confirmed via trace:
+`running_impalement_lvl6` hits `Kid.frame == 177` at tick 85 (`hitp_curr` to 0); note
+`action == 1` (`run_jump`) at the death tick matches `impalement_death_lvl1`, so these may
+exercise the same code path mechanically despite being a different level/route — harmless
+extra coverage either way. `chomper_death_lvl7` hits `Kid.frame == 178`
+(`frame_178_chomped`) at tick 329 (`hitp_curr` to 0). Both committed with golden traces, no
+divergence (166 and 439 frames respectively); all 30 replays green.
+
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
 never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
@@ -732,8 +741,12 @@ Confirmed covered by `long_fall_death`:
 - [x] Long-fall death — confirmed via sustained `fall_y == 33` (max speed) before death,
       `Kid.frame == frame_185_dead`, `hitp_curr` wiped from 3 to 0 in one hit
 
-Confirmed covered by `impalement_death_lvl1`:
+Confirmed covered by `impalement_death_lvl1` and `running_impalement_lvl6`:
 - [x] Fatal spike impalement — confirmed via `Kid.frame == 177` (`frame_177_spiked`) with
+      `hitp_curr` dropping straight to 0 (two separate levels/routes)
+
+Confirmed covered by `chomper_death_lvl7`:
+- [x] Chomper death — confirmed via `Kid.frame == 178` (`frame_178_chomped`) with
       `hitp_curr` dropping straight to 0
 
 **Gate + button / Chomper** — the original "plausibly on lvl1" assumption was wrong:
@@ -755,7 +768,6 @@ Not yet recorded — next replays to make, roughly in priority order:
 - [x] Fix the sword-combat `curr_seq` divergence found via `lvl08_death_2.p1r` (see above) —
       root cause was the split-chain `release_arrows()` bug in `can_climb_up`/`draw_sword`;
       replay now registered in `PAIRS`
-- [ ] Chomper death (fatal contact, not just walking past one)
 - [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
       save → kill → relaunch with `--load` → compare state)
 - [ ] Long-term save (Ctrl+G, `PRINCE.SAV`) — low priority
