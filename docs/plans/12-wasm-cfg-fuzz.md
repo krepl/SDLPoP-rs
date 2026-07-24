@@ -691,6 +691,11 @@ Confirmed covered by `lvl12_13_complete`:
 
 Confirmed covered by `lvl14_complete`:
 - [x] Full level 14 playthrough (upside-down/invert potions level) — no divergence
+- [x] Princess/win ending sequence (per recorder's account, not independently trace-verified —
+      `dump_frame_state()` only runs inside `play_level_2()`'s core gameplay loop,
+      `seg003.c:374`; the ending cutscene runs through a wholly separate path in
+      `seg001.c` that never calls it, so trace recording naturally stops the moment
+      gameplay hands off to the cutscene and there is no traced signal to check either way)
 
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl01_complete.trace` (scan
