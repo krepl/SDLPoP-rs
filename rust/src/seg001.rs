@@ -1050,4 +1050,50 @@ mod tests {
             assert_eq!(cutscene_frame_time, 6);
         }
     }
+
+    // Not reachable via the replay/trace harness: recording auto-stops before the level-14
+    // ending cutscene, and hof_write() is only called from end_sequence() (seg001.c:627),
+    // which lives entirely outside play_level_2()'s traced loop. Both hof_write()/hof_read()
+    // are pure fopen/fwrite/fread/fclose with no SDL calls, so this drives the real public
+    // functions end-to-end.
+    #[test]
+    fn hof_write_read_roundtrip_preserves_entries() {
+        let _guard = crate::test_support::ENV_LOCK.lock().unwrap();
+        let scratch = crate::test_support::ScratchDir::new("hof");
+        setup();
+        unsafe {
+            std::env::set_var("SDLPOP_SAVE_PATH", &scratch.0);
+
+            hof_count = 2;
+            let mut name0 = [0 as c_char; 25];
+            for (i, b) in b"ALICE\0".iter().enumerate() {
+                name0[i] = *b as c_char;
+            }
+            hof[0] = hof_type { name: name0, min: 12, tick: 345 };
+            let mut name1 = [0 as c_char; 25];
+            for (i, b) in b"BOB\0".iter().enumerate() {
+                name1[i] = *b as c_char;
+            }
+            hof[1] = hof_type { name: name1, min: 7, tick: 89 };
+
+            hof_write();
+
+            // Corrupt in-memory state so the read-back actually proves something.
+            hof_count = 0;
+            hof[0] = hof_type { name: [0; 25], min: 0, tick: 0 };
+            hof[1] = hof_type { name: [0; 25], min: 0, tick: 0 };
+
+            hof_read();
+
+            assert_eq!(hof_count, 2);
+            assert_eq!({ hof[0].min }, 12);
+            assert_eq!({ hof[0].tick }, 345);
+            assert_eq!({ hof[1].min }, 7);
+            assert_eq!({ hof[1].tick }, 89);
+            assert_eq!(&hof[0].name[..6], &name0[..6]);
+            assert_eq!(&hof[1].name[..4], &name1[..4]);
+
+            std::env::remove_var("SDLPOP_SAVE_PATH");
+        }
+    }
 }
