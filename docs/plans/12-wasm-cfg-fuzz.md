@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl01_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 24 harness replays pass.
+loose floors. Committed with its golden trace; all 25 harness replays pass.
 
 Also recorded `lvl04_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -606,11 +606,21 @@ Committed with its golden trace, no divergence (2981 frames); all 22 replays gre
 Also recorded `lvl11_complete.p1r`: a full level 11 playthrough. Committed with its golden
 trace, no divergence (2491 frames); all 23 replays green.
 
-Also recorded `lvl12_complete.p1r`: a full level 12 playthrough. This closes out the shadow
+Also recorded `lvl12_13_complete.p1r` (recorded/named `lvl12_complete.p1r` originally, but
+the recording actually ran through level 12, into level 13, and briefly into level 14 —
+renamed to reflect the real coverage). Level 12 portion closes out the shadow
 *unification* checklist item — confirmed via trace: `united_with_shadow` jumps to exactly
 `42` at tick 1543 (matching `check_shadow()`, `seg002.c:1218`), then decrements each
-subsequent tick, exactly as the C source does. Committed with its golden trace, no
+subsequent tick, exactly as the C source does. The level 13 portion (ticks 1712–2632) does
+NOT include the vizier fight — `Guard.charid` stays `2` (generic guard) throughout, checked
+via `--dump-tick`, not `charid_6_vizier = 6` — so the vizier checklist item is still open.
+The level 14 entry (ticks 2632–2652) is just the door transition, not real level 14
+coverage — see `lvl14_complete.p1r` below for that. Committed with its golden trace, no
 divergence (2653 frames); all 24 replays green.
+
+Also recorded `lvl14_complete.p1r`: a full level 14 playthrough (the upside-down/invert
+potions level). Committed with its golden trace, no divergence (216 frames); all 25
+replays green.
 
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
@@ -671,8 +681,12 @@ Confirmed covered by `lvl10_complete`:
 Confirmed covered by `lvl11_complete`:
 - [x] Full level 11 playthrough — general mechanics coverage, no divergence
 
-Confirmed covered by `lvl12_complete`:
+Confirmed covered by `lvl12_13_complete`:
 - [x] Shadow unification — confirmed via `united_with_shadow` jumping to 42 at tick 1543
+- Level 13 portion does NOT include the vizier fight — see "Not yet recorded" below
+
+Confirmed covered by `lvl14_complete`:
+- [x] Full level 14 playthrough (upside-down/invert potions level) — no divergence
 
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl01_complete.trace` (scan
