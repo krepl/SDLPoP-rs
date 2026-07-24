@@ -501,17 +501,17 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 ### Phase 1.5 — current scope
 
-**Done:** `lvl1_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
+**Done:** `lvl01_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
 loose floors. Committed with its golden trace; all 22 harness replays pass.
 
-Also recorded `lvl4_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
+Also recorded `lvl04_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
 divergence (4990 frames). Note: level 4's mechanic is the **mirror**, not a skeleton
 guard or feather-fall potion — those were mislabeled in an earlier pass of this checklist
 (skeleton guard is actually level 3: `skeleton_level = 3` default in `data.h`).
 
-Also recorded `lvl3_skeleton_complete.p1r`: level 3 playthrough, pushed the skeleton guard into a
+Also recorded `lvl03_skeleton_complete.p1r`: level 3 playthrough, pushed the skeleton guard into a
 pit. **Found and fixed a real port bug**: `draw_mob` (`seg007.rs`) panicked with "attempt
 to negate with overflow" — the C source computes `ABS((sbyte)ypos)`, which promotes the
 `sbyte` to `int` before negating (so `-128` safely becomes `128`), but the Rust port did
@@ -520,12 +520,12 @@ in `i8`. Fixed by widening to `i32` first: `(ypos as i8 as i32).abs()`. Added a 
 test (`draw_mob_room_b_abs_does_not_panic_on_i8_min`). Harness now passes with no
 divergence (2327 frames); all 13 replays green.
 
-Also recorded `lvl7_feather_complete.p1r`: level 7 playthrough, drank the feather-fall potion and
+Also recorded `lvl07_feather_complete.p1r`: level 7 playthrough, drank the feather-fall potion and
 fell from a height. Confirmed via trace scan: `is_feather_fall` goes nonzero at tick 2702
 (peak value 224), so the slow-descent state is genuinely exercised. Committed with its
 golden trace, no divergence (3011 frames); all 14 replays green.
 
-Also recorded `lvl2_poison_complete.p1r`: full level 2 playthrough, drank a poison potion.
+Also recorded `lvl02_poison_complete.p1r`: full level 2 playthrough, drank a poison potion.
 Static analysis of the raw level files (`data/LEVELS/res20NN.bin`) to pre-identify the
 poison potion's level turned out unreliable (the on-disk modifier bytes didn't cleanly
 match the `>> 3` decode in `seg005.c:654` for most levels), so this was confirmed
@@ -534,13 +534,13 @@ coinciding with `Kid.frame == frame_205_drink` and `Guard.guard_notice_timer == 
 `holding_sword == 0` (i.e. not combat damage). Committed with its golden trace, no
 divergence (3441 frames); all 15 replays green.
 
-Also recorded `lvl5_shadow_steal_complete.p1r`: full level 5 playthrough. Level 5 has its
+Also recorded `lvl05_shadow_steal_complete.p1r`: full level 5 playthrough. Level 5 has its
 own distinct shadow mechanic (`shadow_steal_level = 5` in `data.h`) — where the shadow
 steals a potion in room 24 (`shadow_steal_room = 24`). Confirmed via trace:
 `Guard.charid == 1` (shadow) while `curr_room == 24`. Committed with its golden trace, no
 divergence; all 16 replays green.
 
-Also recorded `lvl6_shadow_step_fatguard_complete.p1r`: full level 6 playthrough. Another
+Also recorded `lvl06_shadow_step_fatguard_complete.p1r`: full level 6 playthrough. Another
 correction: level 6 is **not** shadow unification (that was wrong, see below) — it's a
 "shadow step" presentation event (`shadow_step_level = 6`, `shadow_step_room = 1` in
 `data.h`; shadow appears, sets `leveldoor_open = 0x4D`, no union) plus a **Fat** guard
@@ -552,7 +552,7 @@ its own separate replay. Committed with its golden trace, no divergence; all 17 
 green. Also sorted `scripts/run_harness.sh`'s `lvlN_*` entries by level number for
 readability.
 
-Also recorded `lvl8_mouse_gate_complete.p1r`: full level 8 playthrough. Confirms the level
+Also recorded `lvl08_mouse_gate_complete.p1r`: full level 8 playthrough. Confirms the level
 8 mouse event (`mouse_level=8`, `mouse_room=16`) actually crosses a pressure-plate tile
 and opens a gate — correcting an earlier claim in this checklist that `do_mouse()` has no
 gate tie-in. That claim was too narrow: `do_mouse()` itself has no special gate logic, but
@@ -562,12 +562,12 @@ code needed. Confirmed via trace: `Char.charid == 24` (mouse) appears at tick 56
 Committed with its golden trace, no divergence; all 19 replays green.
 
 **Found and FIXED: a real Rust vs C divergence in control-input handling, surfaced as a
-sword-combat sequence divergence.** While processing a death replay (`lvl8_death_2.p1r`),
+sword-combat sequence divergence.** While processing a death replay (`lvl08_death_2.p1r`),
 also found and fixed a **harness bug**: `scripts/compare_traces.py`'s `compare()` never
 called `sys.exit(1)` on divergence, so `run_harness.sh`'s exit-code check always saw
 success — the harness could never actually fail on a real divergence, it would just print a
 diff and report PASS. Fixed by adding `sys.exit(1)` in the `n_diverged > 0` branch. With
-that fix, `lvl8_death_2` caught a real divergence: `Kid.curr_seq` diverged at tick 2469
+that fix, `lvl08_death_2` caught a real divergence: `Kid.curr_seq` diverged at tick 2469
 during an active sword fight (Kid vs Guard, room 12) — golden `curr_seq = 6616`, Rust
 `6698`, i.e. the Kid entered `fastadvance` while golden stayed in the `ready` stance.
 
@@ -582,10 +582,10 @@ as **two separate calls**. Since `release_arrows()` side-effect-zeroes
 `control_forward`) back to `0` (RELEASED) instead of the intended `1` (IGNORE). That
 corrupted the up-key latch state, which only manifested visibly ~2400 ticks later in
 combat. Fixed both sites to a single `release_arrows()` call with a follow-up copy
-(`control_shift2 = release_arrows(); control_up = control_shift2;`). `lvl8_death_2.p1r`/
+(`control_shift2 = release_arrows(); control_up = control_shift2;`). `lvl08_death_2.p1r`/
 `.trace` are now committed and registered in `PAIRS`; harness fully green at 19/19.
 
-Also recorded `lvl9_invert_complete.p1r`: full level 9 playthrough, drank the invert
+Also recorded `lvl09_invert_complete.p1r`: full level 9 playthrough, drank the invert
 potion (screen-flip effect, `toggle_upside()`/`case 4` in `seg000.c:1885`). `upside_down`
 isn't a traced field, so confirmed indirectly instead: a full crouch-drink-standup sequence
 at ticks 3709–3713 (room 10) with `hitp_curr` unchanged and `is_feather_fall` staying 0,
@@ -613,13 +613,13 @@ a headless/CI/reduced-env hang, *not* a port bug); skip-missing-replay guard; `t
 backstop; `ln -sfn` to stop stray self-links.
 
 **Naming convention:** replays that reach the level's exit door get a `_complete` suffix
-(e.g. `lvl4_mirror_complete.p1r`); ones that stop early once the target mechanic is shown
-don't. `lvl4_mirror`, `lvl3_skeleton`, and `lvl7_feather` were renamed to add the suffix
+(e.g. `lvl04_mirror_complete.p1r`); ones that stop early once the target mechanic is shown
+don't. `lvl04_mirror`, `lvl03_skeleton`, and `lvl07_feather` were renamed to add the suffix
 after confirming with the recorder that each was a full clear.
 
 ### Coverage checklist — pick up here
 
-Confirmed covered by `lvl1_complete`:
+Confirmed covered by `lvl01_complete`:
 - [x] Sword pickup
 - [x] Guard combat / kill (x2)
 - [x] Potion — small red, both used and drunk-at-full-HP
@@ -627,29 +627,29 @@ Confirmed covered by `lvl1_complete`:
 - [x] Loose floor tiles (walked over one, one fell on Kid from the ceiling)
 - [x] Level exit door → level 2 transition (confirmed: player exited through it)
 
-Confirmed covered by `lvl4_mirror_complete`:
+Confirmed covered by `lvl04_mirror_complete`:
 - [x] Mirror / mirror-image encounter (jumped through, HP dropped to 1)
 
-Confirmed covered by `lvl3_skeleton_complete`:
+Confirmed covered by `lvl03_skeleton_complete`:
 - [x] Skeleton guard (immune to sword, pit-pushed) — also caught a real `draw_mob` panic bug
 
-Confirmed covered by `lvl7_feather_complete`:
+Confirmed covered by `lvl07_feather_complete`:
 - [x] Feather fall potion — drunk, confirmed via `is_feather_fall` going nonzero in trace
 
-Confirmed covered by `lvl2_poison_complete`:
+Confirmed covered by `lvl02_poison_complete`:
 - [x] Poison potion — drunk, confirmed via `hitp_curr` drop coinciding with the drink frame
 
-Confirmed covered by `lvl5_shadow_steal_complete`:
+Confirmed covered by `lvl05_shadow_steal_complete`:
 - [x] Shadow steal encounter (room 24) — confirmed via `Guard.charid == 1` while in that room
 
-Confirmed covered by `lvl6_shadow_step_fatguard_complete`:
+Confirmed covered by `lvl06_shadow_step_fatguard_complete`:
 - [x] Shadow step presentation event — confirmed via `leveldoor_open == 0x4D`
 - [x] Fat guard fight (5 HP vs normal 3) — confirmed via `guardhp_max == 5`
 
-Confirmed covered by `lvl8_mouse_gate_complete`:
+Confirmed covered by `lvl08_mouse_gate_complete`:
 - [x] Mouse event crossing a button tile, opening a gate — confirmed via `Char.charid == 24`
 
-Confirmed covered by `lvl9_invert_complete`:
+Confirmed covered by `lvl09_invert_complete`:
 - [x] Invert (upside-down) potion — drunk, confirmed indirectly (no hitp/feather change)
 
 Confirmed covered by `lvl10_prince_disappears_bug`:
@@ -660,21 +660,21 @@ Confirmed covered by `lvl10_complete`:
 - [x] Full level 10 playthrough — general mechanics coverage, no divergence
 
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
-`python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl1_complete.trace` (scan
+`python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl01_complete.trace` (scan
 for `curr_room`/tile changes) before recording a duplicate:
 - [ ] Gate + button
 - [ ] Chomper
 - [ ] Balcony ledge
 
 Not yet recorded — next replays to make, roughly in priority order:
-- [x] Fix the sword-combat `curr_seq` divergence found via `lvl8_death_2.p1r` (see above) —
+- [x] Fix the sword-combat `curr_seq` divergence found via `lvl08_death_2.p1r` (see above) —
       root cause was the split-chain `release_arrows()` bug in `can_climb_up`/`draw_sword`;
       replay now registered in `PAIRS`
 - [ ] **Lvl 12** — shadow unification (walk into shadow in room 15; sets
       `united_with_shadow = 42` in `check_shadow()`, `seg002.c:1218`; persists and affects
       later checks). Correction: an earlier pass of this checklist said "level 6" — wrong,
       level 6 is the shadow *step* event (no union), now covered by
-      `lvl6_shadow_step_fatguard_complete`.
+      `lvl06_shadow_step_fatguard_complete`.
 - [ ] **Lvl 13** — vizier (Jaffar) sword fight + princess/win sequence
 - [ ] Time-limit expiry (`rem_min` reaches 0 → death)
 - [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:

@@ -36,16 +36,16 @@ PAIRS=(
   "doc/replays-testcases/SNES-PC-set level 11.p1r|traces/doc/SNES-PC-set level 11.trace"
   "doc/replays-testcases/trick_153.p1r|traces/doc/trick_153.trace"
   # lvlN_* replays, sorted by level number
-  "doc/replays-testcases/lvl1_complete.p1r|traces/doc/lvl1_complete.trace"
-  "doc/replays-testcases/lvl2_poison_complete.p1r|traces/doc/lvl2_poison_complete.trace"
-  "doc/replays-testcases/lvl3_skeleton_complete.p1r|traces/doc/lvl3_skeleton_complete.trace"
-  "doc/replays-testcases/lvl4_mirror_complete.p1r|traces/doc/lvl4_mirror_complete.trace"
-  "doc/replays-testcases/lvl5_shadow_steal_complete.p1r|traces/doc/lvl5_shadow_steal_complete.trace"
-  "doc/replays-testcases/lvl6_shadow_step_fatguard_complete.p1r|traces/doc/lvl6_shadow_step_fatguard_complete.trace"
-  "doc/replays-testcases/lvl7_feather_complete.p1r|traces/doc/lvl7_feather_complete.trace"
-  "doc/replays-testcases/lvl8_mouse_gate_complete.p1r|traces/doc/lvl8_mouse_gate_complete.trace"
-  "doc/replays-testcases/lvl8_death_2.p1r|traces/doc/lvl8_death_2.trace"
-  "doc/replays-testcases/lvl9_invert_complete.p1r|traces/doc/lvl9_invert_complete.trace"
+  "doc/replays-testcases/lvl01_complete.p1r|traces/doc/lvl01_complete.trace"
+  "doc/replays-testcases/lvl02_poison_complete.p1r|traces/doc/lvl02_poison_complete.trace"
+  "doc/replays-testcases/lvl03_skeleton_complete.p1r|traces/doc/lvl03_skeleton_complete.trace"
+  "doc/replays-testcases/lvl04_mirror_complete.p1r|traces/doc/lvl04_mirror_complete.trace"
+  "doc/replays-testcases/lvl05_shadow_steal_complete.p1r|traces/doc/lvl05_shadow_steal_complete.trace"
+  "doc/replays-testcases/lvl06_shadow_step_fatguard_complete.p1r|traces/doc/lvl06_shadow_step_fatguard_complete.trace"
+  "doc/replays-testcases/lvl07_feather_complete.p1r|traces/doc/lvl07_feather_complete.trace"
+  "doc/replays-testcases/lvl08_mouse_gate_complete.p1r|traces/doc/lvl08_mouse_gate_complete.trace"
+  "doc/replays-testcases/lvl08_death_2.p1r|traces/doc/lvl08_death_2.trace"
+  "doc/replays-testcases/lvl09_invert_complete.p1r|traces/doc/lvl09_invert_complete.trace"
   "doc/replays-testcases/lvl10_complete.p1r|traces/doc/lvl10_complete.trace"
   "doc/replays-testcases/lvl10_prince_disappears_bug.p1r|traces/doc/lvl10_prince_disappears_bug.trace"
 )
@@ -100,7 +100,7 @@ run_one() {
   # bytes ∝ frames ∝ runtime). NOTE: scale off the trace, not the .p1r — the .p1r
   # is header-dominated and event-encoded (stores input changes), so its size
   # barely tracks runtime: run_right_and_die is 4125B/263 frames while
-  # lvl1_complete is 7623B/3761 frames (2x the file, 14x the frames).
+  # lvl01_complete is 7623B/3761 frames (2x the file, 14x the frames).
   timeout 60 env SDL_AUDIODRIVER=dummy POPTRACE_OUT="$test" "$BINARY" validate "$replay" >/dev/null 2>&1
   if [ ! -f "$test" ]; then
     echo "FAIL (no trace written): $name"
