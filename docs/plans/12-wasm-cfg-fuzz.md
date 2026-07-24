@@ -611,12 +611,16 @@ the recording actually ran through level 12, into level 13, and briefly into lev
 renamed to reflect the real coverage). Level 12 portion closes out the shadow
 *unification* checklist item — confirmed via trace: `united_with_shadow` jumps to exactly
 `42` at tick 1543 (matching `check_shadow()`, `seg002.c:1218`), then decrements each
-subsequent tick, exactly as the C source does. The level 13 portion (ticks 1712–2632) does
-NOT include the vizier fight — `Guard.charid` stays `2` (generic guard) throughout, checked
-via `--dump-tick`, not `charid_6_vizier = 6` — so the vizier checklist item is still open.
-The level 14 entry (ticks 2632–2652) is just the door transition, not real level 14
-coverage — see `lvl14_complete.p1r` below for that. Committed with its golden trace, no
-divergence (2653 frames); all 24 replays green.
+subsequent tick, exactly as the C source does. The level 13 portion (ticks 1712–2632) DOES
+include the vizier fight, closing that checklist item too — confirmed via trace:
+`guardhp_curr` starts at 6 (tick 2106) and is whittled to 0 by tick 2436 (the kill).
+(Correction to an earlier pass of this note: checking `Guard.charid == charid_6_vizier`
+was the wrong signal — that constant is only set in the post-game cutscene, `seg001.c:278`;
+during real gameplay the vizier is just the ordinary `Guard` struct, since `tbl_guard_type`
+only allows one guard config per level, so any guard fought in level 13 is the vizier by
+construction.) The level 14 entry (ticks 2632–2652) is just the door transition, not real
+level 14 coverage — see `lvl14_complete.p1r` below for that. Committed with its golden
+trace, no divergence (2653 frames); all 24 replays green.
 
 Also recorded `lvl14_complete.p1r`: a full level 14 playthrough (the upside-down/invert
 potions level). Committed with its golden trace, no divergence (216 frames); all 25
@@ -683,7 +687,7 @@ Confirmed covered by `lvl11_complete`:
 
 Confirmed covered by `lvl12_13_complete`:
 - [x] Shadow unification — confirmed via `united_with_shadow` jumping to 42 at tick 1543
-- Level 13 portion does NOT include the vizier fight — see "Not yet recorded" below
+- [x] Vizier fight — confirmed via `guardhp_curr` dropping from 6 to 0 (tick 2106–2436)
 
 Confirmed covered by `lvl14_complete`:
 - [x] Full level 14 playthrough (upside-down/invert potions level) — no divergence
@@ -699,7 +703,6 @@ Not yet recorded — next replays to make, roughly in priority order:
 - [x] Fix the sword-combat `curr_seq` divergence found via `lvl08_death_2.p1r` (see above) —
       root cause was the split-chain `release_arrows()` bug in `can_climb_up`/`draw_sword`;
       replay now registered in `PAIRS`
-- [ ] **Lvl 13** — vizier (Jaffar) sword fight + princess/win sequence
 - [ ] Time-limit expiry (`rem_min` reaches 0 → death)
 - [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
       save → kill → relaunch with `--load` → compare state)
