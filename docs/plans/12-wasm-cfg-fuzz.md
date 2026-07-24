@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl01_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 23 harness replays pass.
+loose floors. Committed with its golden trace; all 24 harness replays pass.
 
 Also recorded `lvl04_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -606,6 +606,12 @@ Committed with its golden trace, no divergence (2981 frames); all 22 replays gre
 Also recorded `lvl11_complete.p1r`: a full level 11 playthrough. Committed with its golden
 trace, no divergence (2491 frames); all 23 replays green.
 
+Also recorded `lvl12_complete.p1r`: a full level 12 playthrough. This closes out the shadow
+*unification* checklist item — confirmed via trace: `united_with_shadow` jumps to exactly
+`42` at tick 1543 (matching `check_shadow()`, `seg002.c:1218`), then decrements each
+subsequent tick, exactly as the C source does. Committed with its golden trace, no
+divergence (2653 frames); all 24 replays green.
+
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
 never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
@@ -665,6 +671,9 @@ Confirmed covered by `lvl10_complete`:
 Confirmed covered by `lvl11_complete`:
 - [x] Full level 11 playthrough — general mechanics coverage, no divergence
 
+Confirmed covered by `lvl12_complete`:
+- [x] Shadow unification — confirmed via `united_with_shadow` jumping to 42 at tick 1543
+
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl01_complete.trace` (scan
 for `curr_room`/tile changes) before recording a duplicate:
@@ -676,11 +685,6 @@ Not yet recorded — next replays to make, roughly in priority order:
 - [x] Fix the sword-combat `curr_seq` divergence found via `lvl08_death_2.p1r` (see above) —
       root cause was the split-chain `release_arrows()` bug in `can_climb_up`/`draw_sword`;
       replay now registered in `PAIRS`
-- [ ] **Lvl 12** — shadow unification (walk into shadow in room 15; sets
-      `united_with_shadow = 42` in `check_shadow()`, `seg002.c:1218`; persists and affects
-      later checks). Correction: an earlier pass of this checklist said "level 6" — wrong,
-      level 6 is the shadow *step* event (no union), now covered by
-      `lvl06_shadow_step_fatguard_complete`.
 - [ ] **Lvl 13** — vizier (Jaffar) sword fight + princess/win sequence
 - [ ] Time-limit expiry (`rem_min` reaches 0 → death)
 - [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
