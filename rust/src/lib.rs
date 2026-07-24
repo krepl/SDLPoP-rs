@@ -68,6 +68,42 @@ pub mod opl3;
 pub mod midi;
 pub mod menu;
 
+// Shared support for tests that touch real files on disk (quicksave, hall-of-fame,
+// long-term save). `getenv`/`setenv` are process-global, not thread-local, and `cargo
+// test` runs tests in parallel threads by default, so any test that sets SDLPOP_SAVE_PATH
+// must hold ENV_LOCK for its whole body.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    static SCRATCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// A uniquely-named temp directory, removed on drop (even if a test panics).
+    pub(crate) struct ScratchDir(pub PathBuf);
+
+    impl ScratchDir {
+        pub(crate) fn new(tag: &str) -> Self {
+            let n = SCRATCH_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "sdlpop-test-{tag}-{}-{n}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("create scratch dir");
+            ScratchDir(path)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(static_mut_refs)] // all C globals are static mut; reading them in tests is safe here
 mod tests {

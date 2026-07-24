@@ -2703,3 +2703,136 @@ pub unsafe extern "C" fn get_writable_file_path(
     );
     custom_path_buffer
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{ScratchDir, ENV_LOCK};
+
+    fn setup() {
+        unsafe { set_options_to_default(); }
+    }
+
+    // Not reachable via the replay/trace harness: quicksave/quickload (F6/F9) aren't
+    // recordable (enum replay_special_moves only encodes MOVE_RESTART_LEVEL and
+    // MOVE_EFFECT_END, seg000.c has no special_move for save/load keys). quick_save()
+    // has no SDL calls, so it's safe to call directly; quick_load() is NOT safe to call
+    // directly here (it calls stop_sounds/draw_rect/update_screen/delay_ticks before
+    // restore_room_after_quick_load(), which needs a real video subsystem). Instead this
+    // test drives the read side directly via quick_process(process_load), the same
+    // function quick_load() itself calls after its version check passes.
+    #[test]
+    fn quicksave_writes_and_reads_back_state() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let scratch = ScratchDir::new("quicksave");
+        setup();
+        unsafe {
+            std::env::set_var("SDLPOP_SAVE_PATH", &scratch.0);
+
+            current_level = 7;
+            hitp_curr = 2;
+            Kid.x = 111;
+            assert_eq!(quick_save(), 1, "quick_save should succeed");
+
+            // Corrupt in-memory state so the read-back actually proves something.
+            current_level = 0;
+            hitp_curr = 0;
+            Kid.x = 0;
+
+            let mut path_buf = [0i8; POP_MAX_PATH as usize];
+            let path = get_quick_path(path_buf.as_mut_ptr(), path_buf.len());
+            quick_fp = fopen(path, b"rb\0".as_ptr() as *const c_char);
+            assert!(!quick_fp.is_null(), "quicksave file should exist");
+
+            process_load(quick_control.as_mut_ptr() as *mut c_void, quick_control.len());
+            assert_eq!(
+                strcmp(quick_control.as_ptr(), quick_version.as_ptr()),
+                0,
+                "version header should round-trip"
+            );
+            assert_eq!(quick_process(process_load), 1, "quick_process(process_load) should succeed");
+            fclose(quick_fp);
+            quick_fp = null_mut();
+
+            assert_eq!(current_level, 7);
+            assert_eq!(hitp_curr, 2);
+            assert_eq!(Kid.x, 111);
+
+            std::env::remove_var("SDLPOP_SAVE_PATH");
+        }
+    }
+
+    // Regression test for the version-mismatch rejection branch in quick_load()
+    // (`if strcmp(quick_control, quick_version) != 0 { ...; return 0; }`), exercised
+    // without touching the SDL-drawing tail of the real quick_load() function.
+    #[test]
+    fn quicksave_version_mismatch_is_detected() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let scratch = ScratchDir::new("quicksave-version-mismatch");
+        setup();
+        unsafe {
+            std::env::set_var("SDLPOP_SAVE_PATH", &scratch.0);
+
+            let mut path_buf = [0i8; POP_MAX_PATH as usize];
+            let path = get_quick_path(path_buf.as_mut_ptr(), path_buf.len());
+            let handle = fopen(path, b"wb\0".as_ptr() as *const c_char);
+            assert!(!handle.is_null());
+            let garbage: [c_char; 9] = [b'X' as c_char; 9];
+            fwrite(garbage.as_ptr() as *const c_void, 1, garbage.len(), handle);
+            fclose(handle);
+
+            quick_fp = fopen(path, b"rb\0".as_ptr() as *const c_char);
+            assert!(!quick_fp.is_null());
+            process_load(quick_control.as_mut_ptr() as *mut c_void, quick_control.len());
+            assert_ne!(
+                strcmp(quick_control.as_ptr(), quick_version.as_ptr()),
+                0,
+                "garbage header must not match the real version string"
+            );
+            fclose(quick_fp);
+            quick_fp = null_mut();
+
+            std::env::remove_var("SDLPOP_SAVE_PATH");
+        }
+    }
+
+    // Not reachable via replay either (same special_move limitation as quicksave), and
+    // save_game() itself isn't safe to call directly (it ends with display_text_bottom(),
+    // which calls draw_rect/show_text). load_game() has no SDL calls at all, so this tests
+    // its read path directly against a hand-constructed fixture file: 4 sequential u16
+    // fields (rem_min, rem_tick, start_level, hitp_beg_lev), matching save_game()'s write
+    // order exactly (seg000.c:2146-2157). This is the side most vulnerable to a
+    // word-order/size mistake in a future refactor.
+    #[test]
+    fn load_game_reads_fixture_file_in_expected_field_order() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let scratch = ScratchDir::new("long-term-save");
+        setup();
+        unsafe {
+            std::env::set_var("SDLPOP_SAVE_PATH", &scratch.0);
+
+            let mut path_buf = [0i8; POP_MAX_PATH as usize];
+            let path = get_save_path(path_buf.as_mut_ptr(), path_buf.len());
+
+            let mut fixture = Vec::new();
+            fixture.extend_from_slice(&5i16.to_le_bytes());   // rem_min
+            fixture.extend_from_slice(&300u16.to_le_bytes()); // rem_tick
+            fixture.extend_from_slice(&9i16.to_le_bytes());   // start_level
+            fixture.extend_from_slice(&3u16.to_le_bytes());   // hitp_beg_lev
+            std::fs::write(cstr(path), &fixture).expect("write fixture save file");
+
+            rem_min = 0;
+            rem_tick = 0;
+            start_level = 0;
+            hitp_beg_lev = 0;
+
+            assert_eq!(load_game(), 1, "load_game should succeed");
+            assert_eq!(rem_min, 5);
+            assert_eq!(rem_tick, 300);
+            assert_eq!(start_level, 9);
+            assert_eq!(hitp_beg_lev, 3);
+
+            std::env::remove_var("SDLPOP_SAVE_PATH");
+        }
+    }
+}
