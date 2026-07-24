@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl01_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 26 harness replays pass.
+loose floors. Committed with its golden trace; all 27 harness replays pass.
 
 Also recorded `lvl04_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -639,6 +639,14 @@ a stray keypress near the end triggered a level restart before the timer actuall
 zero, so it never captured the real timeout — not committed. Committed with its golden
 trace, no divergence (776 frames); all 26 replays green.
 
+Also recorded `long_fall_death.p1r`: a level 7 death from falling more than 2 stories
+("hard land" / splat). Confirmed via trace: `Char.action == 4` (in-freefall) with
+`fall_y == 33` (max fall speed) sustained across several ticks right before death at tick
+15, where `Kid.frame` jumps to `frame_185_dead` and `hitp_curr` is wiped from 3 to 0 in one
+hit (`hitp_delta == -3`) — a fatal instant-kill, distinct from the gradual damage of
+combat/poison. Committed with its golden trace, no divergence (59 frames); all 27 replays
+green.
+
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
 never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
@@ -715,6 +723,10 @@ Confirmed covered by `time_limit_expiry_lvl3`:
       tick `rem_min`/`rem_tick` bottom out; confirms timing out kicks you back to level 1
       (`custom->first_level`), not a retry of the current level
 
+Confirmed covered by `long_fall_death`:
+- [x] Long-fall death — confirmed via sustained `fall_y == 33` (max speed) before death,
+      `Kid.frame == frame_185_dead`, `hitp_curr` wiped from 3 to 0 in one hit
+
 **Gate + button / Chomper** — the original "plausibly on lvl1" assumption was wrong:
 raw tile scan of `data/LEVELS/res20NN.bin` shows level 1 has **zero** gate (tile 4) or
 chomper (tile 18) tiles at all. Found instead: gates on levels 5/6/7/10, chompers on
@@ -736,7 +748,6 @@ Not yet recorded — next replays to make, roughly in priority order:
       replay now registered in `PAIRS`
 - [ ] Chomper death (fatal contact, not just walking past one)
 - [ ] Fatal spike impalement (lvl01 only shows walking through spikes harmlessly)
-- [ ] Long-fall death
 - [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
       save → kill → relaunch with `--load` → compare state)
 - [ ] Long-term save (Ctrl+G, `PRINCE.SAV`) — low priority
