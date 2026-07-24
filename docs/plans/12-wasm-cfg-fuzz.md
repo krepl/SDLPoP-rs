@@ -768,10 +768,48 @@ Not yet recorded — next replays to make, roughly in priority order:
 - [x] Fix the sword-combat `curr_seq` divergence found via `lvl08_death_2.p1r` (see above) —
       root cause was the split-chain `release_arrows()` bug in `can_climb_up`/`draw_sword`;
       replay now registered in `PAIRS`
-- [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
-      save → kill → relaunch with `--load` → compare state)
-- [ ] Long-term save (Ctrl+G, `PRINCE.SAV`) — low priority
-- [ ] Hall of fame write on game completion — low priority
+
+**Quicksave/quickload, long-term save, hall of fame — covered by unit tests, not replays.**
+None of these three are recordable at all: `enum replay_special_moves` (`types.h:1152`)
+only encodes `MOVE_RESTART_LEVEL` and `MOVE_EFFECT_END`, so F6/F9/Ctrl+G keypresses during
+recording wouldn't reproduce on playback. HOF specifically also can't be reached even in
+principle by recording, since `hof_write()` is only called from `end_sequence()`, which
+runs entirely outside `play_level_2()`'s traced loop (recording auto-stops before the
+level-14 ending cutscene).
+
+Added instead (`rust/src/lib.rs`, `seg000.rs`, `seg001.rs`): a shared `#[cfg(test)]
+test_support` module (`ENV_LOCK` mutex + `ScratchDir`, hand-rolled, no new dependency) that
+redirects file I/O via `SDLPOP_SAVE_PATH` — a real env var the shipped code already reads
+(`get_writable_file_path()`, `seg000.c:2470`), not a mock. Real `fopen`/`fwrite`/`fread`
+against real files on real disk, just isolated to a scratch temp dir instead of
+`$HOME/.<dir>`.
+
+- [x] `quick_save()` — no SDL calls, called directly end-to-end.
+- [x] Quicksave read path — `quick_load()` itself is NOT called directly (it calls
+      `stop_sounds`/`draw_rect`/`update_screen`/`delay_ticks` before
+      `restore_room_after_quick_load()`, which needs a real video subsystem nothing in this
+      test suite initializes). Tested via `quick_process(process_load)` directly instead —
+      the same function `quick_load()` calls after its version check passes. A separate
+      test confirms the version-mismatch rejection branch.
+- [x] Hall of fame (`hof_write()`/`hof_read()`) — both pure file I/O, no SDL calls at all;
+      called directly end-to-end.
+- [x] Long-term save (`PRINCE.SAV`) read path — `save_game()` also isn't called directly
+      (ends with `display_text_bottom()` → `draw_rect`/`show_text`); `load_game()` has no
+      SDL calls, tested against a hand-constructed fixture file matching `save_game()`'s
+      exact write order (`rem_min`, `rem_tick`, `start_level`, `hitp_beg_lev`).
+
+**Known gap, left open on purpose:** the SDL-drawing tails of `quick_load()`, `save_game()`,
+and `restore_room_after_quick_load()` aren't covered by any test — no SDL-dummy-video test
+convention exists yet in this repo (all 57 pre-existing tests run without touching SDL at
+all). Worth a dedicated SDL-headless-video test harness later if these become a refactor
+risk area, same deferred treatment as Phase 5 audio below.
+
+**Other known test gaps** (not silently missing — explicitly deferred):
+- Menu code (mouse/keyboard navigation) — untested for the same reason as save/load
+  (menu input isn't part of the recorded move stream either), but deprioritized: menu bugs
+  are display/config risk, not gameplay-state-with-consequences risk like quicksave.
+- Screenshot code (`screenshot.c`/`screenshot.rs`) — image output is hard to verify
+  meaningfully without a reference-image diffing setup; not attempted.
 
 ---
 
