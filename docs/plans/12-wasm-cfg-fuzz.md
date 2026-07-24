@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl01_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 25 harness replays pass.
+loose floors. Committed with its golden trace; all 26 harness replays pass.
 
 Also recorded `lvl04_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -626,6 +626,19 @@ Also recorded `lvl14_complete.p1r`: a full level 14 playthrough (the upside-down
 potions level). Committed with its golden trace, no divergence (216 frames); all 25
 replays green.
 
+Also recorded `time_limit_expiry_lvl3.p1r`: recorded via a temporary `SDLPoP.ini` tweak
+(`start_minutes_left = 1` instead of the default `60`, reverted afterward) so the timer
+runs out in ~1 real minute instead of 60. Confirms a genuine, slightly surprising original-
+game quirk: timing out doesn't restart the *current* level, it kicks you back to
+`custom->first_level` (level 1) — traced `current_level` goes `3 → 0` at tick 718, the
+exact tick `rem_min`/`rem_tick` bottom out. (`expired()`, `seg001.c:644`, sets
+`start_level = -1`, and `seg000.c:229` resolves that to `custom->first_level`, not the
+level you were just on — a different code path than the ordinary retry-same-level death,
+which uses a separate `is_restart_level` flag.) A first recording attempt was discarded:
+a stray keypress near the end triggered a level restart before the timer actually reached
+zero, so it never captured the real timeout — not committed. Committed with its golden
+trace, no divergence (776 frames); all 26 replays green.
+
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
 never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
@@ -697,6 +710,11 @@ Confirmed covered by `lvl14_complete`:
       `seg001.c` that never calls it, so trace recording naturally stops the moment
       gameplay hands off to the cutscene and there is no traced signal to check either way)
 
+Confirmed covered by `time_limit_expiry_lvl3`:
+- [x] Time-limit expiry — confirmed via `current_level` dropping from 3 to 0 at the exact
+      tick `rem_min`/`rem_tick` bottom out; confirms timing out kicks you back to level 1
+      (`custom->first_level`), not a retry of the current level
+
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl01_complete.trace` (scan
 for `curr_room`/tile changes) before recording a duplicate:
@@ -708,7 +726,6 @@ Not yet recorded — next replays to make, roughly in priority order:
 - [x] Fix the sword-combat `curr_seq` divergence found via `lvl08_death_2.p1r` (see above) —
       root cause was the split-chain `release_arrows()` bug in `can_climb_up`/`draw_sword`;
       replay now registered in `PAIRS`
-- [ ] Time-limit expiry (`rem_min` reaches 0 → death)
 - [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
       save → kill → relaunch with `--load` → compare state)
 - [ ] Long-term save (Ctrl+G, `PRINCE.SAV`) — low priority
