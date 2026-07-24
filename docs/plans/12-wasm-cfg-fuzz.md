@@ -715,17 +715,28 @@ Confirmed covered by `time_limit_expiry_lvl3`:
       tick `rem_min`/`rem_tick` bottom out; confirms timing out kicks you back to level 1
       (`custom->first_level`), not a retry of the current level
 
-**Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
-`python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl01_complete.trace` (scan
-for `curr_room`/tile changes) before recording a duplicate:
-- [ ] Gate + button
-- [ ] Chomper
-- [ ] Balcony ledge
+**Gate + button / Chomper** — the original "plausibly on lvl1" assumption was wrong:
+raw tile scan of `data/LEVELS/res20NN.bin` shows level 1 has **zero** gate (tile 4) or
+chomper (tile 18) tiles at all. Found instead: gates on levels 5/6/7/10, chompers on
+levels 3/7/8/10. Likely already covered by existing full-level replays without a
+dedicated recording — `lvl07_feather_complete` visits room 3 (gate) and room 23
+(chomper); `lvl08_mouse_gate_complete` visits room 23 (chomper); `lvl05_shadow_steal_complete`
+visits rooms 7/8/13/24 (gates). This is room-visit evidence only (walking through a room
+doesn't guarantee touching the specific tile), not independently confirmed — accepted as
+likely-covered rather than digging further.
+
+**Balcony ledge** — raw tile scan finds **zero** balcony tiles (ID 23/24) across all 14
+standard campaign levels. It's a real tile type (used in `seg005.c`/`seg008.c` for
+gate-related collision), just apparently unused in the stock level set. Dropped from the
+checklist — not testable without a custom level.
 
 Not yet recorded — next replays to make, roughly in priority order:
 - [x] Fix the sword-combat `curr_seq` divergence found via `lvl08_death_2.p1r` (see above) —
       root cause was the split-chain `release_arrows()` bug in `can_climb_up`/`draw_sword`;
       replay now registered in `PAIRS`
+- [ ] Chomper death (fatal contact, not just walking past one)
+- [ ] Fatal spike impalement (lvl01 only shows walking through spikes harmlessly)
+- [ ] Long-fall death
 - [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
       save → kill → relaunch with `--load` → compare state)
 - [ ] Long-term save (Ctrl+G, `PRINCE.SAV`) — low priority
