@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl01_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 22 harness replays pass.
+loose floors. Committed with its golden trace; all 23 harness replays pass.
 
 Also recorded `lvl04_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -603,6 +603,9 @@ Also recorded `lvl10_complete.p1r`: a full, non-glitched level 10 playthrough (g
 mechanics coverage for the level, separate from the disappearing-Kid bug replay above).
 Committed with its golden trace, no divergence (2981 frames); all 22 replays green.
 
+Also recorded `lvl11_complete.p1r`: a full level 11 playthrough. Committed with its golden
+trace, no divergence (2491 frames); all 23 replays green.
+
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
 never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
@@ -658,6 +661,9 @@ Confirmed covered by `lvl10_prince_disappears_bug`:
 
 Confirmed covered by `lvl10_complete`:
 - [x] Full level 10 playthrough — general mechanics coverage, no divergence
+
+Confirmed covered by `lvl11_complete`:
+- [x] Full level 11 playthrough — general mechanics coverage, no divergence
 
 **Unconfirmed** — plausibly on the lvl1 path but not explicitly verified. Check with
 `python3 scripts/compare_traces.py --dump-tick N traces/doc/lvl01_complete.trace` (scan

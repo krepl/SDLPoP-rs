@@ -48,6 +48,7 @@ PAIRS=(
   "doc/replays-testcases/lvl09_invert_complete.p1r|traces/doc/lvl09_invert_complete.trace"
   "doc/replays-testcases/lvl10_complete.p1r|traces/doc/lvl10_complete.trace"
   "doc/replays-testcases/lvl10_prince_disappears_bug.p1r|traces/doc/lvl10_prince_disappears_bug.trace"
+  "doc/replays-testcases/lvl11_complete.p1r|traces/doc/lvl11_complete.trace"
 )
 
 mkdir -p "$ROOT/tmp" "$ROOT/traces/doc"
