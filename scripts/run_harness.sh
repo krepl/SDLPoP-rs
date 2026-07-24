@@ -53,6 +53,7 @@ PAIRS=(
   "doc/replays-testcases/lvl14_complete.p1r|traces/doc/lvl14_complete.trace"
   "doc/replays-testcases/time_limit_expiry_lvl3.p1r|traces/doc/time_limit_expiry_lvl3.trace"
   "doc/replays-testcases/long_fall_death.p1r|traces/doc/long_fall_death.trace"
+  "doc/replays-testcases/impalement_death_lvl1.p1r|traces/doc/impalement_death_lvl1.trace"
 )
 
 mkdir -p "$ROOT/tmp" "$ROOT/traces/doc"

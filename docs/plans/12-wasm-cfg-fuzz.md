@@ -503,7 +503,7 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 **Done:** `lvl01_complete.p1r` — a level 1 playthrough covering sword pickup, two guard
 kills, potion (used *and* wasted-at-full-HP), spikes (walk-through + hang-above), and
-loose floors. Committed with its golden trace; all 27 harness replays pass.
+loose floors. Committed with its golden trace; all 28 harness replays pass.
 
 Also recorded `lvl04_mirror_complete.p1r`: full level 4 playthrough, jumped through the mirror at
 the end (mirror image encounter, HP dropped to 1). Committed with its golden trace, no
@@ -647,6 +647,11 @@ hit (`hitp_delta == -3`) — a fatal instant-kill, distinct from the gradual dam
 combat/poison. Committed with its golden trace, no divergence (59 frames); all 27 replays
 green.
 
+Also recorded `impalement_death_lvl1.p1r`: a fatal spike impalement on level 1. Confirmed
+via trace: `Kid.frame` hits `177` (`frame_177_spiked`) at tick 279 with `hitp_curr` dropping
+straight to 0, followed by the expected level restart at tick 339. Committed with its
+golden trace, no divergence (343 frames); all 28 replays green.
+
 Also recovered/committed `run_right_and_die_lvl_1.p1r` — the replay that generates the
 primary `traces/golden.trace`. It had lived only in the gitignored `replays/` dir and was
 never committed (i.e. lost); it's now tracked under `doc/replays-testcases/`.
@@ -727,6 +732,10 @@ Confirmed covered by `long_fall_death`:
 - [x] Long-fall death — confirmed via sustained `fall_y == 33` (max speed) before death,
       `Kid.frame == frame_185_dead`, `hitp_curr` wiped from 3 to 0 in one hit
 
+Confirmed covered by `impalement_death_lvl1`:
+- [x] Fatal spike impalement — confirmed via `Kid.frame == 177` (`frame_177_spiked`) with
+      `hitp_curr` dropping straight to 0
+
 **Gate + button / Chomper** — the original "plausibly on lvl1" assumption was wrong:
 raw tile scan of `data/LEVELS/res20NN.bin` shows level 1 has **zero** gate (tile 4) or
 chomper (tile 18) tiles at all. Found instead: gates on levels 5/6/7/10, chompers on
@@ -747,7 +756,6 @@ Not yet recorded — next replays to make, roughly in priority order:
       root cause was the split-chain `release_arrows()` bug in `can_climb_up`/`draw_sword`;
       replay now registered in `PAIRS`
 - [ ] Chomper death (fatal contact, not just walking past one)
-- [ ] Fatal spike impalement (lvl01 only shows walking through spikes harmlessly)
 - [ ] Quicksave/quickload integration test (F6/F9 — not a replay; separate script:
       save → kill → relaunch with `--load` → compare state)
 - [ ] Long-term save (Ctrl+G, `PRINCE.SAV`) — low priority
