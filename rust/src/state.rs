@@ -153,4 +153,14 @@ impl State {
     pub unsafe fn kid_sword_strike(&mut self) -> &mut word { &mut kid_sword_strike }
     pub unsafe fn pickup_obj_type(&mut self) -> &mut c_short { &mut pickup_obj_type }
     pub unsafe fn through_tile(&mut self) -> &mut byte { &mut through_tile }
+
+    // -- seg002 guard/shadow AI state -----------------------------------------
+    pub unsafe fn char_x_left(&mut self) -> &mut c_short { &mut char_x_left }
+    pub unsafe fn char_x_right(&mut self) -> &mut c_short { &mut char_x_right }
+    pub unsafe fn curr_guard_color(&mut self) -> &mut word { &mut curr_guard_color }
+    pub unsafe fn guard_skill(&mut self) -> &mut word { &mut guard_skill }
+    pub unsafe fn justblocked(&mut self) -> &mut word { &mut justblocked }
+    pub unsafe fn redraw_height(&mut self) -> &mut c_short { &mut redraw_height }
+    pub unsafe fn roomleave_result(&mut self) -> &mut c_short { &mut roomleave_result }
+    pub unsafe fn shadow_initialized(&mut self) -> &mut word { &mut shadow_initialized }
 }
