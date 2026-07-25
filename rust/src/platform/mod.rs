@@ -31,10 +31,14 @@ pub mod sdl;
 
 use std::os::raw::c_int;
 
-use crate::{SDL_Color, SDL_Rect, SDL_Surface};
+use crate::{SDL_Color, SDL_PixelFormat, SDL_Rect, SDL_Surface};
 
 pub trait Renderer {
-    unsafe fn create_surface(&mut self, width: c_int, height: c_int) -> *mut SDL_Surface;
+    /// Full `SDL_CreateRGBSurface` signature (depth + RGBA masks), not just
+    /// width/height -- callers need both the 8bpp-indexed surfaces most of the game
+    /// uses (`depth: 8, masks: 0,0,0,0`) and true-color ones with explicit channel
+    /// masks (`lighting.rs`'s 32bpp overlay).
+    unsafe fn create_surface(&mut self, width: c_int, height: c_int, depth: c_int, rmask: u32, gmask: u32, bmask: u32, amask: u32) -> *mut SDL_Surface;
     unsafe fn free_surface(&mut self, surf: *mut SDL_Surface);
     /// Loads an image (PNG via SDL2_image today) from an in-memory buffer -- the
     /// `IMG_Load_RW`-over-`SDL_RWFromConstMem` path `load_image` (seg009.rs) uses for
@@ -46,10 +50,19 @@ pub trait Renderer {
     unsafe fn unlock_surface(&mut self, surf: *mut SDL_Surface);
     unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, key: u32);
     unsafe fn set_palette(&mut self, surf: *mut SDL_Surface, colors: *const SDL_Color, first_color: c_int, n_colors: c_int);
-    unsafe fn set_blend_mode(&mut self, surf: *mut SDL_Surface, blend: bool);
+    /// `mode` is a raw `SDL_BlendMode` value (`SDL_BLENDMODE_NONE`/`_BLEND`/`_ADD`/
+    /// `_MOD`, i.e. 0/1/2/4) -- lighting.rs needs `_ADD`/`_MOD` specifically, not just
+    /// on/off blending, so this takes the actual mode rather than a bool. Returns the
+    /// raw SDL result code (0 success, negative on error) -- several callers log via
+    /// `sdlperror` when this is nonzero, so the trait preserves that rather than
+    /// swallowing it.
+    unsafe fn set_blend_mode(&mut self, surf: *mut SDL_Surface, mode: c_int) -> c_int;
     unsafe fn set_alpha_mod(&mut self, surf: *mut SDL_Surface, alpha: u8);
-    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect);
-    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect, color: u32);
+    unsafe fn map_rgba(&mut self, format: *const SDL_PixelFormat, r: u8, g: u8, b: u8, a: u8) -> u32;
+    /// Returns the raw SDL result code, same reasoning as `set_blend_mode`.
+    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int;
+    /// Returns the raw SDL result code, same reasoning as `set_blend_mode`.
+    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect, color: u32) -> c_int;
     /// Pushes a surface to the screen (the present step at the end of each game-loop
     /// tick -- `SDL_UpdateTexture` + `SDL_RenderCopy` + `SDL_RenderPresent` today).
     unsafe fn present(&mut self, frame: *mut SDL_Surface);

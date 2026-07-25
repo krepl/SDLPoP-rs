@@ -57,8 +57,8 @@ pub fn shared_renderer() -> &'static mut SdlRenderer {
 }
 
 impl Renderer for SdlRenderer {
-    unsafe fn create_surface(&mut self, width: c_int, height: c_int) -> *mut SDL_Surface {
-        sdl2::sys::SDL_CreateRGBSurface(0, width, height, 8, 0, 0, 0, 0) as *mut SDL_Surface
+    unsafe fn create_surface(&mut self, width: c_int, height: c_int, depth: c_int, rmask: u32, gmask: u32, bmask: u32, amask: u32) -> *mut SDL_Surface {
+        sdl2::sys::SDL_CreateRGBSurface(0, width, height, depth, rmask, gmask, bmask, amask) as *mut SDL_Surface
     }
 
     unsafe fn free_surface(&mut self, surf: *mut SDL_Surface) {
@@ -95,21 +95,33 @@ impl Renderer for SdlRenderer {
         sdl2::sys::SDL_SetPaletteColors(palette, colors as *const sdl2::sys::SDL_Color, first_color, n_colors);
     }
 
-    unsafe fn set_blend_mode(&mut self, surf: *mut SDL_Surface, blend: bool) {
-        let mode = if blend { sdl2::sys::SDL_BlendMode::SDL_BLENDMODE_BLEND } else { sdl2::sys::SDL_BlendMode::SDL_BLENDMODE_NONE };
-        sdl2::sys::SDL_SetSurfaceBlendMode(as_sys_surface(surf), mode);
+    unsafe fn set_blend_mode(&mut self, surf: *mut SDL_Surface, mode: c_int) -> c_int {
+        // Raw SDL_BlendMode values are 0/1/2/4 (NONE/BLEND/ADD/MOD), not contiguous, so
+        // this can't be a `mem::transmute` -- match the ones this codebase actually uses.
+        let mode = match mode {
+            0 => sdl2::sys::SDL_BlendMode::SDL_BLENDMODE_NONE,
+            1 => sdl2::sys::SDL_BlendMode::SDL_BLENDMODE_BLEND,
+            2 => sdl2::sys::SDL_BlendMode::SDL_BLENDMODE_ADD,
+            4 => sdl2::sys::SDL_BlendMode::SDL_BLENDMODE_MOD,
+            _ => sdl2::sys::SDL_BlendMode::SDL_BLENDMODE_INVALID,
+        };
+        sdl2::sys::SDL_SetSurfaceBlendMode(as_sys_surface(surf), mode)
     }
 
     unsafe fn set_alpha_mod(&mut self, surf: *mut SDL_Surface, alpha: u8) {
         sdl2::sys::SDL_SetSurfaceAlphaMod(as_sys_surface(surf), alpha);
     }
 
-    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) {
-        sdl2::sys::SDL_UpperBlit(as_sys_surface(src), as_sys_rect(src_rect), as_sys_surface(dst), dst_rect as *mut sdl2::sys::SDL_Rect);
+    unsafe fn map_rgba(&mut self, format: *const crate::SDL_PixelFormat, r: u8, g: u8, b: u8, a: u8) -> u32 {
+        sdl2::sys::SDL_MapRGBA(format as *const sdl2::sys::SDL_PixelFormat, r, g, b, a)
     }
 
-    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect, color: u32) {
-        sdl2::sys::SDL_FillRect(as_sys_surface(surf), as_sys_rect(rect), color);
+    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int {
+        sdl2::sys::SDL_UpperBlit(as_sys_surface(src), as_sys_rect(src_rect), as_sys_surface(dst), dst_rect as *mut sdl2::sys::SDL_Rect)
+    }
+
+    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect, color: u32) -> c_int {
+        sdl2::sys::SDL_FillRect(as_sys_surface(surf), as_sys_rect(rect), color)
     }
 
     unsafe fn present(&mut self, frame: *mut SDL_Surface) {

@@ -4,35 +4,12 @@
 
 use std::os::raw::{c_char, c_int};
 use super::*;
+use crate::platform::Renderer;
 
 macro_rules! cs {
     ($s:literal) => {
         concat!($s, "\0").as_ptr() as *const c_char
     };
-}
-
-extern "C" {
-    fn IMG_Load(file: *const c_char) -> *mut SDL_Surface;
-    fn SDL_CreateRGBSurface(
-        flags: u32,
-        width: c_int,
-        height: c_int,
-        depth: c_int,
-        Rmask: u32,
-        Gmask: u32,
-        Bmask: u32,
-        Amask: u32,
-    ) -> *mut SDL_Surface;
-    fn SDL_SetSurfaceBlendMode(surface: *mut SDL_Surface, blend_mode: c_int) -> c_int;
-    fn SDL_FillRect(dst: *mut SDL_Surface, rect: *const SDL_Rect, color: u32) -> c_int;
-    fn SDL_MapRGBA(format: *const SDL_PixelFormat, r: u8, g: u8, b: u8, a: u8) -> u32;
-    // SDL_BlitSurface is a macro for SDL_UpperBlit.
-    fn SDL_UpperBlit(
-        src: *mut SDL_Surface,
-        srcrect: *const SDL_Rect,
-        dst: *mut SDL_Surface,
-        dstrect: *mut SDL_Rect,
-    ) -> c_int;
 }
 
 #[inline]
@@ -42,7 +19,7 @@ unsafe fn SDL_BlitSurface(
     dst: *mut SDL_Surface,
     dstrect: *mut SDL_Rect,
 ) -> c_int {
-    SDL_UpperBlit(src, srcrect, dst, dstrect)
+    crate::platform::sdl::shared_renderer().blit(src, srcrect, dst, dstrect)
 }
 
 const SDL_BLENDMODE_ADD: c_int = 2;
@@ -63,18 +40,15 @@ pub unsafe extern "C" fn init_lighting() {
     }
 
     let mut __lf = [0 as c_char; POP_MAX_PATH as usize];
-    lighting_mask = IMG_Load(locate_file_(
-        mask_filename,
-        __lf.as_mut_ptr(),
-        POP_MAX_PATH as c_int,
-    ));
+    let mask_path = locate_file_(mask_filename, __lf.as_mut_ptr(), POP_MAX_PATH as c_int);
+    lighting_mask = crate::platform::sdl::shared_renderer().load_image_from_file(std::ffi::CStr::from_ptr(mask_path));
     if lighting_mask.is_null() {
         sdlperror(cs!("IMG_Load (lighting_mask)"));
         enable_lighting = 0;
         return;
     }
 
-    screen_overlay = SDL_CreateRGBSurface(0, 320, 192, 32, Rmsk, Gmsk, Bmsk, Amsk);
+    screen_overlay = crate::platform::sdl::shared_renderer().create_surface(320, 192, 32, Rmsk, Gmsk, Bmsk, Amsk);
     if screen_overlay.is_null() {
         sdlperror(cs!("SDL_CreateRGBSurface (screen_overlay)"));
         enable_lighting = 0;
@@ -82,18 +56,18 @@ pub unsafe extern "C" fn init_lighting() {
     }
 
     // "color modulate", i.e. multiply.
-    let mut result = SDL_SetSurfaceBlendMode(screen_overlay, SDL_BLENDMODE_MOD);
+    let mut result = crate::platform::sdl::shared_renderer().set_blend_mode(screen_overlay, SDL_BLENDMODE_MOD);
     if result != 0 {
         sdlperror(cs!("SDL_SetSurfaceBlendMode (screen_overlay)"));
     }
 
-    result = SDL_SetSurfaceBlendMode(lighting_mask, SDL_BLENDMODE_ADD);
+    result = crate::platform::sdl::shared_renderer().set_blend_mode(lighting_mask, SDL_BLENDMODE_ADD);
     if result != 0 {
         sdlperror(cs!("SDL_SetSurfaceBlendMode (lighting_mask)"));
     }
 
     // ambient lighting
-    bgcolor = SDL_MapRGBA(
+    bgcolor = crate::platform::sdl::shared_renderer().map_rgba(
         (*screen_overlay).format,
         ambient_level,
         ambient_level,
@@ -119,7 +93,7 @@ pub unsafe extern "C" fn redraw_lighting() {
         return;
     }
 
-    let result = SDL_FillRect(screen_overlay, core::ptr::null(), bgcolor);
+    let result = crate::platform::sdl::shared_renderer().fill_rect(screen_overlay, core::ptr::null(), bgcolor);
     if result != 0 {
         sdlperror(cs!("SDL_FillRect (screen_overlay)"));
     }
