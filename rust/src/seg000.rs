@@ -6,6 +6,7 @@
 use std::os::raw::{c_char, c_int, c_long, c_short, c_void};
 use core::ptr::{addr_of, addr_of_mut, null, null_mut};
 use super::*;
+use crate::platform::{InputSource, Renderer};
 
 // ---------------------------------------------------------------------------
 // SDL / libc externs (not in bindings.rs)
@@ -13,22 +14,6 @@ use super::*;
 extern "C" {
     fn setjmp(env: *mut u8) -> c_int;
     fn longjmp(env: *mut u8, val: c_int) -> !;
-
-    fn SDL_GetKeyboardState(numkeys: *mut c_int) -> *const u8;
-    fn SDL_AddTimer(
-        interval: u32,
-        callback: Option<unsafe extern "C" fn(u32, *mut c_void) -> u32>,
-        param: *mut c_void,
-    ) -> c_int;
-    fn SDL_Delay(ms: u32);
-    fn SDL_GetPerformanceCounter() -> u64;
-    fn SDL_GetVersion(ver: *mut SDL_version);
-    fn SDL_SetPaletteColors(
-        palette: *mut SDL_Palette,
-        colors: *const SDL_Color,
-        firstcolor: c_int,
-        ncolors: c_int,
-    ) -> c_int;
 
     fn mkdir(path: *const c_char, mode: u32) -> c_int;
     fn strcmp(a: *const c_char, b: *const c_char) -> c_int;
@@ -40,7 +25,6 @@ extern "C" {
     static mut audio_speed: c_int;
 }
 
-#[repr(C)]
 struct SDL_version {
     major: u8,
     minor: u8,
@@ -724,15 +708,14 @@ pub unsafe extern "C" fn check_quick_op() {
     }
 }
 
-unsafe extern "C" fn temp_shift_release_callback(_interval: u32, _param: *mut c_void) -> u32 {
-    let state = SDL_GetKeyboardState(null_mut());
-    if *state.add(SDL_SCANCODE_LSHIFT as usize) != 0 {
+unsafe fn temp_shift_release_callback() {
+    let input = crate::platform::sdl::shared_input();
+    if input.key_state(SDL_SCANCODE_LSHIFT) {
         key_states[SDL_SCANCODE_LSHIFT as usize] |= (KEYSTATE_HELD | KEYSTATE_HELD_NEW) as byte;
     }
-    if *state.add(SDL_SCANCODE_RSHIFT as usize) != 0 {
+    if input.key_state(SDL_SCANCODE_RSHIFT) {
         key_states[SDL_SCANCODE_RSHIFT as usize] |= (KEYSTATE_HELD | KEYSTATE_HELD_NEW) as byte;
     }
-    0
 }
 
 // seg000:04CD
@@ -869,8 +852,8 @@ pub unsafe extern "C" fn process_key() -> c_int {
         need_show_text = 1;
     } else if key == (SDL_SCANCODE_C | WITH_CTRL) {
         let verc = SDL_version { major: 2, minor: 30, patch: 0 };
-        let mut verl = SDL_version { major: 0, minor: 0, patch: 0 };
-        SDL_GetVersion(&mut verl);
+        let (vmajor, vminor, vpatch) = crate::platform::sdl::shared_renderer().linked_sdl_version();
+        let verl = SDL_version { major: vmajor, minor: vminor, patch: vpatch };
         cbuf_set(
             &mut sprintf_temp,
             &format!(
@@ -885,8 +868,8 @@ pub unsafe extern "C" fn process_key() -> c_int {
             let delay: u32 = 250;
             key_states[SDL_SCANCODE_LSHIFT as usize] = 0;
             key_states[SDL_SCANCODE_RSHIFT as usize] = 0;
-            let timer = SDL_AddTimer(delay, Some(temp_shift_release_callback), null_mut());
-            if timer == 0 {
+            let ok = crate::platform::sdl::shared_input().add_one_shot_timer(delay, Box::new(|| unsafe { temp_shift_release_callback() }));
+            if !ok {
                 sdlperror(b"process_key: SDL_AddTimer\0".as_ptr() as *const c_char);
                 quit(1);
             }
@@ -2235,7 +2218,7 @@ pub unsafe extern "C" fn transition_ltr() {
     // USE_FAST_FORWARD
     transition_fps *= audio_speed;
     let counters_per_frame = perf_frequency / transition_fps as u64;
-    last_transition_counter = SDL_GetPerformanceCounter();
+    last_transition_counter = crate::platform::sdl::shared_renderer().performance_counter();
     let mut overshoot = 0;
     let mut position = 0i16;
     while position < 320 {
@@ -2250,7 +2233,7 @@ pub unsafe extern "C" fn transition_ltr() {
         idle();
         do_paused();
         loop {
-            let current_counter = SDL_GetPerformanceCounter();
+            let current_counter = crate::platform::sdl::shared_renderer().performance_counter();
             let frametimes_elapsed = ((current_counter / counters_per_frame)
                 - (last_transition_counter / counters_per_frame)) as c_int;
             if frametimes_elapsed > 0 {
@@ -2258,7 +2241,7 @@ pub unsafe extern "C" fn transition_ltr() {
                 last_transition_counter = current_counter;
                 break;
             } else {
-                SDL_Delay(1);
+                crate::platform::sdl::shared_renderer().delay(1);
             }
         }
         position += 2;
@@ -2511,7 +2494,7 @@ pub unsafe extern "C" fn load_title_images(bgcolor: c_int) {
         }
         if !chtab_title40.is_null() {
             let img = chtab_image(chtab_title40, 0);
-            SDL_SetPaletteColors((*(*img).format).palette, &color, 14, 1);
+            crate::platform::sdl::shared_renderer().set_palette(img, &color, 14, 1);
         }
     }
 }

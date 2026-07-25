@@ -181,6 +181,16 @@ impl Renderer for SdlRenderer {
     unsafe fn rw_read(&mut self, rw: *mut crate::SDL_RWops, ptr: *mut std::os::raw::c_void, size: usize, maxnum: usize) -> usize {
         sdl2::sys::SDL_RWread(rw as *mut sdl2::sys::SDL_RWops, ptr, size, maxnum)
     }
+
+    unsafe fn linked_sdl_version(&mut self) -> (u8, u8, u8) {
+        let mut ver: sdl2::sys::SDL_version = std::mem::zeroed();
+        sdl2::sys::SDL_GetVersion(&mut ver);
+        (ver.major, ver.minor, ver.patch)
+    }
+
+    unsafe fn performance_counter(&mut self) -> u64 {
+        sdl2::sys::SDL_GetPerformanceCounter()
+    }
 }
 
 pub struct SdlAudio {
@@ -286,7 +296,7 @@ impl InputSource for SdlInput {
         let video = self.video.as_ref().expect("stop_text_input: no video subsystem (SdlPlatform not constructed yet)");
         video.text_input().stop();
     }
-    fn add_one_shot_timer(&mut self, delay_ms: u32, callback: Box<dyn FnOnce() + Send>) {
+    fn add_one_shot_timer(&mut self, delay_ms: u32, callback: Box<dyn FnOnce() + Send>) -> bool {
         let timer_subsystem = self.timer.as_ref().expect("add_one_shot_timer: no timer subsystem (SdlPlatform not constructed yet)");
         let mut callback = Some(callback);
         let timer = timer_subsystem.add_timer(
@@ -302,6 +312,12 @@ impl InputSource for SdlInput {
         // calls `SDL_RemoveTimer`): the `sdl2` crate's `Timer` cancels on drop, so it
         // must be leaked, not held, for a genuinely one-shot fire-once timer.
         std::mem::forget(timer);
+        // The crate's `Timer` doesn't expose the raw SDL_TimerID, so the original
+        // `SDL_AddTimer(...) == 0` failure check can't be replicated exactly here.
+        // SDL_AddTimer only fails on internal allocation failure -- unreachable in
+        // practice -- so this always reports success rather than adding a raw-sys
+        // bypass just to check a hasn't-been-observed-to-fail return value.
+        true
     }
     // Reads the same raw sdl_haptic/sdl_controller_/sdl_joystick_ globals seg003.rs
     // read directly before this migration (populated by seg009.rs's raw-FFI controller

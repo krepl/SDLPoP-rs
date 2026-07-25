@@ -89,6 +89,11 @@ pub trait Renderer {
     /// `SDL_ShowSimpleMessageBox` -- the modal error dialog shown when a replay file
     /// fails to load outside `--validate` mode.
     unsafe fn show_message_box(&mut self, title: &std::ffi::CStr, message: &std::ffi::CStr);
+    /// `SDL_GetVersion` -- the linked (runtime) SDL version, shown in the debug version
+    /// readout (Ctrl+V). Not a "renderer" op either; same grab-bag reasoning as `delay`.
+    unsafe fn linked_sdl_version(&mut self) -> (u8, u8, u8);
+    /// `SDL_GetPerformanceCounter` -- high-resolution frame-timing counter.
+    unsafe fn performance_counter(&mut self) -> u64;
 }
 
 /// The mixed digi/speaker/MIDI/OGG output sink. `opl3.rs`'s synth math and the mixing
@@ -114,7 +119,9 @@ pub trait InputSource {
     fn stop_text_input(&mut self);
     /// One-shot timer (the level-skip shift-key debounce is the only current caller --
     /// `SDL_AddTimer` in seg000.rs). `delay_ms` after this call, `callback` fires once.
-    fn add_one_shot_timer(&mut self, delay_ms: u32, callback: Box<dyn FnOnce() + Send>);
+    /// Returns whether the timer was created (`SDL_AddTimer` returning a nonzero ID) --
+    /// the caller logs via `sdlperror` and exits on failure.
+    fn add_one_shot_timer(&mut self, delay_ms: u32, callback: Box<dyn FnOnce() + Send>) -> bool;
     fn rumble(&mut self, strength: f32, duration_ms: u32);
 }
 
