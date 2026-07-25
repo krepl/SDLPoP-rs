@@ -7,6 +7,7 @@
 use std::os::raw::{c_char, c_int, c_void};
 use core::ptr::{addr_of_mut, null_mut};
 use super::*;
+use crate::platform::AudioBackend;
 
 // ============================================================================
 // Externs not present in bindings.rs (SDL audio, OPL3 emulator, libc).
@@ -19,10 +20,6 @@ extern "C" {
     fn free(ptr: *mut c_void);
     fn memset(s: *mut c_void, c: c_int, n: usize) -> *mut c_void;
     fn printf(fmt: *const c_char, ...) -> c_int;
-
-    fn SDL_LockAudio();
-    fn SDL_UnlockAudio();
-    fn SDL_PauseAudio(pause_on: c_int);
 
     // opl3_chip is opaque to us; we only pass a pointer to correctly-sized storage.
     fn OPL3_Reset(chip: *mut c_void, samplerate: u32);
@@ -649,10 +646,10 @@ pub unsafe extern "C" fn midi_callback(_userdata: *mut c_void, stream: *mut u8, 
             if num_finished_tracks >= num_midi_tracks {
                 // All tracks have finished. Fill the remaining samples with silence and stop playback.
                 memset(stream as *mut c_void, 0, (frames_needed * 4) as usize);
-                SDL_LockAudio();
+                crate::platform::sdl::shared_audio().lock();
                 crate::seg009::midi_playing = 0;
                 free_parsed_midi(addr_of_mut!(parsed_midi));
-                SDL_UnlockAudio();
+                crate::platform::sdl::shared_audio().unlock();
                 return;
             } else {
                 // Delay (let the OPL chip work) until a track needs to process a MIDI event again.
@@ -686,10 +683,10 @@ pub unsafe extern "C" fn stop_midi() {
     if crate::seg009::midi_playing == 0 {
         return;
     }
-    SDL_LockAudio();
+    crate::platform::sdl::shared_audio().lock();
     crate::seg009::midi_playing = 0;
     free_parsed_midi(addr_of_mut!(parsed_midi));
-    SDL_UnlockAudio();
+    crate::platform::sdl::shared_audio().unlock();
 }
 
 #[no_mangle]
@@ -770,5 +767,5 @@ pub unsafe extern "C" fn play_midi_sound(buffer: *mut sound_buffer_type) {
     ticks_per_beat = parsed_midi.ticks_per_beat;
     mixing_freq = (*(crate::seg009::digi_audiospec as *const AudioSpec)).freq;
     crate::seg009::midi_playing = 1;
-    SDL_PauseAudio(0);
+    crate::platform::sdl::shared_audio().pause(false);
 }

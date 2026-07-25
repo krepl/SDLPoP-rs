@@ -130,8 +130,21 @@ impl Renderer for SdlRenderer {
 }
 
 pub struct SdlAudio {
-    subsystem: AudioSubsystem,
+    subsystem: Option<AudioSubsystem>,
     device: Option<sdl2::audio::AudioDevice<Callback>>,
+}
+
+// lock()/unlock()/pause() below are self-independent (they call the raw legacy global
+// SDL audio API, not anything through `subsystem`/`device`), so callers that only need
+// those three -- midi.rs, so far -- don't need a live `SdlPlatform` (which requires a
+// real window) to reach them. `shared_audio()` is a minimal always-available singleton
+// for exactly that: no init beyond what SDL_Init already did elsewhere (still via raw
+// FFI in seg009.rs, not yet migrated -- see the exit-criteria note on `open()` below).
+static mut SHARED_AUDIO: SdlAudio = SdlAudio { subsystem: None, device: None };
+
+#[allow(static_mut_refs)]
+pub fn shared_audio() -> &'static mut SdlAudio {
+    unsafe { &mut SHARED_AUDIO }
 }
 
 struct Callback(Box<dyn FnMut(&mut [i16]) + Send>);
@@ -150,28 +163,30 @@ impl AudioBackend for SdlAudio {
             channels: Some(channels),
             samples: Some(1024),
         };
-        let device = self.subsystem.open_playback(None, &desired, |_spec| Callback(fill))?;
+        let subsystem = self.subsystem.as_ref().ok_or("SdlAudio::open: no AudioSubsystem (not constructed via SdlPlatform::new)")?;
+        let device = subsystem.open_playback(None, &desired, |_spec| Callback(fill))?;
         device.resume();
         self.device = Some(device);
         Ok(())
     }
+    // lock/unlock/pause go through the raw legacy (single implicit device) SDL API --
+    // SDL_LockAudio/SDL_UnlockAudio/SDL_PauseAudio -- rather than the sdl2 crate's
+    // per-device AudioDevice methods. seg009.rs's own audio init (SDL_OpenAudio) hasn't
+    // migrated to this trait's open() yet, so `self.device` is unset for any SdlAudio
+    // instance that exists today; these three calls need to keep operating on whatever
+    // device seg009.rs's raw SDL_OpenAudio call actually opened, which the legacy global
+    // API does regardless of which module opened it. Once seg009.rs's init moves to
+    // open() (the modern per-device API), these three should move to self.device's
+    // lock()/resume()/pause() in that same change -- mixing the two audio APIs against
+    // the same device is what would actually break.
     fn pause(&mut self, paused: bool) {
-        if let Some(device) = &self.device {
-            if paused { device.pause(); } else { device.resume(); }
-        }
+        unsafe { sdl2::sys::SDL_PauseAudio(paused as c_int) };
     }
     fn lock(&mut self) {
-        if let Some(device) = &mut self.device {
-            std::mem::forget(device.lock());
-        }
+        unsafe { sdl2::sys::SDL_LockAudio() };
     }
     fn unlock(&mut self) {
-        // The `AudioDeviceLockGuard` from `lock()` above was intentionally leaked (its
-        // `Drop` is what unlocks) rather than held across the `lock()`/`unlock()` call
-        // pair the trait mirrors from `SDL_LockAudio`/`SDL_UnlockAudio` -- this is a
-        // placeholder pending the real call-site migration, where lock/unlock calls will
-        // be replaced with a single scoped closure instead (safer, and what the guard
-        // type is actually for).
+        unsafe { sdl2::sys::SDL_UnlockAudio() };
     }
 }
 
@@ -266,7 +281,7 @@ impl SdlPlatform {
 
         Ok(SdlPlatform {
             renderer: SdlRenderer { canvas, _image_context: image_context },
-            audio: SdlAudio { subsystem: audio_subsystem, device: None },
+            audio: SdlAudio { subsystem: Some(audio_subsystem), device: None },
             input: SdlInput { event_pump, video, timer, controller, joystick: None, haptic },
             files: SdlFiles,
         })
