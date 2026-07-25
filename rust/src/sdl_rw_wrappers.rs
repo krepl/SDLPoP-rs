@@ -4,21 +4,7 @@
 
 use std::os::raw::{c_char, c_int, c_void};
 use super::*;
-
-extern "C" {
-    fn SDL_RWwrite(
-        context: *mut SDL_RWops,
-        ptr: *const c_void,
-        size: usize,
-        num: usize,
-    ) -> usize;
-    fn SDL_RWread(
-        context: *mut SDL_RWops,
-        ptr: *mut c_void,
-        size: usize,
-        maxnum: usize,
-    ) -> usize;
-}
+use crate::platform::Renderer;
 
 #[no_mangle]
 pub unsafe extern "C" fn process_rw_write(
@@ -26,7 +12,7 @@ pub unsafe extern "C" fn process_rw_write(
     data: *mut c_void,
     data_size: usize,
 ) -> c_int {
-    SDL_RWwrite(rw, data, data_size, 1) as c_int
+    crate::platform::sdl::shared_renderer().rw_write(rw, data, data_size, 1) as c_int
 }
 
 #[no_mangle]
@@ -35,7 +21,7 @@ pub unsafe extern "C" fn process_rw_read(
     data: *mut c_void,
     data_size: usize,
 ) -> c_int {
-    SDL_RWread(rw, data, data_size, 1) as c_int
+    crate::platform::sdl::shared_renderer().rw_read(rw, data, data_size, 1) as c_int
 }
 
 // KEY_VALUE_LIST(never_is_16, {{"Never", 16}}); expands to:

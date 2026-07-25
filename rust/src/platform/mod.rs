@@ -84,6 +84,8 @@ pub trait Renderer {
     unsafe fn rw_from_mem(&mut self, buf: *mut std::os::raw::c_void, size: c_int) -> *mut SDL_RWops;
     unsafe fn rw_tell(&mut self, rw: *mut SDL_RWops) -> i64;
     unsafe fn rw_close(&mut self, rw: *mut SDL_RWops);
+    unsafe fn rw_write(&mut self, rw: *mut SDL_RWops, ptr: *const std::os::raw::c_void, size: usize, num: usize) -> usize;
+    unsafe fn rw_read(&mut self, rw: *mut SDL_RWops, ptr: *mut std::os::raw::c_void, size: usize, maxnum: usize) -> usize;
     /// `SDL_ShowSimpleMessageBox` -- the modal error dialog shown when a replay file
     /// fails to load outside `--validate` mode.
     unsafe fn show_message_box(&mut self, title: &std::ffi::CStr, message: &std::ffi::CStr);

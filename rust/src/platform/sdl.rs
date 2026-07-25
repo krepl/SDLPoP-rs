@@ -173,6 +173,14 @@ impl Renderer for SdlRenderer {
         const SDL_MESSAGEBOX_ERROR: u32 = 0x00000010;
         sdl2::sys::SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title.as_ptr(), message.as_ptr(), std::ptr::null_mut());
     }
+
+    unsafe fn rw_write(&mut self, rw: *mut crate::SDL_RWops, ptr: *const std::os::raw::c_void, size: usize, num: usize) -> usize {
+        sdl2::sys::SDL_RWwrite(rw as *mut sdl2::sys::SDL_RWops, ptr, size, num)
+    }
+
+    unsafe fn rw_read(&mut self, rw: *mut crate::SDL_RWops, ptr: *mut std::os::raw::c_void, size: usize, maxnum: usize) -> usize {
+        sdl2::sys::SDL_RWread(rw as *mut sdl2::sys::SDL_RWops, ptr, size, maxnum)
+    }
 }
 
 pub struct SdlAudio {
