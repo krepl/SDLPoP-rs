@@ -98,3 +98,5 @@ target/
 # Obsidian workspace
 .obsidian/
 tmp/
+
+__pycache__/
