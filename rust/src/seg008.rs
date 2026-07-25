@@ -5,15 +5,9 @@
 
 use std::os::raw::{c_int, c_short, c_char, c_void};
 use super::*;
+use crate::platform::Renderer;
 
 extern "C" {
-    fn SDL_ConvertSurface(src: *mut SDL_Surface, fmt: *const SDL_PixelFormat, flags: u32) -> *mut SDL_Surface;
-    fn SDL_SetSurfacePalette(surface: *mut SDL_Surface, palette: *mut SDL_Palette) -> c_int;
-    fn SDL_SetSurfaceBlendMode(surface: *mut SDL_Surface, blendMode: c_int) -> c_int;
-    fn SDL_SetColorKey(surface: *mut SDL_Surface, flag: c_int, key: u32) -> c_int;
-    fn SDL_SetSurfaceAlphaMod(surface: *mut SDL_Surface, alpha: u8) -> c_int;
-    fn SDL_UpperBlit(src: *mut SDL_Surface, srcrect: *const SDL_Rect, dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int;
-    fn SDL_FreeSurface(surface: *mut SDL_Surface);
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
     fn memset(s: *mut c_void, c: c_int, n: usize) -> *mut c_void;
@@ -1128,22 +1122,23 @@ fn hflip(input: *mut SDL_Surface) -> *mut SDL_Surface {
     unsafe {
         let width = (*input).w;
         let height = (*input).h;
-        let output = SDL_ConvertSurface(input, (*input).format, 0);
-        SDL_SetSurfacePalette(output, (*(*input).format).palette);
+        let renderer = crate::platform::sdl::shared_renderer();
+        let output = renderer.convert_surface(input, (*input).format, 0);
+        renderer.set_surface_palette(output, (*(*input).format).palette);
         if output.is_null() {
             sdlperror(b"hflip: SDL_ConvertSurface\0".as_ptr() as *const c_char);
             quit(1);
         }
-        SDL_SetSurfaceBlendMode(input, 0); // SDL_BLENDMODE_NONE
-        SDL_SetColorKey(input, 0, 0);      // SDL_FALSE
-        SDL_SetColorKey(output, 0, 0);
-        SDL_SetSurfaceAlphaMod(input, 255);
+        renderer.set_blend_mode(input, 0); // SDL_BLENDMODE_NONE
+        renderer.set_color_key(input, false, 0);
+        renderer.set_color_key(output, false, 0);
+        renderer.set_alpha_mod(input, 255);
         let mut source_x = 0;
         let mut target_x = width - 1;
         while source_x < width {
             let srcrect = SDL_Rect { x: source_x, y: 0, w: 1, h: height };
             let mut dstrect = SDL_Rect { x: target_x, y: 0, w: 1, h: height };
-            if SDL_UpperBlit(input, &srcrect, output, &mut dstrect) != 0 {
+            if renderer.blit(input, &srcrect, output, &mut dstrect) != 0 {
                 sdlperror(b"hflip: SDL_BlitSurface\0".as_ptr() as *const c_char);
                 quit(1);
             }
@@ -1199,7 +1194,7 @@ pub unsafe extern "C" fn draw_mid(index: c_int) {
         reset_clip_rect();
     }
     if need_free_image {
-        SDL_FreeSurface(draw_image_ptr);
+        crate::platform::sdl::shared_renderer().free_surface(draw_image_ptr);
     }
 }
 

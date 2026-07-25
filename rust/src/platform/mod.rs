@@ -48,8 +48,18 @@ pub trait Renderer {
     unsafe fn load_image_from_file(&mut self, path: &std::ffi::CStr) -> *mut SDL_Surface;
     unsafe fn lock_surface(&mut self, surf: *mut SDL_Surface);
     unsafe fn unlock_surface(&mut self, surf: *mut SDL_Surface);
-    unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, key: u32);
+    /// `enable` is the raw `SDL_SetColorKey` flag arg -- `hflip` (seg008.rs) both
+    /// enables a color key (`true`, matching every earlier caller) and disables one
+    /// (`false`), so this can't hardcode "always enable" like the original draft did.
+    unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, enable: bool, key: u32);
     unsafe fn set_palette(&mut self, surf: *mut SDL_Surface, colors: *const SDL_Color, first_color: c_int, n_colors: c_int);
+    /// `SDL_SetSurfacePalette` -- installs an existing `SDL_Palette` object wholesale
+    /// (`hflip`'s output surface reuses its source's palette), a different operation
+    /// from `set_palette` above (which edits specific color entries in place).
+    unsafe fn set_surface_palette(&mut self, surf: *mut SDL_Surface, palette: *mut crate::SDL_Palette) -> c_int;
+    /// `SDL_ConvertSurface` -- clones a surface into a (possibly different) pixel
+    /// format.
+    unsafe fn convert_surface(&mut self, src: *mut SDL_Surface, fmt: *const SDL_PixelFormat, flags: u32) -> *mut SDL_Surface;
     /// `mode` is a raw `SDL_BlendMode` value (`SDL_BLENDMODE_NONE`/`_BLEND`/`_ADD`/
     /// `_MOD`, i.e. 0/1/2/4) -- lighting.rs needs `_ADD`/`_MOD` specifically, not just
     /// on/off blending, so this takes the actual mode rather than a bool. Returns the

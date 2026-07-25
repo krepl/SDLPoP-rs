@@ -20,7 +20,7 @@ use sdl2::AudioSubsystem;
 use sdl2::EventPump;
 use sdl2::TimerSubsystem;
 
-use crate::{SDL_Color, SDL_Rect, SDL_Surface};
+use crate::{SDL_Color, SDL_PixelFormat, SDL_Rect, SDL_Surface};
 
 use super::{AudioBackend, FileSystem, InputSource, Platform, Renderer};
 
@@ -85,14 +85,22 @@ impl Renderer for SdlRenderer {
         sdl2::sys::SDL_UnlockSurface(as_sys_surface(surf));
     }
 
-    unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, key: u32) {
-        sdl2::sys::SDL_SetColorKey(as_sys_surface(surf), 1, key);
+    unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, enable: bool, key: u32) {
+        sdl2::sys::SDL_SetColorKey(as_sys_surface(surf), enable as c_int, key);
     }
 
     unsafe fn set_palette(&mut self, surf: *mut SDL_Surface, colors: *const SDL_Color, first_color: c_int, n_colors: c_int) {
         let sys_surf = as_sys_surface(surf);
         let palette = (*(*sys_surf).format).palette;
         sdl2::sys::SDL_SetPaletteColors(palette, colors as *const sdl2::sys::SDL_Color, first_color, n_colors);
+    }
+
+    unsafe fn set_surface_palette(&mut self, surf: *mut SDL_Surface, palette: *mut crate::SDL_Palette) -> c_int {
+        sdl2::sys::SDL_SetSurfacePalette(as_sys_surface(surf), palette as *mut sdl2::sys::SDL_Palette)
+    }
+
+    unsafe fn convert_surface(&mut self, src: *mut SDL_Surface, fmt: *const SDL_PixelFormat, flags: u32) -> *mut SDL_Surface {
+        sdl2::sys::SDL_ConvertSurface(as_sys_surface(src), fmt as *const sdl2::sys::SDL_PixelFormat, flags) as *mut SDL_Surface
     }
 
     unsafe fn set_blend_mode(&mut self, surf: *mut SDL_Surface, mode: c_int) -> c_int {
