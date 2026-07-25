@@ -25,7 +25,7 @@
 #![allow(non_snake_case)]
 #![allow(static_mut_refs)]
 
-use std::os::raw::c_short;
+use std::os::raw::{c_int, c_short};
 use super::*;
 
 pub struct State;
@@ -187,4 +187,24 @@ impl State {
     pub unsafe fn wipe_heights(&mut self) -> &mut [sbyte; 30] { &mut wipe_heights }
     pub unsafe fn doorlink1_ad(&mut self) -> &mut *mut byte { &mut doorlink1_ad }
     pub unsafe fn doorlink2_ad(&mut self) -> &mut *mut byte { &mut doorlink2_ad }
+
+    // -- seg006 tile/character system -----------------------------------------
+    pub unsafe fn char_top_y(&mut self) -> &mut c_short { &mut char_top_y }
+    pub unsafe fn char_width_half(&mut self) -> &mut word { &mut char_width_half }
+    pub unsafe fn ctrl1_backward(&mut self) -> &mut sbyte { &mut ctrl1_backward }
+    pub unsafe fn ctrl1_down(&mut self) -> &mut sbyte { &mut ctrl1_down }
+    pub unsafe fn ctrl1_forward(&mut self) -> &mut sbyte { &mut ctrl1_forward }
+    pub unsafe fn ctrl1_up(&mut self) -> &mut sbyte { &mut ctrl1_up }
+    pub unsafe fn cur_frame(&mut self) -> &mut frame_type { &mut cur_frame }
+    pub unsafe fn fall_frame(&mut self) -> &mut byte { &mut fall_frame }
+    pub unsafe fn leveldoor_right(&mut self) -> &mut word { &mut leveldoor_right }
+    pub unsafe fn leveldoor_ybottom(&mut self) -> &mut word { &mut leveldoor_ybottom }
+    pub unsafe fn obj_chtab(&mut self) -> &mut byte { &mut obj_chtab }
+    pub unsafe fn obj_clip_bottom(&mut self) -> &mut c_short { &mut obj_clip_bottom }
+    pub unsafe fn obj_clip_right(&mut self) -> &mut c_short { &mut obj_clip_right }
+    pub unsafe fn obj_direction(&mut self) -> &mut sbyte { &mut obj_direction }
+    pub unsafe fn obj_id(&mut self) -> &mut byte { &mut obj_id }
+    pub unsafe fn obj_x(&mut self) -> &mut c_short { &mut obj_x }
+    pub unsafe fn obj_xl(&mut self) -> &mut byte { &mut obj_xl }
+    pub unsafe fn play_demo_level(&mut self) -> &mut c_int { &mut play_demo_level }
 }

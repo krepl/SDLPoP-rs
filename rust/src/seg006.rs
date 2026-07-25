@@ -7,6 +7,7 @@
 
 use std::os::raw::{c_int, c_short};
 use super::*;
+use crate::state::State;
 
 // seqtbl is defined in seqtbl.c with no header; declare it directly.
 extern "C" {
@@ -598,64 +599,80 @@ static mut obj2_clip_right: i16 = 0;
 
 // ── Functions (ported from seg006.c) ─────────────────────────────────────────
 
+unsafe fn get_tile_impl(state: &mut State, room: c_int, col: c_int, row: c_int) -> c_int {
+    *state.curr_room() = room as i16;
+    *state.tile_col()  = col as i16;
+    *state.tile_row()  = row as i16;
+    *state.curr_room() = find_room_of_tile_impl(state) as i16;
+    if *state.curr_room() > 0 {
+        let cr = *state.curr_room();
+        get_room_address(cr as c_int);
+        let tr = *state.tile_row();
+        let tc = *state.tile_col();
+        *state.curr_tilepos() = (tbl_line_at(tr as usize) as i32 + tc as i32) as u8;
+        let ctp = *state.curr_tilepos();
+        *state.curr_tile2()   = *curr_room_tiles.add(ctp as usize) & 0x1F;
+    } else {
+        *state.curr_tile2() = (*custom).level_edge_hit_tile;
+    }
+    *state.curr_tile2() as c_int
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn get_tile(room: c_int, col: c_int, row: c_int) -> c_int {
-    curr_room = room as i16;
-    tile_col  = col as i16;
-    tile_row  = row as i16;
-    curr_room = find_room_of_tile() as i16;
-    if curr_room > 0 {
-        get_room_address(curr_room as c_int);
-        curr_tilepos = (tbl_line_at(tile_row as usize) as i32 + tile_col as i32) as u8;
-        curr_tile2   = *curr_room_tiles.add(curr_tilepos as usize) & 0x1F;
-    } else {
-        curr_tile2 = (*custom).level_edge_hit_tile;
+    get_tile_impl(&mut State, room, col, row)
+}
+
+unsafe fn find_room_of_tile_impl(state: &mut State) -> c_int {
+    loop {
+        // FIX_CORNER_GRAB: check tile_row < 0 first
+        if *state.tile_row() < 0 {
+            *state.tile_row() += 3;
+            if *state.curr_room() > 0 {
+                let cr = *state.curr_room();
+                *state.curr_room() = state.level().roomlinks[(cr - 1) as usize].up as i16;
+            } else {
+                *state.curr_room() = 0;
+            }
+            continue;
+        }
+        if *state.tile_col() < 0 {
+            *state.tile_col() += 10;
+            if *state.curr_room() > 0 {
+                let cr = *state.curr_room();
+                *state.curr_room() = state.level().roomlinks[(cr - 1) as usize].left as i16;
+            } else {
+                *state.curr_room() = 0;
+            }
+            continue;
+        }
+        if *state.tile_col() >= 10 {
+            *state.tile_col() -= 10;
+            if *state.curr_room() > 0 {
+                let cr = *state.curr_room();
+                *state.curr_room() = state.level().roomlinks[(cr - 1) as usize].right as i16;
+            } else {
+                *state.curr_room() = 0;
+            }
+            continue;
+        }
+        if *state.tile_row() >= 3 {
+            *state.tile_row() -= 3;
+            if *state.curr_room() > 0 {
+                let cr = *state.curr_room();
+                *state.curr_room() = state.level().roomlinks[(cr - 1) as usize].down as i16;
+            } else {
+                *state.curr_room() = 0;
+            }
+            continue;
+        }
+        return *state.curr_room() as c_int;
     }
-    curr_tile2 as c_int
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn find_room_of_tile() -> c_int {
-    loop {
-        // FIX_CORNER_GRAB: check tile_row < 0 first
-        if tile_row < 0 {
-            tile_row += 3;
-            if curr_room > 0 {
-                curr_room = level.roomlinks[(curr_room - 1) as usize].up as i16;
-            } else {
-                curr_room = 0;
-            }
-            continue;
-        }
-        if tile_col < 0 {
-            tile_col += 10;
-            if curr_room > 0 {
-                curr_room = level.roomlinks[(curr_room - 1) as usize].left as i16;
-            } else {
-                curr_room = 0;
-            }
-            continue;
-        }
-        if tile_col >= 10 {
-            tile_col -= 10;
-            if curr_room > 0 {
-                curr_room = level.roomlinks[(curr_room - 1) as usize].right as i16;
-            } else {
-                curr_room = 0;
-            }
-            continue;
-        }
-        if tile_row >= 3 {
-            tile_row -= 3;
-            if curr_room > 0 {
-                curr_room = level.roomlinks[(curr_room - 1) as usize].down as i16;
-            } else {
-                curr_room = 0;
-            }
-            continue;
-        }
-        return curr_room as c_int;
-    }
+    find_room_of_tile_impl(&mut State)
 }
 
 #[no_mangle]
@@ -675,155 +692,180 @@ pub unsafe extern "C" fn get_tilepos_nominus(tcol: c_int, trow: c_int) -> c_int 
     if tp < 0 { 30 } else { tp }
 }
 
+unsafe fn load_fram_det_col_impl(state: &mut State) {
+    load_frame_impl(state);
+    determine_col_impl(state);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn load_fram_det_col() {
-    load_frame();
-    determine_col();
+    load_fram_det_col_impl(&mut State);
+}
+
+unsafe fn determine_col_impl(state: &mut State) {
+    let dxw = dx_weight_impl(state);
+    state.Char().curr_col = get_tile_div_mod_m7(dxw) as i8;
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn determine_col() {
-    Char.curr_col = get_tile_div_mod_m7(dx_weight()) as i8;
+    determine_col_impl(&mut State);
 }
 
-unsafe fn get_frame_internal(frame_table: &[frame_type], frame: c_int) {
+unsafe fn get_frame_internal_impl(state: &mut State, frame_table: &[frame_type], frame: c_int) {
     if frame >= 0 && frame < frame_table.len() as c_int {
-        cur_frame = frame_table[frame as usize];
+        *state.cur_frame() = frame_table[frame as usize];
     } else {
-        cur_frame = frame_type { image: 255, sword: 0, dx: 0, dy: 0, flags: 0 };
+        *state.cur_frame() = frame_type { image: 255, sword: 0, dx: 0, dy: 0, flags: 0 };
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn load_frame() {
-    let frame = Char.frame as c_int;
+unsafe fn load_frame_impl(state: &mut State) {
+    let frame = state.Char().frame as c_int;
     let mut add_frame: c_int = 0;
-    match Char.charid {
+    match state.Char().charid {
         c if c == charids_charid_0_kid as u8 || c == charids_charid_24_mouse as u8 => {
-            get_frame_internal(&FRAME_TABLE_KID, frame);
+            get_frame_internal_impl(state, &FRAME_TABLE_KID, frame);
         }
         c if c == charids_charid_2_guard as u8 || c == charids_charid_4_skeleton as u8 => {
             if frame >= 102 && frame < 107 { add_frame = 70; }
-            get_frame_internal(&FRAME_TBL_GUARD, frame + add_frame - 149);
+            get_frame_internal_impl(state, &FRAME_TBL_GUARD, frame + add_frame - 149);
         }
         c if c == charids_charid_1_shadow as u8 => {
             if frame < 150 || frame >= 190 {
-                get_frame_internal(&FRAME_TABLE_KID, frame);
+                get_frame_internal_impl(state, &FRAME_TABLE_KID, frame);
             } else {
-                get_frame_internal(&FRAME_TBL_GUARD, frame + add_frame - 149);
+                get_frame_internal_impl(state, &FRAME_TBL_GUARD, frame + add_frame - 149);
             }
         }
         c if c == charids_charid_5_princess as u8 || c == charids_charid_6_vizier as u8 => {
-            get_frame_internal(&FRAME_TBL_CUTS, frame);
+            get_frame_internal_impl(state, &FRAME_TBL_CUTS, frame);
         }
         _ => {}
     }
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn load_frame() {
+    load_frame_impl(&mut State);
+}
+
+unsafe fn dx_weight_impl(state: &mut State) -> c_int {
+    let offset = state.cur_frame().dx as i32 - (state.cur_frame().flags & frame_flags_FRAME_WEIGHT_X as u8) as i32;
+    char_dx_forward_impl(state, offset)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn dx_weight() -> c_int {
-    let offset = cur_frame.dx as i32 - (cur_frame.flags & frame_flags_FRAME_WEIGHT_X as u8) as i32;
-    char_dx_forward(offset)
+    dx_weight_impl(&mut State)
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn char_dx_forward(mut delta_x: c_int) -> c_int {
-    if (Char.direction as i32) < directions_dir_0_right as i32 {
+unsafe fn char_dx_forward_impl(state: &mut State, mut delta_x: c_int) -> c_int {
+    if (state.Char().direction as i32) < directions_dir_0_right as i32 {
         delta_x = -delta_x;
     }
-    delta_x + Char.x as i32
+    delta_x + state.Char().x as i32
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn obj_dx_forward(mut delta_x: c_int) -> c_int {
-    if (obj_direction as i32) < directions_dir_0_right as i32 {
+pub unsafe extern "C" fn char_dx_forward(delta_x: c_int) -> c_int {
+    char_dx_forward_impl(&mut State, delta_x)
+}
+
+unsafe fn obj_dx_forward_impl(state: &mut State, mut delta_x: c_int) -> c_int {
+    if (*state.obj_direction() as i32) < directions_dir_0_right as i32 {
         delta_x = -delta_x;
     }
-    obj_x = (obj_x as i32 + delta_x) as i16;
-    obj_x as c_int
+    *state.obj_x() = (*state.obj_x() as i32 + delta_x) as i16;
+    *state.obj_x() as c_int
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn play_seq() {
+pub unsafe extern "C" fn obj_dx_forward(delta_x: c_int) -> c_int {
+    obj_dx_forward_impl(&mut State, delta_x)
+}
+
+unsafe fn play_seq_impl(state: &mut State) {
     loop {
-        let seq_idx = Char.curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
+        let seq_idx = state.Char().curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
         let command = seqtbl_byte(seq_idx);
-        Char.curr_seq = Char.curr_seq.wrapping_add(1);
+        state.Char().curr_seq = state.Char().curr_seq.wrapping_add(1);
         match command {
             SEQ_DX => {
-                let idx = Char.curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
+                let idx = state.Char().curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
                 let val = seqtbl_byte(idx) as i32;
-                Char.x = char_dx_forward(val) as u8;
-                Char.curr_seq = Char.curr_seq.wrapping_add(1);
+                let dx = char_dx_forward_impl(state, val);
+                state.Char().x = dx as u8;
+                state.Char().curr_seq = state.Char().curr_seq.wrapping_add(1);
             }
             SEQ_DY => {
-                let idx = Char.curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
-                Char.y = Char.y.wrapping_add(seqtbl_byte(idx));
-                Char.curr_seq = Char.curr_seq.wrapping_add(1);
+                let idx = state.Char().curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
+                state.Char().y = state.Char().y.wrapping_add(seqtbl_byte(idx));
+                state.Char().curr_seq = state.Char().curr_seq.wrapping_add(1);
             }
             SEQ_FLIP => {
-                Char.direction = !Char.direction;
+                state.Char().direction = !state.Char().direction;
             }
             SEQ_JMP_IF_FEATHER => {
-                if is_feather_fall == 0 {
-                    Char.curr_seq = Char.curr_seq.wrapping_add(2);
+                if *state.is_feather_fall() == 0 {
+                    state.Char().curr_seq = state.Char().curr_seq.wrapping_add(2);
                     // do NOT fall through: break and continue the outer loop
                 } else {
                     // feather fall active: do the jump (same logic as SEQ_JMP)
-                    let idx = Char.curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
+                    let idx = state.Char().curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
                     let lo = seqtbl_byte(idx);
                     let hi = seqtbl_byte(idx + 1);
-                    Char.curr_seq = u16::from_le_bytes([lo, hi]);
+                    state.Char().curr_seq = u16::from_le_bytes([lo, hi]);
                 }
             }
             SEQ_JMP => {
-                let idx = Char.curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
+                let idx = state.Char().curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
                 let lo = seqtbl_byte(idx);
                 let hi = seqtbl_byte(idx + 1);
-                Char.curr_seq = u16::from_le_bytes([lo, hi]);
+                state.Char().curr_seq = u16::from_le_bytes([lo, hi]);
             }
             SEQ_UP => {
-                Char.curr_row -= 1;
+                state.Char().curr_row -= 1;
                 start_chompers();
             }
             SEQ_DOWN => {
-                inc_curr_row();
+                inc_curr_row_impl(state);
                 start_chompers();
             }
             SEQ_ACTION => {
-                let idx = Char.curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
-                Char.action = seqtbl_byte(idx);
-                Char.curr_seq = Char.curr_seq.wrapping_add(1);
+                let idx = state.Char().curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
+                state.Char().action = seqtbl_byte(idx);
+                state.Char().curr_seq = state.Char().curr_seq.wrapping_add(1);
             }
             SEQ_SET_FALL => {
-                let idx = Char.curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
-                Char.fall_x = seqtbl_byte(idx) as i8;
-                Char.curr_seq = Char.curr_seq.wrapping_add(1);
-                let idx2 = Char.curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
-                Char.fall_y = seqtbl_byte(idx2) as i8;
-                Char.curr_seq = Char.curr_seq.wrapping_add(1);
+                let idx = state.Char().curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
+                state.Char().fall_x = seqtbl_byte(idx) as i8;
+                state.Char().curr_seq = state.Char().curr_seq.wrapping_add(1);
+                let idx2 = state.Char().curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
+                state.Char().fall_y = seqtbl_byte(idx2) as i8;
+                state.Char().curr_seq = state.Char().curr_seq.wrapping_add(1);
             }
             SEQ_KNOCK_UP => {
-                knock = 1;
+                *state.knock() = 1;
             }
             SEQ_KNOCK_DOWN => {
-                knock = -1;
+                *state.knock() = -1;
             }
             SEQ_SOUND => {
-                let idx = Char.curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
+                let idx = state.Char().curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
                 let which_sound = seqtbl_byte(idx);
-                Char.curr_seq = Char.curr_seq.wrapping_add(1);
+                state.Char().curr_seq = state.Char().curr_seq.wrapping_add(1);
                 match which_sound {
                     SND_SILENT => {
-                        is_guard_notice = 1;
+                        *state.is_guard_notice() = 1;
                     }
                     SND_FOOTSTEP => {
                         play_sound(soundids_sound_23_footstep as c_int);
-                        is_guard_notice = 1;
+                        *state.is_guard_notice() = 1;
                     }
                     SND_BUMP => {
                         play_sound(soundids_sound_8_bumped as c_int);
-                        is_guard_notice = 1;
+                        *state.is_guard_notice() = 1;
                     }
                     SND_DRINK => {
                         play_sound(soundids_sound_18_drink as c_int);
@@ -832,9 +874,9 @@ pub unsafe extern "C" fn play_seq() {
                         // USE_REPLAY: don't do end level music in replays
                         if recording != 0 || replaying != 0 { /* skip */ }
                         else if is_sound_on != 0 {
-                            if current_level == (*custom).mirror_level as u16 {
+                            if *state.current_level() == (*custom).mirror_level as u16 {
                                 play_sound(soundids_sound_32_shadow_music as c_int);
-                            } else if current_level != 13 && current_level != 15 {
+                            } else if *state.current_level() != 13 && *state.current_level() != 15 {
                                 play_sound(soundids_sound_41_end_level_music as c_int);
                             }
                         }
@@ -843,17 +885,17 @@ pub unsafe extern "C" fn play_seq() {
                 }
             }
             SEQ_END_LEVEL => {
-                next_level += 1;
+                *state.next_level() += 1;
                 // USE_REPLAY
-                keep_last_seed = 1;
+                *state.keep_last_seed() = 1;
                 if replaying != 0 && skipping_replay != 0 { stop_sounds(); }
             }
             SEQ_GET_ITEM => {
-                let idx = Char.curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
+                let idx = state.Char().curr_seq.wrapping_sub(SEQTBL_BASE) as usize;
                 let which_item = seqtbl_byte(idx) as c_int;
-                Char.curr_seq = Char.curr_seq.wrapping_add(1);
+                state.Char().curr_seq = state.Char().curr_seq.wrapping_add(1);
                 if which_item == 1 {
-                    proc_get_object();
+                    proc_get_object_impl(state);
                 }
                 // USE_TELEPORTS
                 if which_item == 2 {
@@ -862,7 +904,7 @@ pub unsafe extern "C" fn play_seq() {
             }
             SEQ_DIE => { /* nop */ }
             _ => {
-                Char.frame = command;
+                state.Char().frame = command;
                 return;
             }
         }
@@ -870,12 +912,16 @@ pub unsafe extern "C" fn play_seq() {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn play_seq() {
+    play_seq_impl(&mut State);
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn get_tile_div_mod_m7(xpos: c_int) -> c_int {
     get_tile_div_mod(xpos - 7)
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn get_tile_div_mod(xpos: c_int) -> c_int {
+unsafe fn get_tile_div_mod_impl(state: &mut State, xpos: c_int) -> c_int {
     let x = xpos - SCREENSPACE_X;
     let mut xl = x % TILE_SIZEX;
     let mut xh = x / TILE_SIZEX;
@@ -898,8 +944,13 @@ pub unsafe extern "C" fn get_tile_div_mod(xpos: c_int) -> c_int {
             xl = BOGUS_AFTER[off] as i32;
         }
     }
-    obj_xl = xl as u8;
+    *state.obj_xl() = xl as u8;
     xh
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn get_tile_div_mod(xpos: c_int) -> c_int {
+    get_tile_div_mod_impl(&mut State, xpos)
 }
 
 #[no_mangle]
@@ -907,56 +958,92 @@ pub unsafe extern "C" fn y_to_row_mod4(ypos: c_int) -> c_int {
     (ypos + 60) / TILE_SIZEY % 4 - 1
 }
 
+unsafe fn loadkid_impl(state: &mut State) {
+    *state.Char() = *state.Kid();
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn loadkid() {
-    Char = Kid;
+    loadkid_impl(&mut State);
+}
+
+unsafe fn savekid_impl(state: &mut State) {
+    *state.Kid() = *state.Char();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn savekid() {
-    Kid = Char;
+    savekid_impl(&mut State);
+}
+
+unsafe fn loadshad_impl(state: &mut State) {
+    *state.Char() = *state.Guard();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn loadshad() {
-    Char = Guard;
+    loadshad_impl(&mut State);
+}
+
+unsafe fn saveshad_impl(state: &mut State) {
+    *state.Guard() = *state.Char();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn saveshad() {
-    Guard = Char;
+    saveshad_impl(&mut State);
+}
+
+unsafe fn loadkid_and_opp_impl(state: &mut State) {
+    loadkid_impl(state);
+    *state.Opp() = *state.Guard();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn loadkid_and_opp() {
-    loadkid();
-    Opp = Guard;
+    loadkid_and_opp_impl(&mut State);
+}
+
+unsafe fn savekid_and_opp_impl(state: &mut State) {
+    savekid_impl(state);
+    *state.Guard() = *state.Opp();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn savekid_and_opp() {
-    savekid();
-    Guard = Opp;
+    savekid_and_opp_impl(&mut State);
+}
+
+unsafe fn loadshad_and_opp_impl(state: &mut State) {
+    loadshad_impl(state);
+    *state.Opp() = *state.Kid();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn loadshad_and_opp() {
-    loadshad();
-    Opp = Kid;
+    loadshad_and_opp_impl(&mut State);
+}
+
+unsafe fn saveshad_and_opp_impl(state: &mut State) {
+    saveshad_impl(state);
+    *state.Kid() = *state.Opp();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn saveshad_and_opp() {
-    saveshad();
-    Kid = Opp;
+    saveshad_and_opp_impl(&mut State);
+}
+
+unsafe fn reset_obj_clip_impl(state: &mut State) {
+    *state.obj_clip_left()   = 0;
+    *state.obj_clip_top()    = 0;
+    *state.obj_clip_right()  = 320;
+    *state.obj_clip_bottom() = 192;
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn reset_obj_clip() {
-    obj_clip_left   = 0;
-    obj_clip_top    = 0;
-    obj_clip_right  = 320;
-    obj_clip_bottom = 192;
+    reset_obj_clip_impl(&mut State);
 }
 
 #[no_mangle]
@@ -966,46 +1053,55 @@ pub unsafe extern "C" fn x_to_xh_and_xl(xpos: c_int, xh_addr: *mut i8, xl_addr: 
     *xl_addr = (xpos & 7) as i8;
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn fall_accel() {
-    if Char.action == actions_actions_4_in_freefall as u8 {
-        if is_feather_fall != 0
+unsafe fn fall_accel_impl(state: &mut State) {
+    if state.Char().action == actions_actions_4_in_freefall as u8 {
+        if *state.is_feather_fall() != 0
             // FIX_FEATHER_FALL_AFFECTS_GUARDS: only kid affected
-            && ((*fixes).fix_feather_fall_affects_guards == 0 || Char.charid == charids_charid_0_kid as u8)
+            && ((*fixes).fix_feather_fall_affects_guards == 0 || state.Char().charid == charids_charid_0_kid as u8)
         {
-            Char.fall_y += FALLING_SPEED_ACCEL_FEATHER;
-            if Char.fall_y > FALLING_SPEED_MAX_FEATHER {
-                Char.fall_y = FALLING_SPEED_MAX_FEATHER;
+            state.Char().fall_y += FALLING_SPEED_ACCEL_FEATHER;
+            if state.Char().fall_y > FALLING_SPEED_MAX_FEATHER {
+                state.Char().fall_y = FALLING_SPEED_MAX_FEATHER;
             }
         } else {
-            Char.fall_y += FALLING_SPEED_ACCEL;
-            if Char.fall_y > FALLING_SPEED_MAX {
-                Char.fall_y = FALLING_SPEED_MAX;
+            state.Char().fall_y += FALLING_SPEED_ACCEL;
+            if state.Char().fall_y > FALLING_SPEED_MAX {
+                state.Char().fall_y = FALLING_SPEED_MAX;
             }
         }
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fall_speed() {
-    Char.y = Char.y.wrapping_add(Char.fall_y as u8);
+pub unsafe extern "C" fn fall_accel() {
+    fall_accel_impl(&mut State);
+}
+
+unsafe fn fall_speed_impl(state: &mut State) {
+    state.Char().y = state.Char().y.wrapping_add(state.Char().fall_y as u8);
     // USE_SUPER_HIGH_JUMP
-    if Char.action == actions_actions_4_in_freefall as u8
-        && ((*fixes).enable_super_high_jump == 0 || super_jump_fall == 0)
+    if state.Char().action == actions_actions_4_in_freefall as u8
+        && ((*fixes).enable_super_high_jump == 0 || *state.super_jump_fall() == 0)
     {
-        Char.x = char_dx_forward(Char.fall_x as i32) as u8;
-        load_fram_det_col();
+        let fx = state.Char().fall_x as i32;
+        let dx = char_dx_forward_impl(state, fx);
+        state.Char().x = dx as u8;
+        load_fram_det_col_impl(state);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn check_action() {
-    let action = Char.action;
-    let frame  = Char.frame;
+pub unsafe extern "C" fn fall_speed() {
+    fall_speed_impl(&mut State);
+}
+
+unsafe fn check_action_impl(state: &mut State) {
+    let action = state.Char().action;
+    let frame  = state.Char().frame;
     // USE_JUMP_GRAB
     if (*fixes).enable_jump_grab != 0
         && action == actions_actions_1_run_jump as u8
-        && control_shift == CONTROL_HELD as i8
+        && *state.control_shift() == CONTROL_HELD as i8
         && check_grab_run_jump() != 0
     {
         return;
@@ -1019,7 +1115,7 @@ pub unsafe extern "C" fn check_action() {
                 && frame >= frameids_frame_177_spiked as u8
                 && frame <= frameids_frame_185_dead as u8)
         {
-            check_on_floor();
+            check_on_floor_impl(state);
         }
     } else if action == actions_actions_4_in_freefall as u8 {
         do_fall();
@@ -1028,8 +1124,13 @@ pub unsafe extern "C" fn check_action() {
             check_grab();
         }
     } else if action != actions_actions_2_hang_climb as u8 {
-        check_on_floor();
+        check_on_floor_impl(state);
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn check_action() {
+    check_action_impl(&mut State);
 }
 
 #[no_mangle]
@@ -1047,10 +1148,12 @@ pub unsafe extern "C" fn tile_is_floor(tiletype: c_int) -> c_int {
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn check_spiked() {
-    let frame = Char.frame;
-    if get_tile(Char.room as c_int, Char.curr_col as c_int, Char.curr_row as c_int) == tiles_tiles_2_spike as c_int {
+unsafe fn check_spiked_impl(state: &mut State) {
+    let frame = state.Char().frame;
+    let room = state.Char().room;
+    let curr_col = state.Char().curr_col;
+    let curr_row = state.Char().curr_row;
+    if get_tile_impl(state, room as c_int, curr_col as c_int, curr_row as c_int) == tiles_tiles_2_spike as c_int {
         let harmful = is_spike_harmful();
         if (harmful >= 2
                 && ((frame >= frameids_frame_7_run as u8 && frame < 15)
@@ -1065,115 +1168,147 @@ pub unsafe extern "C" fn check_spiked() {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn take_hp(count: c_int) -> c_int {
+pub unsafe extern "C" fn check_spiked() {
+    check_spiked_impl(&mut State);
+}
+
+unsafe fn take_hp_impl(state: &mut State, count: c_int) -> c_int {
     let mut dead: u16 = 0;
-    if Char.charid == charids_charid_0_kid as u8 {
-        if count >= hitp_curr as i32 {
-            hitp_delta = -(hitp_curr as i32) as i16;
+    if state.Char().charid == charids_charid_0_kid as u8 {
+        if count >= *state.hitp_curr() as i32 {
+            *state.hitp_delta() = -(*state.hitp_curr() as i32) as i16;
             dead = 1;
         } else {
-            hitp_delta = -(count as i16);
+            *state.hitp_delta() = -(count as i16);
         }
     } else {
-        if count >= guardhp_curr as i32 {
-            guardhp_delta = -(guardhp_curr as i32) as i16;
+        if count >= *state.guardhp_curr() as i32 {
+            *state.guardhp_delta() = -(*state.guardhp_curr() as i32) as i16;
             dead = 1;
         } else {
-            guardhp_delta = -(count as i16);
+            *state.guardhp_delta() = -(count as i16);
         }
     }
     dead as c_int
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn take_hp(count: c_int) -> c_int {
+    take_hp_impl(&mut State, count)
+}
+
+unsafe fn get_tile_at_char_impl(state: &mut State) -> c_int {
+    let room = state.Char().room;
+    let curr_col = state.Char().curr_col;
+    let curr_row = state.Char().curr_row;
+    get_tile_impl(state, room as c_int, curr_col as c_int, curr_row as c_int)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn get_tile_at_char() -> c_int {
-    get_tile(Char.room as c_int, Char.curr_col as c_int, Char.curr_row as c_int)
+    get_tile_at_char_impl(&mut State)
+}
+
+unsafe fn set_char_collision_impl(state: &mut State) {
+    let image = get_image(*state.obj_chtab() as c_short, *state.obj_id() as c_int);
+    if image.is_null() {
+        *state.char_width_half() = 0;
+        *state.char_height()     = 0;
+    } else {
+        *state.char_width_half() = (((*image).w as i32 + 1) / 2) as u16;
+        *state.char_height()     = (*image).h as u16;
+    }
+    *state.char_x_left() = (*state.obj_x() as i32 / 2 + 58) as i16;
+    if state.Char().direction >= directions_dir_0_right as i8 {
+        *state.char_x_left() -= *state.char_width_half() as i16;
+    }
+    *state.char_x_left_coll() = *state.char_x_left();
+    *state.char_x_right()     = (*state.char_x_left() as i32 + *state.char_width_half() as i32) as i16;
+    *state.char_x_right_coll() = *state.char_x_right();
+    *state.char_top_y() = (*state.obj_y() as i32 - *state.char_height() as i32 + 1) as i16;
+    if *state.char_top_y() >= 192 {
+        *state.char_top_y() = 0;
+    }
+    let cty = *state.char_top_y();
+    *state.char_top_row()    = y_to_row_mod4(cty as c_int) as i16;
+    let oy = *state.obj_y();
+    *state.char_bottom_row() = y_to_row_mod4(oy as c_int) as i16;
+    if *state.char_bottom_row() == -1 {
+        *state.char_bottom_row() = 3;
+    }
+    let cxl = *state.char_x_left() as c_int;
+    let cxr = *state.char_x_right() as c_int;
+    *state.char_col_left()  = get_tile_div_mod_impl(state, cxl).max(0) as i16;
+    *state.char_col_right() = get_tile_div_mod_impl(state, cxr).min(9) as i16;
+    if state.cur_frame().flags & frame_flags_FRAME_THIN as u8 != 0 {
+        *state.char_x_left_coll()  += 4;
+        *state.char_x_right_coll() -= 4;
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn set_char_collision() {
-    let image = get_image(obj_chtab as c_short, obj_id as c_int);
-    if image.is_null() {
-        char_width_half = 0;
-        char_height     = 0;
-    } else {
-        char_width_half = (((*image).w as i32 + 1) / 2) as u16;
-        char_height     = (*image).h as u16;
-    }
-    char_x_left = (obj_x as i32 / 2 + 58) as i16;
-    if Char.direction >= directions_dir_0_right as i8 {
-        char_x_left -= char_width_half as i16;
-    }
-    char_x_left_coll = char_x_left;
-    char_x_right     = (char_x_left as i32 + char_width_half as i32) as i16;
-    char_x_right_coll = char_x_right;
-    char_top_y = (obj_y as i32 - char_height as i32 + 1) as i16;
-    if char_top_y >= 192 {
-        char_top_y = 0;
-    }
-    char_top_row    = y_to_row_mod4(char_top_y as c_int) as i16;
-    char_bottom_row = y_to_row_mod4(obj_y as c_int) as i16;
-    if char_bottom_row == -1 {
-        char_bottom_row = 3;
-    }
-    char_col_left  = get_tile_div_mod(char_x_left as c_int).max(0) as i16;
-    char_col_right = get_tile_div_mod(char_x_right as c_int).min(9) as i16;
-    if cur_frame.flags & frame_flags_FRAME_THIN as u8 != 0 {
-        char_x_left_coll  += 4;
-        char_x_right_coll -= 4;
-    }
+    set_char_collision_impl(&mut State);
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn check_on_floor() {
-    if cur_frame.flags & frame_flags_FRAME_NEEDS_FLOOR as u8 != 0 {
+unsafe fn check_on_floor_impl(state: &mut State) {
+    if state.cur_frame().flags & frame_flags_FRAME_NEEDS_FLOOR as u8 != 0 {
         // FIX_FALLING_THROUGH_FLOOR_DURING_SWORD_STRIKE
         if (*fixes).fix_falling_through_floor_during_sword_strike != 0
-            && Char.frame == frameids_frame_153_strike_3 as u8
+            && state.Char().frame == frameids_frame_153_strike_3 as u8
         {
             return;
         }
-        if get_tile_at_char() == tiles_tiles_20_wall as c_int {
-            in_wall();
+        if get_tile_at_char_impl(state) == tiles_tiles_20_wall as c_int {
+            in_wall_impl(state);
         }
-        if tile_is_floor(curr_tile2 as c_int) == 0 {
+        if tile_is_floor(*state.curr_tile2() as c_int) == 0 {
             // Special event: floors appear (level 12)
-            if current_level == 12
-                && (united_with_shadow < 0
-                    || ((*fixes).fix_hidden_floors_during_flashing != 0 && united_with_shadow > 0))
-                && Char.curr_row == 0
-                && (Char.room == 2 || (Char.room == 13 && tile_col >= 6))
+            if *state.current_level() == 12
+                && (*state.united_with_shadow() < 0
+                    || ((*fixes).fix_hidden_floors_during_flashing != 0 && *state.united_with_shadow() > 0))
+                && state.Char().curr_row == 0
+                && (state.Char().room == 2 || (state.Char().room == 13 && *state.tile_col() >= 6))
             {
-                *curr_room_tiles.add(curr_tilepos as usize) = tiles_tiles_1_floor as u8;
-                set_wipe(curr_tilepos as c_short, 1);
-                set_redraw_full(curr_tilepos as c_short, 1);
-                curr_tilepos += 1;
-                set_wipe(curr_tilepos as c_short, 1);
-                set_redraw_full(curr_tilepos as c_short, 1);
+                *curr_room_tiles.add(*state.curr_tilepos() as usize) = tiles_tiles_1_floor as u8;
+                set_wipe(*state.curr_tilepos() as c_short, 1);
+                set_redraw_full(*state.curr_tilepos() as c_short, 1);
+                *state.curr_tilepos() += 1;
+                set_wipe(*state.curr_tilepos() as c_short, 1);
+                set_redraw_full(*state.curr_tilepos() as c_short, 1);
             } else {
                 // FIX_STAND_ON_THIN_AIR
                 if (*fixes).fix_stand_on_thin_air != 0
-                    && Char.frame >= frameids_frame_110_stand_up_from_crouch_1 as u8
-                    && Char.frame <= frameids_frame_119_stand_up_from_crouch_10 as u8
+                    && state.Char().frame >= frameids_frame_110_stand_up_from_crouch_1 as u8
+                    && state.Char().frame <= frameids_frame_119_stand_up_from_crouch_10 as u8
                 {
-                    let col = get_tile_div_mod_m7(dx_weight() + back_delta_x(2));
-                    if tile_is_floor(get_tile(Char.room as c_int, col, Char.curr_row as c_int)) != 0 {
+                    let dxw = dx_weight_impl(state);
+                    let bdx = back_delta_x_impl(state, 2);
+                    let col = get_tile_div_mod_m7(dxw + bdx);
+                    let room = state.Char().room;
+                    let curr_row = state.Char().curr_row;
+                    let t = get_tile_impl(state, room as c_int, col, curr_row as c_int);
+                    if tile_is_floor(t) != 0 {
                         return;
                     }
                 }
-                start_fall();
+                start_fall_impl(state);
             }
         }
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn start_fall() {
-    let frame = Char.frame;
-    Char.sword = sword_status_sword_0_sheathed as u8;
-    inc_curr_row();
+pub unsafe extern "C" fn check_on_floor() {
+    check_on_floor_impl(&mut State);
+}
+
+unsafe fn start_fall_impl(state: &mut State) {
+    let frame = state.Char().frame;
+    state.Char().sword = sword_status_sword_0_sheathed as u8;
+    inc_curr_row_impl(state);
     start_chompers();
-    fall_frame = frame;
+    *state.fall_frame() = frame;
     let seq_id: u16;
     if frame == frameids_frame_9_run as u8 {
         seq_id = seqids_seq_7_fall as u16;
@@ -1185,27 +1320,30 @@ pub unsafe extern "C" fn start_fall() {
         seq_id = seqids_seq_21_fall_after_running_jump as u16;
     } else if frame >= frameids_frame_81_hangdrop_1 as u8 && frame < 86 {
         seq_id = seqids_seq_19_fall as u16;
-        Char.x = char_dx_forward(5) as u8;
-        load_fram_det_col();
+        let dx = char_dx_forward_impl(state, 5);
+        state.Char().x = dx as u8;
+        load_fram_det_col_impl(state);
     } else if frame >= 150 && frame < 180 {
-        if Char.charid == charids_charid_2_guard as u8 {
-            if Char.curr_row == 3 && Char.curr_col == 10 {
-                clear_char();
+        if state.Char().charid == charids_charid_2_guard as u8 {
+            if state.Char().curr_row == 3 && state.Char().curr_col == 10 {
+                clear_char_impl(state);
                 return;
             }
-            if (Char.fall_x as i32) < 0 {
+            if (state.Char().fall_x as i32) < 0 {
                 seq_id = seqids_seq_82_guard_pushed_off_ledge as u16;
-                if Char.direction < directions_dir_0_right as i8 && distance_to_edge_weight() <= 7 {
-                    Char.x = char_dx_forward(-5) as u8;
+                if state.Char().direction < directions_dir_0_right as i8 && distance_to_edge_weight_impl(state) <= 7 {
+                    let dx = char_dx_forward_impl(state, -5);
+                    state.Char().x = dx as u8;
                 }
             } else {
-                droppedout = 0;
+                *state.droppedout() = 0;
                 seq_id = seqids_seq_83_guard_fall as u16;
             }
         } else {
-            droppedout = 1;
-            if Char.direction < directions_dir_0_right as i8 && distance_to_edge_weight() <= 7 {
-                Char.x = char_dx_forward(-5) as u8;
+            *state.droppedout() = 1;
+            if state.Char().direction < directions_dir_0_right as i8 && distance_to_edge_weight_impl(state) <= 7 {
+                let dx = char_dx_forward_impl(state, -5);
+                state.Char().x = dx as u8;
             }
             seq_id = seqids_seq_81_kid_pushed_off_ledge as u16;
         }
@@ -1213,61 +1351,70 @@ pub unsafe extern "C" fn start_fall() {
         seq_id = seqids_seq_7_fall as u16;
     }
     seqtbl_offset_char(seq_id as c_short);
-    play_seq();
-    load_fram_det_col();
-    if get_tile_at_char() == tiles_tiles_20_wall as c_int {
-        in_wall();
+    play_seq_impl(state);
+    load_fram_det_col_impl(state);
+    if get_tile_at_char_impl(state) == tiles_tiles_20_wall as c_int {
+        in_wall_impl(state);
         return;
     }
-    let tile = get_tile_infrontof_char();
+    let tile = get_tile_infrontof_char_impl(state);
     if tile == tiles_tiles_20_wall as c_int
         || ((*fixes).fix_running_jump_through_tapestry != 0
-            && Char.direction == directions_dir_FF_left as i8
+            && state.Char().direction == directions_dir_FF_left as i8
             && (tile == tiles_tiles_12_doortop as c_int
                 || tile == tiles_tiles_7_doortop_with_floor as c_int))
     {
-        if fall_frame != frameids_frame_44_running_jump_5 as u8
-            || distance_to_edge_weight() >= 6
+        if *state.fall_frame() != frameids_frame_44_running_jump_5 as u8
+            || distance_to_edge_weight_impl(state) >= 6
         {
-            Char.x = char_dx_forward(-1) as u8;
+            let dx = char_dx_forward_impl(state, -1);
+            state.Char().x = dx as u8;
         } else {
             seqtbl_offset_char(seqids_seq_104_start_fall_in_front_of_wall as c_short);
-            play_seq();
+            play_seq_impl(state);
         }
-        load_fram_det_col();
+        load_fram_det_col_impl(state);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn check_grab() {
+pub unsafe extern "C" fn start_fall() {
+    start_fall_impl(&mut State);
+}
+
+unsafe fn check_grab_impl(state: &mut State) {
     // FIX_GRAB_FALLING_SPEED: max = 30 if fix enabled, else 32
     let max_grab_falling_speed: i8 = if (*fixes).fix_grab_falling_speed != 0 { 30 } else { 32 };
-    if (control_shift == CONTROL_HELD as i8
+    if (*state.control_shift() == CONTROL_HELD as i8
             // USE_SUPER_HIGH_JUMP: also allow grabbing with up arrow during super jump
             || ((*fixes).enable_super_high_jump != 0
-                && super_jump_fall != 0
-                && control_y == CONTROL_HELD_UP as i8))
-        && Char.fall_y < max_grab_falling_speed
-        && Char.alive < 0
-        && (y_land_at((Char.curr_row + 1) as usize) as u16) <= (Char.y as i32 + 25) as u16
+                && *state.super_jump_fall() != 0
+                && *state.control_y() == CONTROL_HELD_UP as i8))
+        && state.Char().fall_y < max_grab_falling_speed
+        && state.Char().alive < 0
+        && (y_land_at((state.Char().curr_row + 1) as usize) as u16) <= (state.Char().y as i32 + 25) as u16
     {
-        let old_x = Char.x;
-        let super_delta: i32 = if (*fixes).enable_super_high_jump != 0 && super_jump_fall != 0 {
-            if Char.direction == directions_dir_FF_left as i8 { 3 } else { 4 }
+        let old_x = state.Char().x;
+        let super_delta: i32 = if (*fixes).enable_super_high_jump != 0 && *state.super_jump_fall() != 0 {
+            if state.Char().direction == directions_dir_FF_left as i8 { 3 } else { 4 }
         } else { 0 };
-        Char.x = char_dx_forward(-8 + super_delta) as u8;
-        load_fram_det_col();
-        if can_grab_front_above() == 0 {
-            Char.x = old_x;
+        let dx = char_dx_forward_impl(state, -8 + super_delta);
+        state.Char().x = dx as u8;
+        load_fram_det_col_impl(state);
+        if can_grab_front_above_impl(state) == 0 {
+            state.Char().x = old_x;
         } else {
-            Char.x = char_dx_forward(distance_to_edge_weight() - super_delta) as u8;
-            Char.y = y_land_at((Char.curr_row + 1) as usize) as u8;
-            Char.fall_y = 0;
+            let dew = distance_to_edge_weight_impl(state);
+            let dx = char_dx_forward_impl(state, dew - super_delta);
+            state.Char().x = dx as u8;
+            let curr_row = state.Char().curr_row;
+            state.Char().y = y_land_at((curr_row + 1) as usize) as u8;
+            state.Char().fall_y = 0;
             seqtbl_offset_char(seqids_seq_15_grab_ledge_midair as c_short);
-            play_seq();
-            grab_timer = 12;
+            play_seq_impl(state);
+            *state.grab_timer() = 12;
             play_sound(soundids_sound_9_grab as c_int);
-            is_screaming = 0;
+            *state.is_screaming() = 0;
             // FIX_CHOMPERS_NOT_STARTING
             if (*fixes).fix_chompers_not_starting != 0 { start_chompers(); }
         }
@@ -1275,51 +1422,60 @@ pub unsafe extern "C" fn check_grab() {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn check_grab_run_jump() -> c_int {
-    let frame = Char.frame as u32;
+pub unsafe extern "C" fn check_grab() {
+    check_grab_impl(&mut State);
+}
+
+unsafe fn check_grab_run_jump_impl(state: &mut State) -> c_int {
+    let frame = state.Char().frame as u32;
     let is_jump = frame >= frameids_frame_22_standing_jump_7 as u32
                && frame <= frameids_frame_23_standing_jump_8 as u32;
     let is_running_jump = frame >= frameids_frame_39_start_run_jump_6 as u32
                        && frame <= frameids_frame_41_running_jump_2 as u32;
-    let char_room_m1 = Char.room - 1;
-    if Char.action == actions_actions_1_run_jump as u8
+    let char_room_m1 = state.Char().room - 1;
+    if state.Char().action == actions_actions_1_run_jump as u8
         && (is_jump || is_running_jump)
-        && control_x == CONTROL_RELEASED as i8
-        && control_y == CONTROL_HELD_UP as i8
+        && *state.control_x() == CONTROL_RELEASED as i8
+        && *state.control_y() == CONTROL_HELD_UP as i8
     {
-        if can_grab_front_above() != 0 {
-            let grab_tile = curr_tile2;
-            let mut grab_col = tile_col;
-            if curr_room != Char.room as i16 {
-                let left_room  = level.roomlinks[char_room_m1 as usize].left;
-                let right_room = level.roomlinks[char_room_m1 as usize].right;
-                let up_room    = level.roomlinks[char_room_m1 as usize].up;
-                if curr_room == right_room as i16 {
+        if can_grab_front_above_impl(state) != 0 {
+            let grab_tile = *state.curr_tile2();
+            let mut grab_col = *state.tile_col();
+            let char_room = state.Char().room;
+            if *state.curr_room() != char_room as i16 {
+                let left_room  = state.level().roomlinks[char_room_m1 as usize].left;
+                let right_room = state.level().roomlinks[char_room_m1 as usize].right;
+                let up_room    = state.level().roomlinks[char_room_m1 as usize].up;
+                if *state.curr_room() == right_room as i16 {
                     grab_col += 10;
-                } else if curr_room == left_room as i16 {
+                } else if *state.curr_room() == left_room as i16 {
                     grab_col -= 10;
-                } else if right_room != 0 && curr_room == level.roomlinks[(right_room - 1) as usize].up as i16 {
+                } else if right_room != 0 && *state.curr_room() == state.level().roomlinks[(right_room - 1) as usize].up as i16 {
                     grab_col += 10;
-                } else if left_room != 0 && curr_room == level.roomlinks[(left_room - 1) as usize].up as i16 {
+                } else if left_room != 0 && *state.curr_room() == state.level().roomlinks[(left_room - 1) as usize].up as i16 {
                     grab_col -= 10;
-                } else if up_room != 0 && curr_room == level.roomlinks[(up_room - 1) as usize].right as i16 {
+                } else if up_room != 0 && *state.curr_room() == state.level().roomlinks[(up_room - 1) as usize].right as i16 {
                     grab_col += 10;
-                } else if up_room != 0 && curr_room == level.roomlinks[(up_room - 1) as usize].left as i16 {
+                } else if up_room != 0 && *state.curr_room() == state.level().roomlinks[(up_room - 1) as usize].left as i16 {
                     grab_col -= 10;
                 }
             }
-            Char.x = (x_bump_at((grab_col + FIRST_ONSCREEN_COLUMN as i16) as usize) as i32 + TILE_MIDX) as u8;
-            let dir_delta: i32 = if Char.direction == directions_dir_FF_left as i8 { -12 } else { 2 };
-            Char.x = char_dx_forward(dir_delta) as u8;
-            Char.y = y_land_at((Char.curr_row + 1) as usize) as u8;
+            let bump_x = x_bump_at((grab_col + FIRST_ONSCREEN_COLUMN as i16) as usize) as i32 + TILE_MIDX;
+            let dx = char_dx_forward_impl(state, bump_x);
+            state.Char().x = dx as u8;
+            let dir_delta: i32 = if state.Char().direction == directions_dir_FF_left as i8 { -12 } else { 2 };
+            let dx = char_dx_forward_impl(state, dir_delta);
+            state.Char().x = dx as u8;
+            let curr_row = state.Char().curr_row;
+            state.Char().y = y_land_at((curr_row + 1) as usize) as u8;
             seqtbl_offset_char(seqids_seq_9_grab_while_jumping as c_short);
-            play_seq();
-            grab_timer = 12;
+            play_seq_impl(state);
+            *state.grab_timer() = 12;
             play_sound(soundids_sound_9_grab as c_int);
             if grab_tile == tiles_tiles_15_opener as u8 || grab_tile == tiles_tiles_6_closer as u8 {
                 trigger_button(1, 0, -1);
             } else if grab_tile == tiles_tiles_11_loose as u8 {
-                is_guard_notice = 1;
+                *state.is_guard_notice() = 1;
                 make_loose_fall(1);
             }
             return 1;
@@ -1329,135 +1485,190 @@ pub unsafe extern "C" fn check_grab_run_jump() -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn can_grab_front_above() -> c_int {
-    through_tile = get_tile_above_char() as u8;
-    get_tile_front_above_char();
-    can_grab()
+pub unsafe extern "C" fn check_grab_run_jump() -> c_int {
+    check_grab_run_jump_impl(&mut State)
+}
+
+unsafe fn can_grab_front_above_impl(state: &mut State) -> c_int {
+    let above = get_tile_above_char_impl(state) as u8;
+    *state.through_tile() = above;
+    get_tile_front_above_char_impl(state);
+    can_grab_impl(state)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn in_wall() {
-    let mut delta_x = distance_to_edge_weight();
-    if delta_x >= 8 || get_tile_infrontof_char() == tiles_tiles_20_wall as c_int {
+pub unsafe extern "C" fn can_grab_front_above() -> c_int {
+    can_grab_front_above_impl(&mut State)
+}
+
+unsafe fn in_wall_impl(state: &mut State) {
+    let mut delta_x = distance_to_edge_weight_impl(state);
+    if delta_x >= 8 || get_tile_infrontof_char_impl(state) == tiles_tiles_20_wall as c_int {
         delta_x = 6 - delta_x;
     } else {
         delta_x += 4;
     }
-    Char.x = char_dx_forward(delta_x) as u8;
-    load_fram_det_col();
-    get_tile_at_char();
+    let dx = char_dx_forward_impl(state, delta_x);
+    state.Char().x = dx as u8;
+    load_fram_det_col_impl(state);
+    get_tile_at_char_impl(state);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn in_wall() {
+    in_wall_impl(&mut State);
+}
+
+unsafe fn get_tile_infrontof_char_impl(state: &mut State) -> c_int {
+    let d = dir_front_at((state.Char().direction as i8 + 1) as usize);
+    *state.infrontx() = (d as i32 + state.Char().curr_col as i32) as i8;
+    let room = state.Char().room;
+    let ifx = *state.infrontx();
+    let curr_row = state.Char().curr_row;
+    get_tile_impl(state, room as c_int, ifx as c_int, curr_row as c_int)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn get_tile_infrontof_char() -> c_int {
-    infrontx = (dir_front_at((Char.direction as i8 + 1) as usize) as i32 + Char.curr_col as i32) as i8;
-    get_tile(Char.room as c_int, infrontx as c_int, Char.curr_row as c_int)
+    get_tile_infrontof_char_impl(&mut State)
+}
+
+unsafe fn get_tile_infrontof2_char_impl(state: &mut State) -> c_int {
+    let direction = dir_front_at((state.Char().direction as i8 + 1) as usize);
+    *state.infrontx() = ((direction as i32 * 2) + state.Char().curr_col as i32) as i8;
+    let room = state.Char().room;
+    let ifx = *state.infrontx();
+    let curr_row = state.Char().curr_row;
+    get_tile_impl(state, room as c_int, ifx as c_int, curr_row as c_int)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn get_tile_infrontof2_char() -> c_int {
-    let direction = dir_front_at((Char.direction as i8 + 1) as usize);
-    infrontx = ((direction as i32 * 2) + Char.curr_col as i32) as i8;
-    get_tile(Char.room as c_int, infrontx as c_int, Char.curr_row as c_int)
+    get_tile_infrontof2_char_impl(&mut State)
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn get_tile_behind_char() -> c_int {
-    get_tile(
-        Char.room as c_int,
-        (dir_behind_at((Char.direction as i8 + 1) as usize) as i32 + Char.curr_col as i32) as c_int,
-        Char.curr_row as c_int,
+unsafe fn get_tile_behind_char_impl(state: &mut State) -> c_int {
+    let d = dir_behind_at((state.Char().direction as i8 + 1) as usize);
+    let room = state.Char().room;
+    let curr_col = state.Char().curr_col;
+    let curr_row = state.Char().curr_row;
+    get_tile_impl(
+        state,
+        room as c_int,
+        (d as i32 + curr_col as i32) as c_int,
+        curr_row as c_int,
     )
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn distance_to_edge_weight() -> c_int {
-    distance_to_edge(dx_weight())
+pub unsafe extern "C" fn get_tile_behind_char() -> c_int {
+    get_tile_behind_char_impl(&mut State)
+}
+
+unsafe fn distance_to_edge_weight_impl(state: &mut State) -> c_int {
+    let dxw = dx_weight_impl(state);
+    distance_to_edge_impl(state, dxw)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn distance_to_edge(xpos: c_int) -> c_int {
+pub unsafe extern "C" fn distance_to_edge_weight() -> c_int {
+    distance_to_edge_weight_impl(&mut State)
+}
+
+unsafe fn distance_to_edge_impl(state: &mut State, xpos: c_int) -> c_int {
     get_tile_div_mod_m7(xpos);
-    let mut distance = obj_xl as c_int;
-    if Char.direction == directions_dir_0_right as i8 {
+    let mut distance = *state.obj_xl() as c_int;
+    if state.Char().direction == directions_dir_0_right as i8 {
         distance = TILE_RIGHTX - distance;
     }
     distance
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fell_out() {
-    if Char.alive < 0 && Char.room == 0 {
-        take_hp(100);
-        Char.alive = 0;
+pub unsafe extern "C" fn distance_to_edge(xpos: c_int) -> c_int {
+    distance_to_edge_impl(&mut State, xpos)
+}
+
+unsafe fn fell_out_impl(state: &mut State) {
+    if state.Char().alive < 0 && state.Char().room == 0 {
+        take_hp_impl(state, 100);
+        state.Char().alive = 0;
         erase_bottom_text(1);
-        Char.frame = frameids_frame_185_dead as u8;
+        state.Char().frame = frameids_frame_185_dead as u8;
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn play_kid() {
-    fell_out();
-    control_kid();
-    if Char.alive >= 0 && is_dead() != 0 {
-        if resurrect_time != 0 {
+pub unsafe extern "C" fn fell_out() {
+    fell_out_impl(&mut State);
+}
+
+unsafe fn play_kid_impl(state: &mut State) {
+    fell_out_impl(state);
+    control_kid_impl(state);
+    if state.Char().alive >= 0 && is_dead() != 0 {
+        if *state.resurrect_time() != 0 {
             stop_sounds();
-            loadkid();
-            hitp_delta = hitp_max as i16;
+            loadkid_impl(state);
+            *state.hitp_delta() = *state.hitp_max() as i16;
             seqtbl_offset_char(seqids_seq_2_stand as c_short);
-            Char.x = Char.x.wrapping_add(8);
-            play_seq();
-            load_fram_det_col();
+            state.Char().x = state.Char().x.wrapping_add(8);
+            play_seq_impl(state);
+            load_fram_det_col_impl(state);
             set_start_pos();
         }
         if check_sound_playing() != 0 && current_sound != 5 {
             return;
         }
-        is_show_time = 0;
-        if Char.alive < 0 || Char.alive >= 6 {
-            if Char.alive == 6 {
+        *state.is_show_time() = 0;
+        if state.Char().alive < 0 || state.Char().alive >= 6 {
+            if state.Char().alive == 6 {
                 if is_sound_on != 0
-                    && current_level != 0
-                    && current_level != 15
+                    && *state.current_level() != 0
+                    && *state.current_level() != 15
                 {
-                    play_death_music();
+                    play_death_music_impl(state);
                 }
             } else {
-                if Char.alive != 7 || check_sound_playing() != 0 { return; }
-                if rem_min == 0 {
+                if state.Char().alive != 7 || check_sound_playing() != 0 { return; }
+                if *state.rem_min() == 0 {
                     expired();
                 }
-                if current_level != 0 && current_level != 15 {
-                    text_time_remaining = 288;
-                    text_time_total = 288;
+                if *state.current_level() != 0 && *state.current_level() != 15 {
+                    *state.text_time_remaining() = 288;
+                    *state.text_time_total() = 288;
                     display_text_bottom(b"Press Button to Continue\0".as_ptr() as *const _);
                 } else {
-                    text_time_remaining = 36;
-                    text_time_total = 36;
+                    *state.text_time_remaining() = 36;
+                    *state.text_time_total() = 36;
                 }
             }
         }
-        Char.alive += 1;
+        state.Char().alive += 1;
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn control_kid() {
-    if Char.alive < 0 && hitp_curr == 0 {
-        Char.alive = 0;
-        if (*fixes).fix_quicksave_during_feather != 0 && is_feather_fall > 0 {
-            is_feather_fall = 0;
+pub unsafe extern "C" fn play_kid() {
+    play_kid_impl(&mut State);
+}
+
+unsafe fn control_kid_impl(state: &mut State) {
+    if state.Char().alive < 0 && *state.hitp_curr() == 0 {
+        state.Char().alive = 0;
+        if (*fixes).fix_quicksave_during_feather != 0 && *state.is_feather_fall() > 0 {
+            *state.is_feather_fall() = 0;
             if check_sound_playing() != 0 {
                 stop_sounds();
             }
         }
     }
-    if grab_timer != 0 {
-        grab_timer -= 1;
+    if *state.grab_timer() != 0 {
+        *state.grab_timer() -= 1;
     }
     // USE_REPLAY: demo level check
-    if current_level == 0 && play_demo_level == 0 && replaying == 0 {
-        do_demo();
+    if *state.current_level() == 0 && *state.play_demo_level() == 0 && replaying == 0 {
+        do_demo_impl(state);
         control();
         let key = key_test_quit();
         if key == (15i32 | key_modifiers_WITH_CTRL as i32) {
@@ -1469,48 +1680,56 @@ pub unsafe extern "C" fn control_kid() {
             start_game();
         }
     } else {
-        rest_ctrl_1();
+        rest_ctrl_1_impl(state);
         do_paused();
         if recording != 0 { add_replay_move(); }
         if replaying != 0 { do_replay_move(); }
-        read_user_control();
-        user_control();
-        save_ctrl_1();
+        read_user_control_impl(state);
+        user_control_impl(state);
+        save_ctrl_1_impl(state);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn do_demo() {
-    if checkpoint != 0 {
-        control_shift2 = release_arrows() as i8;
-        control_forward = CONTROL_HELD as i8;
-        control_x = CONTROL_HELD_FORWARD as i8;
-    } else if Char.sword != 0 {
-        guard_skill = 10;
+pub unsafe extern "C" fn control_kid() {
+    control_kid_impl(&mut State);
+}
+
+unsafe fn do_demo_impl(state: &mut State) {
+    if *state.checkpoint() != 0 {
+        *state.control_shift2() = release_arrows() as i8;
+        *state.control_forward() = CONTROL_HELD as i8;
+        *state.control_x() = CONTROL_HELD_FORWARD as i8;
+    } else if state.Char().sword != 0 {
+        *state.guard_skill() = 10;
         autocontrol_opponent();
-        guard_skill = 11;
+        *state.guard_skill() = 11;
     } else {
         do_auto_moves(core::ptr::addr_of!((*custom).demo_moves) as *const auto_move_type);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn play_guard() {
-    if Char.charid == charids_charid_24_mouse as u8 {
+pub unsafe extern "C" fn do_demo() {
+    do_demo_impl(&mut State);
+}
+
+unsafe fn play_guard_impl(state: &mut State) {
+    if state.Char().charid == charids_charid_24_mouse as u8 {
         autocontrol_opponent();
     } else {
         let mut skip_shadow_check = false;
-        if Char.alive < 0 {
-            if guardhp_curr == 0 {
-                Char.alive = 0;
+        if state.Char().alive < 0 {
+            if *state.guardhp_curr() == 0 {
+                state.Char().alive = 0;
                 on_guard_killed();
             } else {
                 skip_shadow_check = true;
             }
         }
         if !skip_shadow_check {
-            if Char.charid == charids_charid_1_shadow as u8 {
-                clear_char();
+            if state.Char().charid == charids_charid_1_shadow as u8 {
+                clear_char_impl(state);
             }
         }
         autocontrol_opponent();
@@ -1519,132 +1738,169 @@ pub unsafe extern "C" fn play_guard() {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn user_control() {
-    if Char.direction >= directions_dir_0_right as i8 {
-        flip_control_x();
+pub unsafe extern "C" fn play_guard() {
+    play_guard_impl(&mut State);
+}
+
+unsafe fn user_control_impl(state: &mut State) {
+    if state.Char().direction >= directions_dir_0_right as i8 {
+        flip_control_x_impl(state);
         control();
-        flip_control_x();
+        flip_control_x_impl(state);
     } else {
         control();
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn flip_control_x() {
-    control_x = -control_x;
-    let temp = control_forward;
-    control_forward = control_backward;
-    control_backward = temp;
+pub unsafe extern "C" fn user_control() {
+    user_control_impl(&mut State);
+}
+
+unsafe fn flip_control_x_impl(state: &mut State) {
+    *state.control_x() = -*state.control_x();
+    let temp = *state.control_forward();
+    *state.control_forward() = *state.control_backward();
+    *state.control_backward() = temp;
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn release_arrows() -> c_int {
-    control_backward = CONTROL_RELEASED as i8;
-    control_forward  = CONTROL_RELEASED as i8;
-    control_up       = CONTROL_RELEASED as i8;
-    control_down     = CONTROL_RELEASED as i8;
+pub unsafe extern "C" fn flip_control_x() {
+    flip_control_x_impl(&mut State);
+}
+
+unsafe fn release_arrows_impl(state: &mut State) -> c_int {
+    *state.control_backward() = CONTROL_RELEASED as i8;
+    *state.control_forward()  = CONTROL_RELEASED as i8;
+    *state.control_up()       = CONTROL_RELEASED as i8;
+    *state.control_down()     = CONTROL_RELEASED as i8;
     1
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn release_arrows() -> c_int {
+    release_arrows_impl(&mut State)
+}
+
+unsafe fn save_ctrl_1_impl(state: &mut State) {
+    *state.ctrl1_forward()  = *state.control_forward();
+    *state.ctrl1_backward() = *state.control_backward();
+    *state.ctrl1_up()       = *state.control_up();
+    *state.ctrl1_down()     = *state.control_down();
+    *state.ctrl1_shift2()   = *state.control_shift2();
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn save_ctrl_1() {
-    ctrl1_forward  = control_forward;
-    ctrl1_backward = control_backward;
-    ctrl1_up       = control_up;
-    ctrl1_down     = control_down;
-    ctrl1_shift2   = control_shift2;
+    save_ctrl_1_impl(&mut State);
+}
+
+unsafe fn rest_ctrl_1_impl(state: &mut State) {
+    *state.control_forward()  = *state.ctrl1_forward();
+    *state.control_backward() = *state.ctrl1_backward();
+    *state.control_up()       = *state.ctrl1_up();
+    *state.control_down()     = *state.ctrl1_down();
+    *state.control_shift2()   = *state.ctrl1_shift2();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn rest_ctrl_1() {
-    control_forward  = ctrl1_forward;
-    control_backward = ctrl1_backward;
-    control_up       = ctrl1_up;
-    control_down     = ctrl1_down;
-    control_shift2   = ctrl1_shift2;
+    rest_ctrl_1_impl(&mut State);
+}
+
+unsafe fn clear_saved_ctrl_impl(state: &mut State) {
+    *state.ctrl1_forward()  = CONTROL_RELEASED as i8;
+    *state.ctrl1_backward() = CONTROL_RELEASED as i8;
+    *state.ctrl1_up()       = CONTROL_RELEASED as i8;
+    *state.ctrl1_down()     = CONTROL_RELEASED as i8;
+    *state.ctrl1_shift2()   = CONTROL_RELEASED as i8;
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn clear_saved_ctrl() {
-    ctrl1_forward  = CONTROL_RELEASED as i8;
-    ctrl1_backward = CONTROL_RELEASED as i8;
-    ctrl1_up       = CONTROL_RELEASED as i8;
-    ctrl1_down     = CONTROL_RELEASED as i8;
-    ctrl1_shift2   = CONTROL_RELEASED as i8;
+    clear_saved_ctrl_impl(&mut State);
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn read_user_control() {
-    if control_forward >= CONTROL_RELEASED as i8 {
-        if control_x == CONTROL_HELD_FORWARD as i8 {
-            if control_forward == CONTROL_RELEASED as i8 {
-                control_forward = CONTROL_HELD as i8;
+unsafe fn read_user_control_impl(state: &mut State) {
+    if *state.control_forward() >= CONTROL_RELEASED as i8 {
+        if *state.control_x() == CONTROL_HELD_FORWARD as i8 {
+            if *state.control_forward() == CONTROL_RELEASED as i8 {
+                *state.control_forward() = CONTROL_HELD as i8;
             }
         } else {
-            control_forward = CONTROL_RELEASED as i8;
+            *state.control_forward() = CONTROL_RELEASED as i8;
         }
     }
-    if control_backward >= CONTROL_RELEASED as i8 {
-        if control_x == CONTROL_HELD_BACKWARD as i8 {
-            if control_backward == CONTROL_RELEASED as i8 {
-                control_backward = CONTROL_HELD as i8;
+    if *state.control_backward() >= CONTROL_RELEASED as i8 {
+        if *state.control_x() == CONTROL_HELD_BACKWARD as i8 {
+            if *state.control_backward() == CONTROL_RELEASED as i8 {
+                *state.control_backward() = CONTROL_HELD as i8;
             }
         } else {
-            control_backward = CONTROL_RELEASED as i8;
+            *state.control_backward() = CONTROL_RELEASED as i8;
         }
     }
-    if control_up >= CONTROL_RELEASED as i8 {
-        if control_y == CONTROL_HELD_UP as i8 {
-            if control_up == CONTROL_RELEASED as i8 {
-                control_up = CONTROL_HELD as i8;
+    if *state.control_up() >= CONTROL_RELEASED as i8 {
+        if *state.control_y() == CONTROL_HELD_UP as i8 {
+            if *state.control_up() == CONTROL_RELEASED as i8 {
+                *state.control_up() = CONTROL_HELD as i8;
             }
         } else {
-            control_up = CONTROL_RELEASED as i8;
+            *state.control_up() = CONTROL_RELEASED as i8;
         }
     }
-    if control_down >= CONTROL_RELEASED as i8 {
-        if control_y == CONTROL_HELD_DOWN as i8 {
-            if control_down == CONTROL_RELEASED as i8 {
-                control_down = CONTROL_HELD as i8;
+    if *state.control_down() >= CONTROL_RELEASED as i8 {
+        if *state.control_y() == CONTROL_HELD_DOWN as i8 {
+            if *state.control_down() == CONTROL_RELEASED as i8 {
+                *state.control_down() = CONTROL_HELD as i8;
             }
         } else {
-            control_down = CONTROL_RELEASED as i8;
+            *state.control_down() = CONTROL_RELEASED as i8;
         }
     }
-    if control_shift2 >= CONTROL_RELEASED as i8 {
-        if control_shift == CONTROL_HELD as i8 {
-            if control_shift2 == CONTROL_RELEASED as i8 {
-                control_shift2 = CONTROL_HELD as i8;
+    if *state.control_shift2() >= CONTROL_RELEASED as i8 {
+        if *state.control_shift() == CONTROL_HELD as i8 {
+            if *state.control_shift2() == CONTROL_RELEASED as i8 {
+                *state.control_shift2() = CONTROL_HELD as i8;
             }
         } else {
-            control_shift2 = CONTROL_RELEASED as i8;
+            *state.control_shift2() = CONTROL_RELEASED as i8;
         }
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn can_grab() -> c_int {
-    let modifier = *curr_room_modif.add(curr_tilepos as usize);
-    if through_tile == tiles_tiles_20_wall as u8 { return 0; }
-    if through_tile == tiles_tiles_12_doortop as u8
-        && Char.direction >= directions_dir_0_right as i8
+pub unsafe extern "C" fn read_user_control() {
+    read_user_control_impl(&mut State);
+}
+
+unsafe fn can_grab_impl(state: &mut State) -> c_int {
+    let modifier = *curr_room_modif.add(*state.curr_tilepos() as usize);
+    if *state.through_tile() == tiles_tiles_20_wall as u8 { return 0; }
+    if *state.through_tile() == tiles_tiles_12_doortop as u8
+        && state.Char().direction >= directions_dir_0_right as i8
     {
         return 0;
     }
-    if tile_is_floor(through_tile as c_int) != 0 { return 0; }
-    if curr_tile2 == tiles_tiles_11_loose as u8
+    if tile_is_floor(*state.through_tile() as c_int) != 0 { return 0; }
+    if *state.curr_tile2() == tiles_tiles_11_loose as u8
         && modifier != 0
         && !((*custom).loose_floor_delay > 11)
     {
         return 0;
     }
-    if curr_tile2 == tiles_tiles_7_doortop_with_floor as u8
-        && Char.direction < directions_dir_0_right as i8
+    if *state.curr_tile2() == tiles_tiles_7_doortop_with_floor as u8
+        && state.Char().direction < directions_dir_0_right as i8
     {
         return 0;
     }
-    if tile_is_floor(curr_tile2 as c_int) == 0 { return 0; }
+    if tile_is_floor(*state.curr_tile2() as c_int) == 0 { return 0; }
     1
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn can_grab() -> c_int {
+    can_grab_impl(&mut State)
 }
 
 #[no_mangle]
@@ -1660,29 +1916,52 @@ pub unsafe extern "C" fn wall_type(tiletype: u8) -> c_int {
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn get_tile_above_char() -> c_int {
-    get_tile(Char.room as c_int, Char.curr_col as c_int, Char.curr_row as c_int - 1)
+unsafe fn get_tile_above_char_impl(state: &mut State) -> c_int {
+    let room = state.Char().room;
+    let curr_col = state.Char().curr_col;
+    let curr_row = state.Char().curr_row;
+    get_tile_impl(state, room as c_int, curr_col as c_int, curr_row as c_int - 1)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn get_tile_behind_above_char() -> c_int {
-    get_tile(
-        Char.room as c_int,
-        (dir_behind_at((Char.direction as i8 + 1) as usize) as i32 + Char.curr_col as i32) as c_int,
-        Char.curr_row as c_int - 1,
+pub unsafe extern "C" fn get_tile_above_char() -> c_int {
+    get_tile_above_char_impl(&mut State)
+}
+
+unsafe fn get_tile_behind_above_char_impl(state: &mut State) -> c_int {
+    let d = dir_behind_at((state.Char().direction as i8 + 1) as usize);
+    let room = state.Char().room;
+    let curr_col = state.Char().curr_col;
+    let curr_row = state.Char().curr_row;
+    get_tile_impl(
+        state,
+        room as c_int,
+        (d as i32 + curr_col as i32) as c_int,
+        curr_row as c_int - 1,
     )
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn get_tile_front_above_char() -> c_int {
-    infrontx = (dir_front_at((Char.direction as i8 + 1) as usize) as i32 + Char.curr_col as i32) as i8;
-    get_tile(Char.room as c_int, infrontx as c_int, Char.curr_row as c_int - 1)
+pub unsafe extern "C" fn get_tile_behind_above_char() -> c_int {
+    get_tile_behind_above_char_impl(&mut State)
+}
+
+unsafe fn get_tile_front_above_char_impl(state: &mut State) -> c_int {
+    let d = dir_front_at((state.Char().direction as i8 + 1) as usize);
+    *state.infrontx() = (d as i32 + state.Char().curr_col as i32) as i8;
+    let room = state.Char().room;
+    let ifx = *state.infrontx();
+    let curr_row = state.Char().curr_row;
+    get_tile_impl(state, room as c_int, ifx as c_int, curr_row as c_int - 1)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn back_delta_x(delta_x: c_int) -> c_int {
-    if Char.direction < directions_dir_0_right as i8 {
+pub unsafe extern "C" fn get_tile_front_above_char() -> c_int {
+    get_tile_front_above_char_impl(&mut State)
+}
+
+unsafe fn back_delta_x_impl(state: &mut State, delta_x: c_int) -> c_int {
+    if state.Char().direction < directions_dir_0_right as i8 {
         delta_x
     } else {
         -delta_x
@@ -1690,67 +1969,79 @@ pub unsafe extern "C" fn back_delta_x(delta_x: c_int) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn do_pickup(obj_type: c_int) {
-    pickup_obj_type = obj_type as i16;
-    control_shift2 = CONTROL_IGNORE as i8;
-    *curr_room_tiles.add(curr_tilepos as usize) = tiles_tiles_1_floor as u8;
-    *curr_room_modif.add(curr_tilepos as usize) = 0;
-    redraw_height = 35;
-    set_wipe(curr_tilepos as c_short, 1);
-    set_redraw_full(curr_tilepos as c_short, 1);
+pub unsafe extern "C" fn back_delta_x(delta_x: c_int) -> c_int {
+    back_delta_x_impl(&mut State, delta_x)
+}
+
+unsafe fn do_pickup_impl(state: &mut State, obj_type: c_int) {
+    *state.pickup_obj_type() = obj_type as i16;
+    *state.control_shift2() = CONTROL_IGNORE as i8;
+    *curr_room_tiles.add(*state.curr_tilepos() as usize) = tiles_tiles_1_floor as u8;
+    *curr_room_modif.add(*state.curr_tilepos() as usize) = 0;
+    *state.redraw_height() = 35;
+    set_wipe(*state.curr_tilepos() as c_short, 1);
+    set_redraw_full(*state.curr_tilepos() as c_short, 1);
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn check_press() {
-    let frame  = Char.frame;
-    let action = Char.action;
+pub unsafe extern "C" fn do_pickup(obj_type: c_int) {
+    do_pickup_impl(&mut State, obj_type);
+}
+
+unsafe fn check_press_impl(state: &mut State) {
+    let frame  = state.Char().frame;
+    let action = state.Char().action;
     if (frame >= frameids_frame_87_hanging_1 as u8 && frame < 100)
         || (frame >= frameids_frame_135_climbing_1 as u8 && frame < frameids_frame_141_climbing_7 as u8)
     {
-        get_tile_above_char();
+        get_tile_above_char_impl(state);
     } else if action == actions_actions_7_turn as u8
         || action == actions_actions_5_bumped as u8
         || (action as u8) < actions_actions_2_hang_climb as u8
     {
-        if frame == frameids_frame_79_jumphang as u8 && get_tile_above_char() == tiles_tiles_11_loose as c_int {
+        if frame == frameids_frame_79_jumphang as u8 && get_tile_above_char_impl(state) == tiles_tiles_11_loose as c_int {
             make_loose_fall(1);
         } else {
-            if cur_frame.flags & frame_flags_FRAME_NEEDS_FLOOR as u8 == 0 { return; }
+            if state.cur_frame().flags & frame_flags_FRAME_NEEDS_FLOOR as u8 == 0 { return; }
             // FIX_PRESS_THROUGH_CLOSED_GATES
-            if (*fixes).fix_press_through_closed_gates != 0 { determine_col(); }
-            get_tile_at_char();
+            if (*fixes).fix_press_through_closed_gates != 0 { determine_col_impl(state); }
+            get_tile_at_char_impl(state);
         }
     } else {
         return;
     }
-    if curr_tile2 == tiles_tiles_15_opener as u8 || curr_tile2 == tiles_tiles_6_closer as u8 {
-        if Char.alive < 0 {
+    if *state.curr_tile2() == tiles_tiles_15_opener as u8 || *state.curr_tile2() == tiles_tiles_6_closer as u8 {
+        if state.Char().alive < 0 {
             trigger_button(1, 0, -1);
         } else {
             died_on_button();
         }
-    } else if curr_tile2 == tiles_tiles_11_loose as u8 {
-        is_guard_notice = 1;
+    } else if *state.curr_tile2() == tiles_tiles_11_loose as u8 {
+        *state.is_guard_notice() = 1;
         make_loose_fall(1);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn check_spike_below() {
-    let right_col = get_tile_div_mod_m7(char_x_right as c_int);
+pub unsafe extern "C" fn check_press() {
+    check_press_impl(&mut State);
+}
+
+unsafe fn check_spike_below_impl(state: &mut State) {
+    let right_col = get_tile_div_mod_m7(*state.char_x_right() as c_int);
     if right_col < 0 { return; }
-    let room = Char.room;
-    let mut col = get_tile_div_mod_m7(char_x_left as c_int);
+    let room = state.Char().room;
+    let mut col = get_tile_div_mod_m7(*state.char_x_left() as c_int);
     while col <= right_col {
-        let mut row = Char.curr_row;
+        let mut row = state.Char().curr_row;
         loop {
             let not_finished;
-            if get_tile(room as c_int, col, row as c_int) == tiles_tiles_2_spike as c_int {
-                start_anim_spike(curr_room, curr_tilepos as c_short);
+            if get_tile_impl(state, room as c_int, col, row as c_int) == tiles_tiles_2_spike as c_int {
+                start_anim_spike(*state.curr_room(), *state.curr_tilepos() as c_short);
                 not_finished = false;
-            } else if tile_is_floor(curr_tile2 as c_int) == 0
-                && curr_room != 0
-                && if (*fixes).fix_infinite_down_bug != 0 { row <= 2 } else { room as i16 == curr_room }
+            } else if tile_is_floor(*state.curr_tile2() as c_int) == 0
+                && *state.curr_room() != 0
+                && if (*fixes).fix_infinite_down_bug != 0 { row <= 2 } else { room as i16 == *state.curr_room() }
             {
                 row += 1;
                 not_finished = true;
@@ -1764,60 +2055,75 @@ pub unsafe extern "C" fn check_spike_below() {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn clip_char() {
-    let frame  = Char.frame;
-    let action = Char.action;
-    let room   = Char.room;
-    let row    = Char.curr_row;
-    reset_obj_clip();
+pub unsafe extern "C" fn check_spike_below() {
+    check_spike_below_impl(&mut State);
+}
+
+unsafe fn clip_char_impl(state: &mut State) {
+    let frame  = state.Char().frame;
+    let action = state.Char().action;
+    let room   = state.Char().room;
+    let row    = state.Char().curr_row;
+    reset_obj_clip_impl(state);
     // USE_SUPER_HIGH_JUMP: clip during super jump
     if (*fixes).enable_super_high_jump != 0
         && (frame == frameids_frame_79_jumphang as u8 || frame == frameids_frame_106_fall as u8)
     {
-        let top_left_tile = get_tile(
+        let ccl = *state.char_col_left();
+        let cty = *state.char_top_y();
+        let top_left_tile = get_tile_impl(
+            state,
             room as c_int,
-            char_col_left as c_int - 1,
-            y_to_row_mod4(char_top_y as c_int + 10),
+            ccl as c_int - 1,
+            y_to_row_mod4(cty as c_int + 10),
         );
         if top_left_tile == tiles_tiles_12_doortop as c_int
-            && *curr_room_modif.add(curr_tilepos as usize) == 0
+            && *curr_room_modif.add(*state.curr_tilepos() as usize) == 0
         {
-            obj_clip_top = y_clip_at((tile_row + 1) as usize) - 22;
+            let tr = *state.tile_row();
+            *state.obj_clip_top() = y_clip_at((tr + 1) as usize) - 22;
             return;
         }
     }
     if frame >= frameids_frame_224_exit_stairs_8 as u8 && frame < 229 {
-        obj_clip_top   = leveldoor_ybottom as i16 + 1;
-        obj_clip_right = leveldoor_right as i16;
+        *state.obj_clip_top()   = *state.leveldoor_ybottom() as i16 + 1;
+        *state.obj_clip_right() = *state.leveldoor_right() as i16;
     } else {
-        if get_tile(room as c_int, char_col_left as c_int, char_top_row as c_int) == tiles_tiles_20_wall as c_int
-            || tile_is_floor(curr_tile2 as c_int) != 0
+        let ccl = *state.char_col_left();
+        let ctr = *state.char_top_row();
+        if get_tile_impl(state, room as c_int, ccl as c_int, ctr as c_int) == tiles_tiles_20_wall as c_int
+            || tile_is_floor(*state.curr_tile2() as c_int) != 0
         {
+            let ccr = *state.char_col_right();
             if (action == actions_actions_0_stand as u8
                     && (frame == frameids_frame_79_jumphang as u8
                         || frame == frameids_frame_81_hangdrop_1 as u8))
-                || get_tile(room as c_int, char_col_right as c_int, char_top_row as c_int) == tiles_tiles_20_wall as c_int
-                || tile_is_floor(curr_tile2 as c_int) != 0
+                || get_tile_impl(state, room as c_int, ccr as c_int, ctr as c_int) == tiles_tiles_20_wall as c_int
+                || tile_is_floor(*state.curr_tile2() as c_int) != 0
             {
                 let clip_row = row + 1;
                 let clip_y = y_clip_at(clip_row as usize);
-                if clip_row == 1 || (clip_y < obj_y as i16 && clip_y - 15 < char_top_y) {
-                    char_top_y = clip_y;
-                    obj_clip_top = clip_y;
+                let oy = *state.obj_y();
+                let cty = *state.char_top_y();
+                if clip_row == 1 || (clip_y < oy as i16 && clip_y - 15 < cty) {
+                    *state.char_top_y() = clip_y;
+                    *state.obj_clip_top() = clip_y;
                 }
             }
         }
-        let col = get_tile_div_mod(char_x_left_coll as c_int - 4);
-        if get_tile(room as c_int, col + 1, row as c_int) == tiles_tiles_7_doortop_with_floor as c_int
-            || curr_tile2 == tiles_tiles_12_doortop as u8
+        let cxlc = *state.char_x_left_coll() as c_int;
+        let col = get_tile_div_mod_impl(state, cxlc - 4);
+        let tc = *state.tile_col();
+        if get_tile_impl(state, room as c_int, col + 1, row as c_int) == tiles_tiles_7_doortop_with_floor as c_int
+            || *state.curr_tile2() == tiles_tiles_12_doortop as u8
         {
-            obj_clip_right = (tile_col << 5) + 32;
-        } else if (get_tile(room as c_int, col, row as c_int) != tiles_tiles_7_doortop_with_floor as c_int
-                && curr_tile2 != tiles_tiles_12_doortop as u8)
+            *state.obj_clip_right() = (tc << 5) + 32;
+        } else if (get_tile_impl(state, room as c_int, col, row as c_int) != tiles_tiles_7_doortop_with_floor as c_int
+                && *state.curr_tile2() != tiles_tiles_12_doortop as u8)
             || action == actions_actions_3_in_midair as u8
             || (action == actions_actions_4_in_freefall as u8 && frame == frameids_frame_106_fall as u8)
             || (action == actions_actions_5_bumped as u8 && frame == frameids_frame_107_fall_land_1 as u8)
-            || (Char.direction < directions_dir_0_right as i8 && (
+            || (state.Char().direction < directions_dir_0_right as i8 && (
                 action == actions_actions_2_hang_climb as u8
                 || action == actions_actions_6_hang_straight as u8
                 || (action == actions_actions_1_run_jump as u8
@@ -1825,39 +2131,51 @@ pub unsafe extern "C" fn clip_char() {
                     && frame < frameids_frame_140_climbing_6 as u8)
             ))
         {
-            let col2 = get_tile_div_mod(char_x_right_coll as c_int);
-            if (get_tile(room as c_int, col2, row as c_int) == tiles_tiles_20_wall as c_int
-                    || (curr_tile2 == tiles_tiles_13_mirror as u8
-                        && Char.direction == directions_dir_0_right as i8))
-                && (get_tile(room as c_int, col2, char_top_row as c_int) == tiles_tiles_20_wall as c_int
-                    || curr_tile2 == tiles_tiles_13_mirror as u8)
-                && room as i16 == curr_room
+            let cxrc = *state.char_x_right_coll() as c_int;
+            let col2 = get_tile_div_mod_impl(state, cxrc);
+            let ctr = *state.char_top_row();
+            let tc = *state.tile_col();
+            if (get_tile_impl(state, room as c_int, col2, row as c_int) == tiles_tiles_20_wall as c_int
+                    || (*state.curr_tile2() == tiles_tiles_13_mirror as u8
+                        && state.Char().direction == directions_dir_0_right as i8))
+                && (get_tile_impl(state, room as c_int, col2, ctr as c_int) == tiles_tiles_20_wall as c_int
+                    || *state.curr_tile2() == tiles_tiles_13_mirror as u8)
+                && room as i16 == *state.curr_room()
             {
-                obj_clip_right = tile_col << 5;
+                *state.obj_clip_right() = tc << 5;
             }
         } else {
-            obj_clip_right = (tile_col << 5) + 32;
+            let tc = *state.tile_col();
+            *state.obj_clip_right() = (tc << 5) + 32;
         }
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn stuck_lower() {
-    if get_tile_at_char() == tiles_tiles_5_stuck as c_int {
-        Char.y = Char.y.wrapping_add(1);
+pub unsafe extern "C" fn clip_char() {
+    clip_char_impl(&mut State);
+}
+
+unsafe fn stuck_lower_impl(state: &mut State) {
+    if get_tile_at_char_impl(state) == tiles_tiles_5_stuck as c_int {
+        state.Char().y = state.Char().y.wrapping_add(1);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn set_objtile_at_char() {
-    let char_frame  = Char.frame;
-    let char_action = Char.action;
+pub unsafe extern "C" fn stuck_lower() {
+    stuck_lower_impl(&mut State);
+}
+
+unsafe fn set_objtile_at_char_impl(state: &mut State) {
+    let char_frame  = state.Char().frame;
+    let char_action = state.Char().action;
     if char_action == actions_actions_1_run_jump as u8 {
-        tile_row = char_bottom_row;
-        tile_col = char_col_left;
+        *state.tile_row() = *state.char_bottom_row();
+        *state.tile_col() = *state.char_col_left();
     } else {
-        tile_row = Char.curr_row as i16;
-        tile_col = Char.curr_col as i16;
+        *state.tile_row() = state.Char().curr_row as i16;
+        *state.tile_col() = state.Char().curr_col as i16;
     }
     if (char_frame >= frameids_frame_135_climbing_1 as u8 && char_frame < 149)
         || char_action == actions_actions_2_hang_climb as u8
@@ -1865,35 +2183,41 @@ pub unsafe extern "C" fn set_objtile_at_char() {
         || char_action == actions_actions_4_in_freefall as u8
         || char_action == actions_actions_6_hang_straight as u8
     {
-        tile_col -= 1;
+        *state.tile_col() -= 1;
     }
-    obj_tilepos = get_tilepos_nominus(tile_col as c_int, tile_row as c_int) as u8;
+    let tc = *state.tile_col();
+    let tr = *state.tile_row();
+    *state.obj_tilepos() = get_tilepos_nominus(tc as c_int, tr as c_int) as u8;
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn proc_get_object() {
-    if Char.charid != charids_charid_0_kid as u8 || pickup_obj_type == 0 { return; }
-    if pickup_obj_type == -1 {
-        have_sword = u16::MAX;
+pub unsafe extern "C" fn set_objtile_at_char() {
+    set_objtile_at_char_impl(&mut State);
+}
+
+unsafe fn proc_get_object_impl(state: &mut State) {
+    if state.Char().charid != charids_charid_0_kid as u8 || *state.pickup_obj_type() == 0 { return; }
+    if *state.pickup_obj_type() == -1 {
+        *state.have_sword() = u16::MAX;
         play_sound(soundids_sound_37_victory as c_int);
-        flash_color = colorids_color_14_brightyellow as u16;
-        flash_time = 8;
+        *state.flash_color() = colorids_color_14_brightyellow as u16;
+        *state.flash_time() = 8;
     } else {
-        match pickup_obj_type {
+        match *state.pickup_obj_type() {
             1 => { // health
-                if hitp_curr != hitp_max {
+                if *state.hitp_curr() != *state.hitp_max() {
                     stop_sounds();
                     play_sound(soundids_sound_33_small_potion as c_int);
-                    hitp_delta = 1;
-                    flash_color = colorids_color_4_red as u16;
-                    flash_time = 2;
+                    *state.hitp_delta() = 1;
+                    *state.flash_color() = colorids_color_4_red as u16;
+                    *state.flash_time() = 2;
                 }
             }
             2 => { // life
                 stop_sounds();
                 play_sound(soundids_sound_30_big_potion as c_int);
-                flash_color = colorids_color_4_red as u16;
-                flash_time = 4;
+                *state.flash_color() = colorids_color_4_red as u16;
+                *state.flash_time() = 4;
                 add_life();
             }
             3 => { // feather
@@ -1903,21 +2227,26 @@ pub unsafe extern "C" fn proc_get_object() {
                 toggle_upside();
             }
             6 => { // open
-                get_tile(8, 0, 0);
+                get_tile_impl(state, 8, 0, 0);
                 trigger_button(0, 0, -1);
             }
             5 => { // hurt
                 stop_sounds();
                 play_sound(soundids_sound_13_kid_hurt as c_int);
-                if current_level == 15 {
-                    hitp_delta = -((hitp_max as i32 + 1) >> 1) as i16;
+                if *state.current_level() == 15 {
+                    *state.hitp_delta() = -((*state.hitp_max() as i32 + 1) >> 1) as i16;
                 } else {
-                    hitp_delta = -1;
+                    *state.hitp_delta() = -1;
                 }
             }
             _ => {}
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn proc_get_object() {
+    proc_get_object_impl(&mut State);
 }
 
 #[no_mangle]
@@ -1927,12 +2256,11 @@ pub unsafe extern "C" fn is_dead() -> c_int {
             || Char.frame == frameids_frame_185_dead as u8)) as c_int
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn play_death_music() {
+unsafe fn play_death_music_impl(state: &mut State) {
     let sound_id: u32;
-    if Guard.charid == charids_charid_1_shadow as u8 {
+    if state.Guard().charid == charids_charid_1_shadow as u8 {
         sound_id = soundids_sound_32_shadow_music;
-    } else if holding_sword != 0 {
+    } else if *state.holding_sword() != 0 {
         sound_id = soundids_sound_28_death_in_fight;
     } else {
         sound_id = soundids_sound_24_death_regular;
@@ -1941,118 +2269,149 @@ pub unsafe extern "C" fn play_death_music() {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn on_guard_killed() {
-    if current_level == 0 {
-        checkpoint = 1;
-        demo_index = 0;
-        demo_time = 0;
-    } else if current_level == (*custom).jaffar_victory_level as u16 {
-        flash_color = colorids_color_15_brightwhite as u16;
-        flash_time = (*custom).jaffar_victory_flash_time as u16;
-        is_show_time = 1;
-        leveldoor_open = 2;
+pub unsafe extern "C" fn play_death_music() {
+    play_death_music_impl(&mut State);
+}
+
+unsafe fn on_guard_killed_impl(state: &mut State) {
+    if *state.current_level() == 0 {
+        *state.checkpoint() = 1;
+        *state.demo_index() = 0;
+        *state.demo_time() = 0;
+    } else if *state.current_level() == (*custom).jaffar_victory_level as u16 {
+        *state.flash_color() = colorids_color_15_brightwhite as u16;
+        *state.flash_time() = (*custom).jaffar_victory_flash_time as u16;
+        *state.is_show_time() = 1;
+        *state.leveldoor_open() = 2;
         play_sound(soundids_sound_43_victory_Jaffar as c_int);
-    } else if Char.charid != charids_charid_1_shadow as u8 {
+    } else if state.Char().charid != charids_charid_1_shadow as u8 {
         play_sound(soundids_sound_37_victory as c_int);
     }
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn on_guard_killed() {
+    on_guard_killed_impl(&mut State);
+}
+
+unsafe fn clear_char_impl(state: &mut State) {
+    state.Char().direction = directions_dir_56_none as i8;
+    state.Char().alive     = 0;
+    state.Char().action    = 0;
+    draw_guard_hp(0, *state.guardhp_curr() as c_short);
+    *state.guardhp_curr() = 0;
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn clear_char() {
-    Char.direction = directions_dir_56_none as i8;
-    Char.alive     = 0;
-    Char.action    = 0;
-    draw_guard_hp(0, guardhp_curr as c_short);
-    guardhp_curr = 0;
+    clear_char_impl(&mut State);
+}
+
+unsafe fn save_obj_impl(state: &mut State) {
+    obj2_tilepos    = *state.obj_tilepos();
+    obj2_x          = *state.obj_x() as u16;
+    obj2_y          = *state.obj_y();
+    obj2_direction  = *state.obj_direction();
+    obj2_id         = *state.obj_id();
+    obj2_chtab      = *state.obj_chtab();
+    obj2_clip_top    = *state.obj_clip_top();
+    obj2_clip_bottom = *state.obj_clip_bottom();
+    obj2_clip_left   = *state.obj_clip_left();
+    obj2_clip_right  = *state.obj_clip_right();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn save_obj() {
-    obj2_tilepos    = obj_tilepos;
-    obj2_x          = obj_x as u16;
-    obj2_y          = obj_y;
-    obj2_direction  = obj_direction;
-    obj2_id         = obj_id;
-    obj2_chtab      = obj_chtab;
-    obj2_clip_top    = obj_clip_top;
-    obj2_clip_bottom = obj_clip_bottom;
-    obj2_clip_left   = obj_clip_left;
-    obj2_clip_right  = obj_clip_right;
+    save_obj_impl(&mut State);
+}
+
+unsafe fn load_obj_impl(state: &mut State) {
+    *state.obj_tilepos()    = obj2_tilepos;
+    *state.obj_x()          = obj2_x as i16;
+    *state.obj_y()          = obj2_y;
+    *state.obj_direction()  = obj2_direction;
+    *state.obj_id()         = obj2_id;
+    *state.obj_chtab()      = obj2_chtab;
+    *state.obj_clip_top()    = obj2_clip_top;
+    *state.obj_clip_bottom() = obj2_clip_bottom;
+    *state.obj_clip_left()   = obj2_clip_left;
+    *state.obj_clip_right()  = obj2_clip_right;
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn load_obj() {
-    obj_tilepos    = obj2_tilepos;
-    obj_x          = obj2_x as i16;
-    obj_y          = obj2_y;
-    obj_direction  = obj2_direction;
-    obj_id         = obj2_id;
-    obj_chtab      = obj2_chtab;
-    obj_clip_top    = obj2_clip_top;
-    obj_clip_bottom = obj2_clip_bottom;
-    obj_clip_left   = obj2_clip_left;
-    obj_clip_right  = obj2_clip_right;
+    load_obj_impl(&mut State);
+}
+
+unsafe fn draw_hurt_splash_impl(state: &mut State) {
+    let frame = state.Char().frame;
+    if frame != frameids_frame_178_chomped as u8 {
+        save_obj_impl(state);
+        *state.obj_tilepos() = u8::MAX; // -1 as byte
+        if frame == frameids_frame_185_dead as u8
+            || (frame >= frameids_frame_106_fall as u8 && frame < 111)
+        {
+            *state.obj_y() = state.obj_y().wrapping_add(4);
+            obj_dx_forward_impl(state, 5);
+        } else if frame == frameids_frame_177_spiked as u8 {
+            obj_dx_forward_impl(state, -5);
+        } else {
+            let oy = *state.obj_y();
+            *state.obj_y() = (oy as i32 - ((state.Char().charid == charids_charid_0_kid as u8) as i32 * 4) - 11) as u8;
+            obj_dx_forward_impl(state, 5);
+        }
+        if state.Char().charid == charids_charid_0_kid as u8 {
+            *state.obj_chtab() = chtabs_id_chtab_2_kid as u8;
+            *state.obj_id() = 218;
+        } else {
+            *state.obj_chtab() = chtabs_id_chtab_5_guard as u8;
+            *state.obj_id() = 1;
+        }
+        reset_obj_clip_impl(state);
+        add_objtable(5);
+        load_obj_impl(state);
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn draw_hurt_splash() {
-    let frame = Char.frame;
-    if frame != frameids_frame_178_chomped as u8 {
-        save_obj();
-        obj_tilepos = u8::MAX; // -1 as byte
-        if frame == frameids_frame_185_dead as u8
-            || (frame >= frameids_frame_106_fall as u8 && frame < 111)
+    draw_hurt_splash_impl(&mut State);
+}
+
+unsafe fn check_killed_shadow_impl(state: &mut State) {
+    if *state.current_level() == 12 {
+        if (state.Char().charid | state.Opp().charid) == charids_charid_1_shadow as u8
+            && state.Char().alive < 0
+            && state.Opp().alive >= 0
         {
-            obj_y = obj_y.wrapping_add(4);
-            obj_dx_forward(5);
-        } else if frame == frameids_frame_177_spiked as u8 {
-            obj_dx_forward(-5);
-        } else {
-            obj_y = (obj_y as i32 - ((Char.charid == charids_charid_0_kid as u8) as i32 * 4) - 11) as u8;
-            obj_dx_forward(5);
+            *state.flash_color() = colorids_color_15_brightwhite as u16;
+            *state.flash_time() = 5;
+            take_hp_impl(state, 100);
         }
-        if Char.charid == charids_charid_0_kid as u8 {
-            obj_chtab = chtabs_id_chtab_2_kid as u8;
-            obj_id = 218;
-        } else {
-            obj_chtab = chtabs_id_chtab_5_guard as u8;
-            obj_id = 1;
-        }
-        reset_obj_clip();
-        add_objtable(5);
-        load_obj();
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn check_killed_shadow() {
-    if current_level == 12 {
-        if (Char.charid | Opp.charid) == charids_charid_1_shadow as u8
-            && Char.alive < 0
-            && Opp.alive >= 0
-        {
-            flash_color = colorids_color_15_brightwhite as u16;
-            flash_time = 5;
-            take_hp(100);
-        }
-    }
+    check_killed_shadow_impl(&mut State);
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn add_sword_to_objtable() {
-    let frame = Char.frame;
+unsafe fn add_sword_to_objtable_impl(state: &mut State) {
+    let frame = state.Char().frame;
     if (frame >= frameids_frame_229_found_sword as u8 && frame < 238)
-        || Char.sword != sword_status_sword_0_sheathed as u8
-        || (Char.charid == charids_charid_2_guard as u8 && Char.alive < 0)
+        || state.Char().sword != sword_status_sword_0_sheathed as u8
+        || (state.Char().charid == charids_charid_2_guard as u8 && state.Char().alive < 0)
     {
-        let sword_frame = (cur_frame.sword & 0x3F) as usize;
+        let sword_frame = (state.cur_frame().sword & 0x3F) as usize;
         if sword_frame != 0 {
-            obj_id = SWORD_TBL[sword_frame].id;
-            if obj_id != 0xFF {
-                obj_x = calc_screen_x_coord(obj_x);
-                obj_dx_forward(SWORD_TBL[sword_frame].x as c_int);
-                obj_y = (obj_y as i32 + SWORD_TBL[sword_frame].y as i32) as u8;
-                obj_chtab = chtabs_id_chtab_0_sword as u8;
+            *state.obj_id() = SWORD_TBL[sword_frame].id;
+            if *state.obj_id() != 0xFF {
+                let ox = *state.obj_x();
+                *state.obj_x() = calc_screen_x_coord(ox);
+                obj_dx_forward_impl(state, SWORD_TBL[sword_frame].x as c_int);
+                let oy = *state.obj_y();
+                *state.obj_y() = (oy as i32 + SWORD_TBL[sword_frame].y as i32) as u8;
+                *state.obj_chtab() = chtabs_id_chtab_0_sword as u8;
                 add_objtable(3);
             }
         }
@@ -2060,37 +2419,54 @@ pub unsafe extern "C" fn add_sword_to_objtable() {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn control_guard_inactive() {
-    if Char.frame == frameids_frame_166_stand_inactive as u8
-        && control_down == CONTROL_HELD as i8
+pub unsafe extern "C" fn add_sword_to_objtable() {
+    add_sword_to_objtable_impl(&mut State);
+}
+
+unsafe fn control_guard_inactive_impl(state: &mut State) {
+    if state.Char().frame == frameids_frame_166_stand_inactive as u8
+        && *state.control_down() == CONTROL_HELD as i8
     {
-        if control_forward == CONTROL_HELD as i8 {
+        if *state.control_forward() == CONTROL_HELD as i8 {
             draw_sword();
         } else {
-            control_down = CONTROL_IGNORE as i8;
+            *state.control_down() = CONTROL_IGNORE as i8;
             seqtbl_offset_char(seqids_seq_80_stand_flipped as c_short);
         }
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn char_opp_dist() -> c_int {
-    if Char.room != Opp.room {
+pub unsafe extern "C" fn control_guard_inactive() {
+    control_guard_inactive_impl(&mut State);
+}
+
+unsafe fn char_opp_dist_impl(state: &mut State) -> c_int {
+    if state.Char().room != state.Opp().room {
         return 999;
     }
-    let mut distance = Opp.x as i16 - Char.x as i16;
-    if Char.direction < directions_dir_0_right as i8 {
+    let mut distance = state.Opp().x as i16 - state.Char().x as i16;
+    if state.Char().direction < directions_dir_0_right as i8 {
         distance = -distance;
     }
-    if distance >= 0 && Char.direction != Opp.direction {
+    if distance >= 0 && state.Char().direction != state.Opp().direction {
         distance += 13;
     }
     distance as c_int
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn char_opp_dist() -> c_int {
+    char_opp_dist_impl(&mut State)
+}
+
+unsafe fn inc_curr_row_impl(state: &mut State) {
+    state.Char().curr_row += 1;
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn inc_curr_row() {
-    Char.curr_row += 1;
+    inc_curr_row_impl(&mut State);
 }
 
 #[cfg(test)]
