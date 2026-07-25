@@ -454,6 +454,7 @@ const SDL_SCANCODE_KP_8: c_int = 96;
 const SDL_SCANCODE_KP_9: c_int = 97;
 const SDL_SCANCODE_KP_MINUS: c_int = 86;
 const SDL_SCANCODE_KP_PLUS: c_int = 87;
+const SDL_SCANCODE_SPACE: c_int = 44;
 
 // SDL joystick mapping (PoP config.h #defines)
 const SDL_JOYSTICK_BUTTON_Y: u8 = 2;
@@ -3585,9 +3586,104 @@ unsafe fn toggle_fullscreen() {
     }
 }
 
+// ============================================================================
+// Scripted input injection -- not in the original C. Lets a headless run (see
+// the `headless` flag in seg000.rs's pop_main) drive actual gameplay instead
+// of idling at the title screen: synthetic SDL_KEYDOWN/KEYUP events are pushed
+// onto SDL's real event queue at scripted tick numbers, so process_events()
+// below picks them up through the exact same code path as real keyboard input
+// -- no separate key-injection path to keep in sync with the real one.
+//
+// Script format (path from the POPTRACE_INPUT env var, one event per line):
+//     <tick> <key> <down|up>
+//     # blank lines and lines starting with '#' are ignored
+// <tick> counts calls to process_events() from process start -- its own free-
+// running clock, independent of curr_tick (which only advances while replay
+// recording is active, see replay.rs's add_replay_move).
+// <key> is one of: left right up down shift lshift rshift space return escape
+// ============================================================================
+static mut SCRIPT_EVENTS: Vec<(u32, c_int, bool)> = Vec::new();
+static mut SCRIPT_LOADED: bool = false;
+static mut SCRIPT_INDEX: usize = 0;
+static mut SCRIPT_TICK: u32 = 0;
+
+fn scancode_from_key_name(name: &str) -> Option<c_int> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "left" => SDL_SCANCODE_LEFT,
+        "right" => SDL_SCANCODE_RIGHT,
+        "up" => SDL_SCANCODE_UP,
+        "down" => SDL_SCANCODE_DOWN,
+        "shift" | "lshift" => SDL_SCANCODE_LSHIFT,
+        "rshift" => SDL_SCANCODE_RSHIFT,
+        "space" => SDL_SCANCODE_SPACE,
+        "return" | "enter" => SDL_SCANCODE_RETURN,
+        "escape" => SDL_SCANCODE_ESCAPE,
+        _ => return None,
+    })
+}
+
+unsafe fn load_scripted_input() {
+    SCRIPT_LOADED = true;
+    let Ok(path) = std::env::var("POPTRACE_INPUT") else { return };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        eprintln!("scripted_input: could not read {}", path);
+        return;
+    };
+    for (lineno, line) in contents.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() != 3 {
+            eprintln!("scripted_input: {}:{}: expected '<tick> <key> <down|up>'", path, lineno + 1);
+            continue;
+        }
+        let tick = match parts[0].parse::<u32>() {
+            Ok(t) => t,
+            Err(_) => { eprintln!("scripted_input: {}:{}: bad tick number", path, lineno + 1); continue; }
+        };
+        let Some(scancode) = scancode_from_key_name(parts[1]) else {
+            eprintln!("scripted_input: {}:{}: unknown key name '{}'", path, lineno + 1, parts[1]);
+            continue;
+        };
+        let down = match parts[2] {
+            "down" => true,
+            "up" => false,
+            _ => { eprintln!("scripted_input: {}:{}: expected 'down' or 'up'", path, lineno + 1); continue; }
+        };
+        SCRIPT_EVENTS.push((tick, scancode, down));
+    }
+    SCRIPT_EVENTS.sort_by_key(|e| e.0);
+}
+
+unsafe fn inject_scripted_input() {
+    if !SCRIPT_LOADED {
+        load_scripted_input();
+    }
+    while SCRIPT_INDEX < SCRIPT_EVENTS.len() && SCRIPT_EVENTS[SCRIPT_INDEX].0 <= SCRIPT_TICK {
+        let (_, scancode, down) = SCRIPT_EVENTS[SCRIPT_INDEX];
+        let mut event: SDL_Event = core::mem::zeroed();
+        event.key = SDL_KeyboardEvent {
+            type_: if down { SDL_KEYDOWN } else { SDL_KEYUP },
+            timestamp: 0,
+            windowID: 0,
+            state: if down { 1 } else { 0 },
+            repeat: 0,
+            padding2: 0,
+            padding3: 0,
+            keysym: SDL_Keysym { scancode: scancode as u32, sym: 0, r#mod: 0, unused: 0 },
+        };
+        crate::platform::sdl::shared_renderer().push_event(&mut event as *mut SDL_Event as *mut c_void);
+        SCRIPT_INDEX += 1;
+    }
+    SCRIPT_TICK += 1;
+}
+
 // seg009 process_events
 #[no_mangle]
 pub unsafe extern "C" fn process_events() {
+    inject_scripted_input();
     let mut event: SDL_Event = core::mem::zeroed();
     while crate::platform::sdl::shared_renderer().poll_event(&mut event as *mut SDL_Event as *mut c_void) == 1 {
         match event.type_ {
