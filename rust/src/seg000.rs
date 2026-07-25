@@ -2010,6 +2010,10 @@ pub unsafe extern "C" fn redefine_keys() {
 }
 
 // seg000:156D
+// target_rect_ptr aliases target_rect's memory (taken before the fields below are filled
+// in), so those writes ARE observed later through the pointer -- Rust's liveness lint
+// doesn't track that aliasing and flags them as dead stores.
+#[allow(unused_assignments)]
 #[no_mangle]
 pub unsafe extern "C" fn copy_screen_rect(source_rect_ptr: *const rect_type) {
     let target_rect_ptr: *const rect_type;

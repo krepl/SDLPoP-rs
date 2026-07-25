@@ -2,6 +2,9 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(dead_code)]
+// bindgen (0.70) emits `mem::transmute` for bitfield accessors where a newer rustc lint
+// wants `cast_signed`/`cast_unsigned` instead; this is generated code we don't control.
+#![allow(unnecessary_transmutes)]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 

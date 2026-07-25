@@ -873,6 +873,11 @@ pub unsafe extern "C" fn identify_dos_exe_version(filesize: c_int) -> c_int {
     dos_version
 }
 
+// Most process!() calls in the DOS-version-detection block below don't check read_ok
+// afterward (faithful to the C original's fallback chain, which only inspects the result
+// for a handful of fields) -- each assignment through the macro looks like a dead store to
+// Rust's dataflow analysis even though it's intentional.
+#[allow(unused_assignments)]
 #[no_mangle]
 pub unsafe extern "C" fn load_dos_exe_modifications(folder_name: *const c_char) {
     let mut filename = [0 as c_char; POP_MAX_PATH as usize];

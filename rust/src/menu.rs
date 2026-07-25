@@ -831,7 +831,7 @@ const fn st(
 }
 
 const GENERAL_N: usize = 8;
-static mut general_settings: [setting_type; GENERAL_N] = unsafe { [
+static mut general_settings: [setting_type; GENERAL_N] = [
     st(SETTING_SHOW_MENU_ON_PAUSE, SETTING_STYLE_TOGGLE, 0, addr_of_mut!(enable_pause_menu) as *mut c_void, null_mut(), 0, 0, null_mut(),
         cstr(b"Enable pause menu"),
         cstr(b"Show the in-game menu when you pause the game.\nIf disabled, you can still bring up the menu by pressing Backspace.")),
@@ -856,10 +856,10 @@ static mut general_settings: [setting_type; GENERAL_N] = unsafe { [
     st(SETTING_RESET_ALL_SETTINGS, SETTING_STYLE_TEXT_ONLY, 0, null_mut(), null_mut(), 0, 0, null_mut(),
         cstr(b"Restore defaults..."),
         cstr(b"Revert all settings to the default state.")),
-] };
+];
 
 const VISUALS_N: usize = 8;
-static mut visuals_settings: [setting_type; VISUALS_N] = unsafe { [
+static mut visuals_settings: [setting_type; VISUALS_N] = [
     st(SETTING_FULLSCREEN, SETTING_STYLE_TOGGLE, 0, addr_of_mut!(start_fullscreen) as *mut c_void, null_mut(), 0, 0, null_mut(),
         cstr(b"Start fullscreen"),
         cstr(b"Start the game in fullscreen mode.\nYou can also toggle fullscreen by pressing Alt+Enter.")),
@@ -884,7 +884,7 @@ static mut visuals_settings: [setting_type; VISUALS_N] = unsafe { [
     st(SETTING_ENABLE_LIGHTING, SETTING_STYLE_TOGGLE, 0, addr_of_mut!(enable_lighting) as *mut c_void, null_mut(), 0, 0, null_mut(),
         cstr(b"Torch shadows enabled"),
         cstr(b"Darken those parts of the screen which are not near a torch.")),
-] };
+];
 
 const GAMEPLAY_N: usize = 54;
 static mut gameplay_settings: [setting_type; GAMEPLAY_N] = unsafe { [
@@ -1163,7 +1163,7 @@ static mut mods_settings: [setting_type; MODS_N] = unsafe { [
 ] };
 
 const LEVEL_N: usize = 8;
-static mut level_settings: [setting_type; LEVEL_N] = unsafe { [
+static mut level_settings: [setting_type; LEVEL_N] = [
     st(SETTING_LEVEL_SETTINGS, SETTING_STYLE_TEXT_ONLY, 0, null_mut(), addr_of_mut!(use_custom_options) as *mut c_void, 0, 0, null_mut(),
         cstr(b"Customize another level..."), cstr(b"Select another level to customize.")),
     st(SETTING_LEVEL_TYPE, SETTING_STYLE_NUMBER, SETTING_BYTE, null_mut(), addr_of_mut!(use_custom_options) as *mut c_void, 0, 1, addr_of_mut!(level_type_setting_names_list),
@@ -1180,10 +1180,10 @@ static mut level_settings: [setting_type; LEVEL_N] = unsafe { [
         cstr(b"Entry pose"), cstr(b"The pose the kid has when the level starts.\n")),
     st(SETTING_SEAMLESS_EXIT, SETTING_STYLE_NUMBER, SETTING_SBYTE, null_mut(), addr_of_mut!(use_custom_options) as *mut c_void, -1, 24, addr_of_mut!(off_setting_name_list),
         cstr(b"Seamless exit"), cstr(b"Entering this room moves the kid to the next level.\nSet to -1 to disable.")),
-] };
+];
 
 const CONTROLS_N: usize = 9;
-static mut controls_settings: [setting_type; CONTROLS_N] = unsafe { [
+static mut controls_settings: [setting_type; CONTROLS_N] = [
     st(SETTING_KEY_LEFT, SETTING_STYLE_KEY, SETTING_INT, addr_of_mut!(key_left) as *mut c_void, null_mut(), 0, 0, null_mut(),
         cstr(b"Left"), cstr(b"")),
     st(SETTING_KEY_RIGHT, SETTING_STYLE_KEY, SETTING_INT, addr_of_mut!(key_right) as *mut c_void, null_mut(), 0, 0, null_mut(),
@@ -1202,14 +1202,14 @@ static mut controls_settings: [setting_type; CONTROLS_N] = unsafe { [
         cstr(b"Enter a menu"), cstr(b"")),
     st(SETTING_KEY_ESC, SETTING_STYLE_KEY, SETTING_INT, addr_of_mut!(key_esc) as *mut c_void, null_mut(), 0, 0, null_mut(),
         cstr(b"Exit a menu, pause"), cstr(b"")),
-] };
+];
 
-static mut general_settings_area: settings_area_type = unsafe { settings_area_type { settings: addr_of_mut!(general_settings) as *mut setting_type, setting_count: GENERAL_N as c_int } };
-static mut gameplay_settings_area: settings_area_type = unsafe { settings_area_type { settings: addr_of_mut!(gameplay_settings) as *mut setting_type, setting_count: GAMEPLAY_N as c_int } };
-static mut visuals_settings_area: settings_area_type = unsafe { settings_area_type { settings: addr_of_mut!(visuals_settings) as *mut setting_type, setting_count: VISUALS_N as c_int } };
-static mut mods_settings_area: settings_area_type = unsafe { settings_area_type { settings: addr_of_mut!(mods_settings) as *mut setting_type, setting_count: MODS_N as c_int } };
-static mut level_settings_area: settings_area_type = unsafe { settings_area_type { settings: addr_of_mut!(level_settings) as *mut setting_type, setting_count: LEVEL_N as c_int } };
-static mut controls_settings_area: settings_area_type = unsafe { settings_area_type { settings: addr_of_mut!(controls_settings) as *mut setting_type, setting_count: CONTROLS_N as c_int } };
+static mut general_settings_area: settings_area_type = settings_area_type { settings: addr_of_mut!(general_settings) as *mut setting_type, setting_count: GENERAL_N as c_int };
+static mut gameplay_settings_area: settings_area_type = settings_area_type { settings: addr_of_mut!(gameplay_settings) as *mut setting_type, setting_count: GAMEPLAY_N as c_int };
+static mut visuals_settings_area: settings_area_type = settings_area_type { settings: addr_of_mut!(visuals_settings) as *mut setting_type, setting_count: VISUALS_N as c_int };
+static mut mods_settings_area: settings_area_type = settings_area_type { settings: addr_of_mut!(mods_settings) as *mut setting_type, setting_count: MODS_N as c_int };
+static mut level_settings_area: settings_area_type = settings_area_type { settings: addr_of_mut!(level_settings) as *mut setting_type, setting_count: LEVEL_N as c_int };
+static mut controls_settings_area: settings_area_type = settings_area_type { settings: addr_of_mut!(controls_settings) as *mut setting_type, setting_count: CONTROLS_N as c_int };
 
 unsafe fn get_settings_area(menu_item_id: c_int) -> *mut settings_area_type {
     match menu_item_id {

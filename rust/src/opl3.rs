@@ -282,7 +282,7 @@ unsafe fn OPL3_EnvelopeCalcExp(mut level: u32) -> i16 {
 }
 
 unsafe fn OPL3_EnvelopeCalcSin0(mut phase: u16, envelope: u16) -> i16 {
-    let mut out: u16 = 0;
+    let out: u16;
     let mut neg: u16 = 0;
     phase &= 0x3ff;
     if phase & 0x200 != 0 {
@@ -297,7 +297,7 @@ unsafe fn OPL3_EnvelopeCalcSin0(mut phase: u16, envelope: u16) -> i16 {
 }
 
 unsafe fn OPL3_EnvelopeCalcSin1(mut phase: u16, envelope: u16) -> i16 {
-    let mut out: u16 = 0;
+    let out: u16;
     phase &= 0x3ff;
     if phase & 0x200 != 0 {
         out = 0x1000;
@@ -310,7 +310,7 @@ unsafe fn OPL3_EnvelopeCalcSin1(mut phase: u16, envelope: u16) -> i16 {
 }
 
 unsafe fn OPL3_EnvelopeCalcSin2(mut phase: u16, envelope: u16) -> i16 {
-    let mut out: u16 = 0;
+    let out: u16;
     phase &= 0x3ff;
     if phase & 0x100 != 0 {
         out = logsinrom[((phase & 0xff) ^ 0xff) as usize];
@@ -321,7 +321,7 @@ unsafe fn OPL3_EnvelopeCalcSin2(mut phase: u16, envelope: u16) -> i16 {
 }
 
 unsafe fn OPL3_EnvelopeCalcSin3(mut phase: u16, envelope: u16) -> i16 {
-    let mut out: u16 = 0;
+    let out: u16;
     phase &= 0x3ff;
     if phase & 0x100 != 0 {
         out = 0x1000;
@@ -332,7 +332,7 @@ unsafe fn OPL3_EnvelopeCalcSin3(mut phase: u16, envelope: u16) -> i16 {
 }
 
 unsafe fn OPL3_EnvelopeCalcSin4(mut phase: u16, envelope: u16) -> i16 {
-    let mut out: u16 = 0;
+    let out: u16;
     let mut neg: u16 = 0;
     phase &= 0x3ff;
     if (phase & 0x300) == 0x100 {
@@ -349,7 +349,7 @@ unsafe fn OPL3_EnvelopeCalcSin4(mut phase: u16, envelope: u16) -> i16 {
 }
 
 unsafe fn OPL3_EnvelopeCalcSin5(mut phase: u16, envelope: u16) -> i16 {
-    let mut out: u16 = 0;
+    let out: u16;
     phase &= 0x3ff;
     if phase & 0x200 != 0 {
         out = 0x1000;
@@ -945,7 +945,7 @@ unsafe fn OPL3_GenerateRhythm1(chip: *mut opl3_chip) {
     let channel8: *mut opl3_channel;
     let phase14: u16;
     let phase17: u16;
-    let mut phase: u16;
+    let phase: u16;
     let phasebit: u16;
 
     channel6 = &mut (*chip).channel[6] as *mut opl3_channel;
@@ -954,7 +954,6 @@ unsafe fn OPL3_GenerateRhythm1(chip: *mut opl3_chip) {
     OPL3_SlotGenerate((*channel6).slots[0]);
     phase14 = (((*(*channel7).slots[0]).pg_phase >> 9) & 0x3ff) as u16;
     phase17 = (((*(*channel8).slots[1]).pg_phase >> 9) & 0x3ff) as u16;
-    phase = 0x00;
     // hh tc phase bit
     phasebit = if (phase14 & 0x08)
         | (((phase14 >> 5) ^ phase14) & 0x04)
@@ -988,7 +987,6 @@ unsafe fn OPL3_GenerateRhythm2(chip: *mut opl3_chip) {
     OPL3_SlotGenerate((*channel6).slots[1]);
     phase14 = (((*(*channel7).slots[0]).pg_phase >> 9) & 0x3ff) as u16;
     phase17 = (((*(*channel8).slots[1]).pg_phase >> 9) & 0x3ff) as u16;
-    phase = 0x00;
     // hh tc phase bit
     phasebit = if (phase14 & 0x08)
         | (((phase14 >> 5) ^ phase14) & 0x04)
