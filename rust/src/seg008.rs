@@ -6,6 +6,7 @@
 use std::os::raw::{c_int, c_short, c_char, c_void};
 use super::*;
 use crate::platform::Renderer;
+use crate::state::State;
 
 extern "C" {
     fn malloc(size: usize) -> *mut c_void;
@@ -203,46 +204,57 @@ pub unsafe extern "C" fn redraw_room() {
 }
 
 // seg008:0035
-#[no_mangle]
-pub unsafe extern "C" fn load_room_links() {
-    room_BR = 0;
-    room_BL = 0;
-    room_AR = 0;
-    room_AL = 0;
-    if drawn_room != 0 {
-        get_room_address(drawn_room as c_int);
-        room_L = level.roomlinks[drawn_room as usize - 1].left as u16;
-        room_R = level.roomlinks[drawn_room as usize - 1].right as u16;
-        room_A = level.roomlinks[drawn_room as usize - 1].up as u16;
-        room_B = level.roomlinks[drawn_room as usize - 1].down as u16;
-        if room_A != 0 {
-            room_AL = level.roomlinks[room_A as usize - 1].left as u16;
-            room_AR = level.roomlinks[room_A as usize - 1].right as u16;
+unsafe fn load_room_links_impl(state: &mut State) {
+    *state.room_BR() = 0;
+    *state.room_BL() = 0;
+    *state.room_AR() = 0;
+    *state.room_AL() = 0;
+    let dr = *state.drawn_room();
+    if dr != 0 {
+        get_room_address(dr as c_int);
+        *state.room_L() = state.level().roomlinks[dr as usize - 1].left as u16;
+        *state.room_R() = state.level().roomlinks[dr as usize - 1].right as u16;
+        *state.room_A() = state.level().roomlinks[dr as usize - 1].up as u16;
+        *state.room_B() = state.level().roomlinks[dr as usize - 1].down as u16;
+        if *state.room_A() != 0 {
+            let ra = *state.room_A();
+            *state.room_AL() = state.level().roomlinks[ra as usize - 1].left as u16;
+            *state.room_AR() = state.level().roomlinks[ra as usize - 1].right as u16;
         } else {
-            if room_L != 0 {
-                room_AL = level.roomlinks[room_L as usize - 1].up as u16;
+            if *state.room_L() != 0 {
+                let rl = *state.room_L();
+                *state.room_AL() = state.level().roomlinks[rl as usize - 1].up as u16;
             }
-            if room_R != 0 {
-                room_AR = level.roomlinks[room_R as usize - 1].up as u16;
+            if *state.room_R() != 0 {
+                let rr = *state.room_R();
+                *state.room_AR() = state.level().roomlinks[rr as usize - 1].up as u16;
             }
         }
-        if room_B != 0 {
-            room_BL = level.roomlinks[room_B as usize - 1].left as u16;
-            room_BR = level.roomlinks[room_B as usize - 1].right as u16;
+        if *state.room_B() != 0 {
+            let rb = *state.room_B();
+            *state.room_BL() = state.level().roomlinks[rb as usize - 1].left as u16;
+            *state.room_BR() = state.level().roomlinks[rb as usize - 1].right as u16;
         } else {
-            if room_L != 0 {
-                room_BL = level.roomlinks[room_L as usize - 1].down as u16;
+            if *state.room_L() != 0 {
+                let rl = *state.room_L();
+                *state.room_BL() = state.level().roomlinks[rl as usize - 1].down as u16;
             }
-            if room_R != 0 {
-                room_BR = level.roomlinks[room_R as usize - 1].down as u16;
+            if *state.room_R() != 0 {
+                let rr = *state.room_R();
+                *state.room_BR() = state.level().roomlinks[rr as usize - 1].down as u16;
             }
         }
     } else {
-        room_B = 0;
-        room_A = 0;
-        room_R = 0;
-        room_L = 0;
+        *state.room_B() = 0;
+        *state.room_A() = 0;
+        *state.room_R() = 0;
+        *state.room_L() = 0;
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn load_room_links() {
+    load_room_links_impl(&mut State);
 }
 
 // seg008:0125
@@ -2198,11 +2210,15 @@ mod tests {
 }
 
 // seg008:1E0C
+unsafe fn get_room_address_impl(state: &mut State, room: c_int) {
+    *state.loaded_room() = room as u16;
+    if room != 0 {
+        curr_room_tiles = state.level().fg.as_mut_ptr().add((room as usize - 1) * 30);
+        *state.curr_room_modif() = state.level().bg.as_mut_ptr().add((room as usize - 1) * 30);
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn get_room_address(room: c_int) {
-    loaded_room = room as u16;
-    if room != 0 {
-        curr_room_tiles = level.fg.as_mut_ptr().add((room as usize - 1) * 30);
-        curr_room_modif = level.bg.as_mut_ptr().add((room as usize - 1) * 30);
-    }
+    get_room_address_impl(&mut State, room);
 }

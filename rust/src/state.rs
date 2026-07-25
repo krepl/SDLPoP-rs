@@ -207,4 +207,8 @@ impl State {
     pub unsafe fn obj_x(&mut self) -> &mut c_short { &mut obj_x }
     pub unsafe fn obj_xl(&mut self) -> &mut byte { &mut obj_xl }
     pub unsafe fn play_demo_level(&mut self) -> &mut c_int { &mut play_demo_level }
+
+    // -- seg008 surgical extractions (room-link / room-address bookkeeping) --
+    pub unsafe fn room_AR(&mut self) -> &mut word { &mut room_AR }
+    pub unsafe fn loaded_room(&mut self) -> &mut word { &mut loaded_room }
 }
