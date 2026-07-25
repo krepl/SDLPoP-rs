@@ -14,49 +14,50 @@
 //! idiomatic-rewrite pass is explicitly Step D's job, done module-by-module once code is
 //! already open for de-globalization. Growing this trait surface as more call sites move
 //! behind it (rather than getting every method signature right up front) is expected.
+//!
+//! **`Renderer` operates on raw `*mut SDL_Surface` pointers, not an opaque owned type.**
+//! An earlier draft of this trait modeled surfaces as a backend-owned `Surf` associated
+//! type (safe, RAII lock/unlock). That doesn't fit how this codebase actually works:
+//! surfaces are `*mut SDL_Surface` threaded through globals, `chtab_type`/`image_type`
+//! struct fields, and function return values almost everywhere (`get_image`,
+//! `chtab_addrs`, `offscreen_surface`, ...), never locally created-and-owned. Modeling
+//! `Renderer` around ownership would mean rewriting that plumbing everywhere just to
+//! reach the trait -- a real redesign, not the relocation this step is scoped to. So
+//! `Renderer`'s methods take the same raw pointers the game already passes around, and
+//! are `unsafe fn` like virtually everything else in this crate. Full ownership safety
+//! for surfaces is Step D's job, alongside de-globalization.
 
 pub mod sdl;
 
 use std::os::raw::c_int;
 
-/// An opaque, backend-owned pixel surface. The game manipulates raw indexed-palette
-/// pixel buffers directly (`SDL_LockSurface` + pointer writes) throughout seg008.rs's
-/// drawing code, so `lock`/`unlock` return a raw byte slice rather than a higher-level
-/// pixel API -- this matches current behavior exactly rather than introducing a new
-/// abstraction the drawing algorithm would need to be rewritten around.
-pub trait Surface {
-    fn width(&self) -> c_int;
-    fn height(&self) -> c_int;
-    fn pitch(&self) -> c_int;
-    /// Raw pixel bytes for the surface's native format (8bpp indexed for most game
-    /// surfaces), for the duration of `f`. A closure, not a `lock`/`unlock` pair, so the
-    /// backend (the `sdl2` crate's `Surface::with_lock_mut` on the SDL side) can enforce
-    /// lock/unlock pairing itself rather than the caller having to remember to unlock.
-    fn with_pixels_mut<R>(&mut self, f: impl FnOnce(&mut [u8]) -> R) -> R;
-    fn set_color_key(&mut self, key: u32) -> Result<(), String>;
-    fn set_palette(&mut self, colors: &[(u8, u8, u8)]) -> Result<(), String>;
-    fn set_blend_mode(&mut self, blend: bool) -> Result<(), String>;
-    fn set_alpha_mod(&mut self, alpha: u8) -> Result<(), String>;
-}
+use crate::{SDL_Color, SDL_Rect, SDL_Surface};
 
 pub trait Renderer {
-    type Surf: Surface;
-
-    fn create_surface(&mut self, width: c_int, height: c_int) -> Self::Surf;
+    unsafe fn create_surface(&mut self, width: c_int, height: c_int) -> *mut SDL_Surface;
+    unsafe fn free_surface(&mut self, surf: *mut SDL_Surface);
     /// Loads an image (PNG via SDL2_image today) from an in-memory buffer -- the
     /// `IMG_Load_RW`-over-`SDL_RWFromConstMem` path `load_image` (seg009.rs) uses for
-    /// sprite data, and `IMG_Load`'s plain-file-path form for the window icon / lighting
-    /// mask.
-    fn load_image_from_memory(&mut self, bytes: &[u8]) -> Result<Self::Surf, String>;
-    fn load_image_from_file(&mut self, path: &str) -> Result<Self::Surf, String>;
-    fn blit(&mut self, src: &Self::Surf, dst: &mut Self::Surf, dst_x: c_int, dst_y: c_int);
-    fn fill_rect(&mut self, surf: &mut Self::Surf, x: c_int, y: c_int, w: c_int, h: c_int, color: u32);
-    /// Pushes the frame surface to the screen (the present step at the end of each
-    /// game-loop tick -- `SDL_UpdateTexture` + `SDL_RenderCopy` + `SDL_RenderPresent`
-    /// today).
-    fn present(&mut self, frame: &Self::Surf);
-    fn set_fullscreen(&mut self, fullscreen: bool) -> Result<(), String>;
-    fn show_cursor(&mut self, show: bool);
+    /// sprite data -- or a file path (the window icon / lighting mask, both `IMG_Load`
+    /// straight from disk today). Null on failure, matching `IMG_Load`/`IMG_Load_RW`.
+    unsafe fn load_image_from_memory(&mut self, bytes: &[u8]) -> *mut SDL_Surface;
+    unsafe fn load_image_from_file(&mut self, path: &std::ffi::CStr) -> *mut SDL_Surface;
+    unsafe fn lock_surface(&mut self, surf: *mut SDL_Surface);
+    unsafe fn unlock_surface(&mut self, surf: *mut SDL_Surface);
+    unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, key: u32);
+    unsafe fn set_palette(&mut self, surf: *mut SDL_Surface, colors: *const SDL_Color, first_color: c_int, n_colors: c_int);
+    unsafe fn set_blend_mode(&mut self, surf: *mut SDL_Surface, blend: bool);
+    unsafe fn set_alpha_mod(&mut self, surf: *mut SDL_Surface, alpha: u8);
+    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect);
+    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect, color: u32);
+    /// Pushes a surface to the screen (the present step at the end of each game-loop
+    /// tick -- `SDL_UpdateTexture` + `SDL_RenderCopy` + `SDL_RenderPresent` today).
+    unsafe fn present(&mut self, frame: *mut SDL_Surface);
+    unsafe fn set_fullscreen(&mut self, fullscreen: bool);
+    unsafe fn show_cursor(&mut self, show: bool);
+    /// Frame pacing (`SDL_Delay`). Not really a "renderer" operation, but every current
+    /// caller is inside a render/game loop, and there's no better-fitting trait yet.
+    unsafe fn delay(&mut self, ms: u32);
 }
 
 /// The mixed digi/speaker/MIDI/OGG output sink. `opl3.rs`'s synth math and the mixing

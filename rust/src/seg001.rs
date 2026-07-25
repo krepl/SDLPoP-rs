@@ -5,11 +5,7 @@
 
 use std::os::raw::{c_char, c_int, c_short, c_void};
 use super::*;
-
-extern "C" {
-    fn SDL_Delay(ms: u32);
-    fn SDL_FreeSurface(surface: *mut SDL_Surface);
-}
+use crate::platform::Renderer;
 
 
 // File-local state (declared as globals in seg001.c, not in data.c).
@@ -630,7 +626,7 @@ pub unsafe extern "C" fn do_flash(color: c_short) {
 #[no_mangle]
 pub unsafe extern "C" fn delay_ticks(ticks: u32) {
     if replaying != 0 && skipping_replay != 0 { return; }
-    SDL_Delay(ticks * (1000 / 60));
+    crate::platform::sdl::shared_renderer().delay(ticks * (1000 / 60));
 }
 
 // seg001:0981
@@ -783,7 +779,7 @@ pub unsafe extern "C" fn load_intro(
     );
     free_all_chtabs_from(chtabs_id_chtab_9_princessbed as c_int);
     let img0 = get_image(chtabs_id_chtab_8_princessroom as c_short, 0);
-    SDL_FreeSurface(img0);
+    crate::platform::sdl::shared_renderer().free_surface(img0);
     if !chtab_addrs[chtabs_id_chtab_8_princessroom as usize].is_null() {
         core::ptr::addr_of_mut!((*chtab_addrs[chtabs_id_chtab_8_princessroom as usize]).images)
             .cast::<*mut SDL_Surface>()

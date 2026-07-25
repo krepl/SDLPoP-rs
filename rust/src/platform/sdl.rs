@@ -11,121 +11,130 @@
 use std::os::raw::c_int;
 
 use sdl2::event::Event;
-use sdl2::image::LoadSurface;
 use sdl2::keyboard::Scancode;
-use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
 use sdl2::render::WindowCanvas;
 use sdl2::rwops::RWops;
-use sdl2::surface::Surface as SdlSurfaceOwned;
+use sdl2::surface::SurfaceRef;
 use sdl2::AudioSubsystem;
 use sdl2::EventPump;
 use sdl2::TimerSubsystem;
 
-use super::{AudioBackend, FileSystem, InputSource, Platform, Renderer, Surface};
+use crate::{SDL_Color, SDL_Rect, SDL_Surface};
 
-pub struct SdlOwnedSurface(SdlSurfaceOwned<'static>);
+use super::{AudioBackend, FileSystem, InputSource, Platform, Renderer};
 
-impl Surface for SdlOwnedSurface {
-    fn width(&self) -> c_int {
-        self.0.width() as c_int
-    }
-    fn height(&self) -> c_int {
-        self.0.height() as c_int
-    }
-    fn pitch(&self) -> c_int {
-        self.0.pitch() as c_int
-    }
-    fn with_pixels_mut<R>(&mut self, f: impl FnOnce(&mut [u8]) -> R) -> R {
-        self.0.with_lock_mut(f)
-    }
-    fn set_color_key(&mut self, key: u32) -> Result<(), String> {
-        self.0.set_color_key(true, Color::RGB(0, 0, 0)).map(|_| ())?;
-        // Overwrite with the exact palette-index key rather than the RGB placeholder
-        // above -- the game's DAT-derived surfaces are indexed, so the key is a raw
-        // index byte, not an RGB triple; `sdl2::pixels::Color` has no raw-index
-        // constructor, so go through the ll surface for the actual key value.
-        let raw = self.0.raw();
-        unsafe {
-            sdl2::sys::SDL_SetColorKey(raw, 1, key);
-        }
-        Ok(())
-    }
-    fn set_palette(&mut self, colors: &[(u8, u8, u8)]) -> Result<(), String> {
-        let sdl_colors: Vec<Color> = colors.iter().map(|&(r, g, b)| Color::RGB(r, g, b)).collect();
-        let palette = sdl2::pixels::Palette::with_colors(&sdl_colors)?;
-        self.0.set_palette(&palette)
-    }
-    fn set_blend_mode(&mut self, blend: bool) -> Result<(), String> {
-        let mode = if blend { sdl2::render::BlendMode::Blend } else { sdl2::render::BlendMode::None };
-        self.0.set_blend_mode(mode)
-    }
-    fn set_alpha_mod(&mut self, alpha: u8) -> Result<(), String> {
-        self.0.set_alpha_mod(alpha);
-        Ok(())
-    }
+// This crate's own bindgen invocation (build.rs, allowlisted to src/ only) doesn't
+// emit SDL_* function declarations -- only the struct types (SDL_Surface/SDL_Rect/
+// SDL_Color, referenced from project structs bindgen does allowlist). The actual
+// function bodies below call through `sdl2::sys`, which has its own independent
+// bindgen run over the full SDL headers. Both runs describe the same C structs, so a
+// pointer cast between `crate::SDL_Surface` and `sdl2::sys::SDL_Surface` is sound --
+// these pointers are only ever passed opaquely to C, never field-accessed as the
+// `crate::` type on the Rust side once cast.
+unsafe fn as_sys_surface(surf: *mut SDL_Surface) -> *mut sdl2::sys::SDL_Surface {
+    surf as *mut sdl2::sys::SDL_Surface
+}
+unsafe fn as_sys_rect(rect: *const SDL_Rect) -> *const sdl2::sys::SDL_Rect {
+    rect as *const sdl2::sys::SDL_Rect
 }
 
 pub struct SdlRenderer {
-    canvas: WindowCanvas,
-    _image_context: sdl2::image::Sdl2ImageContext,
+    canvas: Option<WindowCanvas>,
+    _image_context: Option<sdl2::image::Sdl2ImageContext>,
+}
+
+// Like `shared_audio()`: create_surface/free_surface/load_image_*/lock_surface/
+// unlock_surface/set_*/blit/fill_rect/delay are all free-standing SDL calls that don't
+// touch `canvas` -- only `present`/`set_fullscreen`/`show_cursor` need a real window,
+// which nothing constructs yet (seg009.rs's own window/canvas init hasn't migrated).
+// Those three panic with a clear message if reached before a real `SdlPlatform` exists.
+static mut SHARED_RENDERER: SdlRenderer = SdlRenderer { canvas: None, _image_context: None };
+
+#[allow(static_mut_refs)]
+pub fn shared_renderer() -> &'static mut SdlRenderer {
+    unsafe { &mut SHARED_RENDERER }
 }
 
 impl Renderer for SdlRenderer {
-    type Surf = SdlOwnedSurface;
-
-    fn create_surface(&mut self, width: c_int, height: c_int) -> Self::Surf {
-        let surf = SdlSurfaceOwned::new(width as u32, height as u32, PixelFormatEnum::Index8)
-            .expect("create_surface: SDL_CreateRGBSurface");
-        SdlOwnedSurface(surf)
+    unsafe fn create_surface(&mut self, width: c_int, height: c_int) -> *mut SDL_Surface {
+        sdl2::sys::SDL_CreateRGBSurface(0, width, height, 8, 0, 0, 0, 0) as *mut SDL_Surface
     }
 
-    fn load_image_from_memory(&mut self, bytes: &[u8]) -> Result<Self::Surf, String> {
+    unsafe fn free_surface(&mut self, surf: *mut SDL_Surface) {
+        sdl2::sys::SDL_FreeSurface(as_sys_surface(surf));
+    }
+
+    unsafe fn load_image_from_memory(&mut self, bytes: &[u8]) -> *mut SDL_Surface {
         // `sdl2::image::LoadSurface` only exposes `from_file`/`from_xpm_array`; the crate
         // has no safe load-from-memory-buffer wrapper (matches IMG_Load_RW), so this is
         // exactly the narrow raw-sys escape hatch flagged in the Step C plan.
-        let rwops = RWops::from_bytes(bytes)?;
-        unsafe {
-            let raw = sdl2::sys::image::IMG_Load_RW(rwops.raw(), 0);
-            if raw.is_null() {
-                Err(sdl2::get_error())
-            } else {
-                Ok(SdlOwnedSurface(SdlSurfaceOwned::from_ll(raw)))
-            }
-        }
+        let Ok(rwops) = RWops::from_bytes(bytes) else { return std::ptr::null_mut() };
+        sdl2::sys::image::IMG_Load_RW(rwops.raw(), 0) as *mut SDL_Surface
     }
 
-    fn load_image_from_file(&mut self, path: &str) -> Result<Self::Surf, String> {
-        SdlSurfaceOwned::from_file(path).map(SdlOwnedSurface)
+    unsafe fn load_image_from_file(&mut self, path: &std::ffi::CStr) -> *mut SDL_Surface {
+        sdl2::sys::image::IMG_Load(path.as_ptr()) as *mut SDL_Surface
     }
 
-    fn blit(&mut self, src: &Self::Surf, dst: &mut Self::Surf, dst_x: c_int, dst_y: c_int) {
-        let dst_rect = Rect::new(dst_x, dst_y, src.0.width(), src.0.height());
-        src.0.blit(None, &mut dst.0, dst_rect).expect("blit");
+    unsafe fn lock_surface(&mut self, surf: *mut SDL_Surface) {
+        sdl2::sys::SDL_LockSurface(as_sys_surface(surf));
     }
 
-    fn fill_rect(&mut self, surf: &mut Self::Surf, x: c_int, y: c_int, w: c_int, h: c_int, color: u32) {
-        let rect = Rect::new(x, y, w as u32, h as u32);
-        surf.0.fill_rect(rect, Color::RGBA((color >> 24) as u8, (color >> 16) as u8, (color >> 8) as u8, color as u8)).expect("fill_rect");
+    unsafe fn unlock_surface(&mut self, surf: *mut SDL_Surface) {
+        sdl2::sys::SDL_UnlockSurface(as_sys_surface(surf));
     }
 
-    fn present(&mut self, frame: &Self::Surf) {
-        let texture_creator = self.canvas.texture_creator();
-        let texture = texture_creator
-            .create_texture_from_surface(&frame.0)
-            .expect("present: create_texture_from_surface");
-        self.canvas.clear();
-        self.canvas.copy(&texture, None, None).expect("present: copy");
-        self.canvas.present();
+    unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, key: u32) {
+        sdl2::sys::SDL_SetColorKey(as_sys_surface(surf), 1, key);
     }
 
-    fn set_fullscreen(&mut self, fullscreen: bool) -> Result<(), String> {
+    unsafe fn set_palette(&mut self, surf: *mut SDL_Surface, colors: *const SDL_Color, first_color: c_int, n_colors: c_int) {
+        let sys_surf = as_sys_surface(surf);
+        let palette = (*(*sys_surf).format).palette;
+        sdl2::sys::SDL_SetPaletteColors(palette, colors as *const sdl2::sys::SDL_Color, first_color, n_colors);
+    }
+
+    unsafe fn set_blend_mode(&mut self, surf: *mut SDL_Surface, blend: bool) {
+        let mode = if blend { sdl2::sys::SDL_BlendMode::SDL_BLENDMODE_BLEND } else { sdl2::sys::SDL_BlendMode::SDL_BLENDMODE_NONE };
+        sdl2::sys::SDL_SetSurfaceBlendMode(as_sys_surface(surf), mode);
+    }
+
+    unsafe fn set_alpha_mod(&mut self, surf: *mut SDL_Surface, alpha: u8) {
+        sdl2::sys::SDL_SetSurfaceAlphaMod(as_sys_surface(surf), alpha);
+    }
+
+    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) {
+        sdl2::sys::SDL_UpperBlit(as_sys_surface(src), as_sys_rect(src_rect), as_sys_surface(dst), dst_rect as *mut sdl2::sys::SDL_Rect);
+    }
+
+    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect, color: u32) {
+        sdl2::sys::SDL_FillRect(as_sys_surface(surf), as_sys_rect(rect), color);
+    }
+
+    unsafe fn present(&mut self, frame: *mut SDL_Surface) {
+        let canvas = self.canvas.as_mut().expect("present: no window (SdlPlatform not constructed yet)");
+        let surf_ref = SurfaceRef::from_ll_mut(as_sys_surface(frame));
+        let texture_creator = canvas.texture_creator();
+        let texture = texture_creator.create_texture_from_surface(&*surf_ref).expect("present: create_texture_from_surface");
+        canvas.clear();
+        canvas.copy(&texture, None, None).expect("present: copy");
+        canvas.present();
+    }
+
+    unsafe fn set_fullscreen(&mut self, fullscreen: bool) {
+        let canvas = self.canvas.as_mut().expect("set_fullscreen: no window (SdlPlatform not constructed yet)");
         let mode = if fullscreen { sdl2::video::FullscreenType::Desktop } else { sdl2::video::FullscreenType::Off };
-        self.canvas.window_mut().set_fullscreen(mode)
+        let _ = canvas.window_mut().set_fullscreen(mode);
     }
 
-    fn show_cursor(&mut self, show: bool) {
-        self.canvas.window().subsystem().sdl().mouse().show_cursor(show);
+    unsafe fn show_cursor(&mut self, show: bool) {
+        let canvas = self.canvas.as_ref().expect("show_cursor: no window (SdlPlatform not constructed yet)");
+        canvas.window().subsystem().sdl().mouse().show_cursor(show);
+    }
+
+    unsafe fn delay(&mut self, ms: u32) {
+        sdl2::sys::SDL_Delay(ms);
     }
 }
 
@@ -280,7 +289,7 @@ impl SdlPlatform {
         let haptic = controller.as_ref().and_then(|_| sdl.haptic().ok()).and_then(|h| h.open_from_joystick_id(0).ok());
 
         Ok(SdlPlatform {
-            renderer: SdlRenderer { canvas, _image_context: image_context },
+            renderer: SdlRenderer { canvas: Some(canvas), _image_context: Some(image_context) },
             audio: SdlAudio { subsystem: Some(audio_subsystem), device: None },
             input: SdlInput { event_pump, video, timer, controller, joystick: None, haptic },
             files: SdlFiles,
