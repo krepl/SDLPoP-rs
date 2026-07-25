@@ -1460,9 +1460,9 @@ unsafe fn check_grab_run_jump_impl(state: &mut State) -> c_int {
                     grab_col -= 10;
                 }
             }
-            let bump_x = x_bump_at((grab_col + FIRST_ONSCREEN_COLUMN as i16) as usize) as i32 + TILE_MIDX;
-            let dx = char_dx_forward_impl(state, bump_x);
-            state.Char().x = dx as u8;
+            // Direct screen-position assignment -- NOT routed through char_dx_forward
+            // (unlike the dir_delta assignment right below).
+            state.Char().x = (x_bump_at((grab_col + FIRST_ONSCREEN_COLUMN as i16) as usize) as i32 + TILE_MIDX) as u8;
             let dir_delta: i32 = if state.Char().direction == directions_dir_FF_left as i8 { -12 } else { 2 };
             let dx = char_dx_forward_impl(state, dir_delta);
             state.Char().x = dx as u8;
@@ -2113,10 +2113,13 @@ unsafe fn clip_char_impl(state: &mut State) {
         }
         let cxlc = *state.char_x_left_coll() as c_int;
         let col = get_tile_div_mod_impl(state, cxlc - 4);
-        let tc = *state.tile_col();
         if get_tile_impl(state, room as c_int, col + 1, row as c_int) == tiles_tiles_7_doortop_with_floor as c_int
             || *state.curr_tile2() == tiles_tiles_12_doortop as u8
         {
+            // tile_col must be read here, AFTER the get_tile_impl call above: get_tile
+            // mutates it as a side effect (via find_room_of_tile), and the original C
+            // reads the post-call value, not the pre-call one.
+            let tc = *state.tile_col();
             *state.obj_clip_right() = (tc << 5) + 32;
         } else if (get_tile_impl(state, room as c_int, col, row as c_int) != tiles_tiles_7_doortop_with_floor as c_int
                 && *state.curr_tile2() != tiles_tiles_12_doortop as u8)
@@ -2134,7 +2137,6 @@ unsafe fn clip_char_impl(state: &mut State) {
             let cxrc = *state.char_x_right_coll() as c_int;
             let col2 = get_tile_div_mod_impl(state, cxrc);
             let ctr = *state.char_top_row();
-            let tc = *state.tile_col();
             if (get_tile_impl(state, room as c_int, col2, row as c_int) == tiles_tiles_20_wall as c_int
                     || (*state.curr_tile2() == tiles_tiles_13_mirror as u8
                         && state.Char().direction == directions_dir_0_right as i8))
@@ -2142,6 +2144,10 @@ unsafe fn clip_char_impl(state: &mut State) {
                     || *state.curr_tile2() == tiles_tiles_13_mirror as u8)
                 && room as i16 == *state.curr_room()
             {
+                // Same ordering requirement as above: tile_col must reflect the LAST
+                // get_tile_impl call in this condition (the col2/ctr one), so read it
+                // only here, not before the calls.
+                let tc = *state.tile_col();
                 *state.obj_clip_right() = tc << 5;
             }
         } else {
