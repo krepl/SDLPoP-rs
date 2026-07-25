@@ -622,7 +622,7 @@ static mut digi_remaining_length: c_int = 0;
 pub static mut digi_audiospec: *mut SDL_AudioSpec = null_mut();
 const digi_samplerate: c_int = 44100;
 
-static mut ogg_decoder: *mut stb_vorbis = null_mut();
+static mut ogg_decoder: *mut crate::ogg_decode::OggDecoder = null_mut();
 
 static mut square_wave_state: c_short = 4000;
 static mut square_wave_samples_since_last_flip: f32 = 0.0;
@@ -1601,7 +1601,10 @@ unsafe fn load_font_character_offsets(data: *mut rawfont_type) {
     let offsets = core::ptr::addr_of_mut!((*data).offsets) as *mut word;
     let mut pos = offsets.add(n_chars as usize) as *mut byte;
     for index in 0..n_chars {
-        *offsets.add(index as usize) = swaple16((pos as usize - data as usize) as word);
+        // `data` (and thus `offsets`, at a fixed even byte offset from it) is not guaranteed
+        // 2-byte aligned -- it may point into a `[u8; N]` static (e.g. the embedded hc_font
+        // data), so this must be an unaligned write, not a plain `*ptr = ...` store.
+        offsets.add(index as usize).write_unaligned(swaple16((pos as usize - data as usize) as word));
         let image_data = pos as *mut image_data_type;
         let image_bytes = (swaple16((*image_data).height) as c_int) * calc_stride(image_data);
         pos = (core::ptr::addr_of_mut!((*image_data).data) as *mut byte).offset(image_bytes as isize);
@@ -1619,7 +1622,8 @@ unsafe fn load_font_from_data(data: *mut rawfont_type) -> font_type {
     let n_chars = (font.last_char as c_int) - (font.first_char as c_int) + 1;
     let offsets = core::ptr::addr_of_mut!((*data).offsets) as *mut word;
     // Allow loading a font even if the offsets for each character image were not supplied.
-    if swaple16(*offsets.add(0)) == 0 {
+    // Unaligned read: see the comment in load_font_character_offsets above.
+    if swaple16(offsets.add(0).read_unaligned()) == 0 {
         load_font_character_offsets(data);
     }
     let chtab = malloc(core::mem::size_of::<chtab_type>() + core::mem::size_of::<*mut image_type>() * (n_chars as usize)) as *mut chtab_type;
@@ -1632,7 +1636,7 @@ unsafe fn load_font_from_data(data: *mut rawfont_type) -> font_type {
     let mut index: c_int = 0;
     let mut chr: c_int = (*data).first_char as c_int;
     while chr <= (*data).last_char as c_int {
-        let image_data = (data as *mut byte).offset(swaple16(*offsets.add(index as usize)) as isize) as *mut image_data_type;
+        let image_data = (data as *mut byte).offset(swaple16(offsets.add(index as usize).read_unaligned()) as isize) as *mut image_data_type;
         if (*image_data).height == swaple16(0) {
             (*image_data).height = swaple16(1);
         }
@@ -2375,7 +2379,8 @@ unsafe fn ogg_callback(_userdata: *mut c_void, stream: *mut u8, len: c_int) {
 
     let samples_filled: c_int;
     if is_sound_on != 0 {
-        samples_filled = stb_vorbis_get_samples_short_interleaved(ogg_decoder, output_channels, stream as *mut c_short, len / core::mem::size_of::<c_short>() as c_int);
+        let out = core::slice::from_raw_parts_mut(stream as *mut c_short, (len / core::mem::size_of::<c_short>() as c_int) as usize);
+        samples_filled = (*ogg_decoder).get_samples_interleaved(output_channels as usize, out) as c_int;
         if samples_filled < samples_requested {
             let bytes_filled = samples_filled * bytes_per_sample;
             let remaining_bytes = (samples_requested - samples_filled) * bytes_per_sample;
@@ -2384,7 +2389,8 @@ unsafe fn ogg_callback(_userdata: *mut c_void, stream: *mut u8, len: c_int) {
     } else {
         memset(stream as *mut c_void, (*digi_audiospec).silence as c_int, len as usize);
         let discarded_samples = malloc(len as usize) as *mut u8;
-        samples_filled = stb_vorbis_get_samples_short_interleaved(ogg_decoder, output_channels, discarded_samples as *mut c_short, len / core::mem::size_of::<c_short>() as c_int);
+        let out = core::slice::from_raw_parts_mut(discarded_samples as *mut c_short, (len / core::mem::size_of::<c_short>() as c_int) as usize);
+        samples_filled = (*ogg_decoder).get_samples_interleaved(output_channels as usize, out) as c_int;
         free(discarded_samples as *mut c_void);
     }
     if samples_filled == 0 {
@@ -2531,19 +2537,22 @@ pub unsafe extern "C" fn load_sound(index: c_int) -> *mut sound_buffer_type {
                     break 'do_once;
                 }
                 fclose(fp);
-                let mut error: c_int = 0;
-                let decoder = stb_vorbis_open_memory(file_contents as *const u8, file_size as c_int, &mut error, null_mut());
-                if decoder.is_null() {
-                    printf(cs!("Error %d when creating decoder from file \"%s\"!\n"), error, filename.as_ptr());
-                    free(file_contents as *mut c_void);
-                    break 'do_once;
-                }
+                let file_bytes = core::slice::from_raw_parts(file_contents, file_size).to_vec();
+                let decoder_box = crate::ogg_decode::OggDecoder::open(file_bytes);
+                let decoder = match decoder_box {
+                    Some(b) => Box::into_raw(b),
+                    None => {
+                        printf(cs!("Error creating decoder from file \"%s\"!\n"), filename.as_ptr());
+                        free(file_contents as *mut c_void);
+                        break 'do_once;
+                    }
+                };
                 result = malloc(core::mem::size_of::<sound_buffer_type>()) as *mut sound_buffer_type;
                 (*result).type_ = sound_type_sound_ogg as byte;
                 let ogg = core::ptr::addr_of_mut!((*result).__bindgen_anon_1) as *mut ogg_type;
-                (*ogg).total_length = (stb_vorbis_stream_length_in_samples(decoder) as usize * core::mem::size_of::<c_short>()) as c_int;
+                (*ogg).total_length = ((*decoder).total_length_samples() as usize * core::mem::size_of::<c_short>()) as c_int;
                 (*ogg).file_contents = file_contents;
-                (*ogg).decoder = decoder;
+                (*ogg).decoder = decoder as *mut stb_vorbis;
             }
         }
     }
@@ -2568,10 +2577,11 @@ unsafe fn play_ogg_sound(buffer: *mut sound_buffer_type) {
     }
     stop_sounds();
     let ogg = core::ptr::addr_of_mut!((*buffer).__bindgen_anon_1) as *mut ogg_type;
+    let decoder = (*ogg).decoder as *mut crate::ogg_decode::OggDecoder;
     // Need to rewind the music, or else the decoder might continue where it left off.
-    stb_vorbis_seek_start((*ogg).decoder);
+    (*decoder).seek_start();
     SDL_LockAudio();
-    ogg_decoder = (*ogg).decoder;
+    ogg_decoder = decoder;
     SDL_UnlockAudio();
     SDL_PauseAudio(0);
     ogg_playing = 1;
@@ -2709,7 +2719,7 @@ pub unsafe extern "C" fn free_sound(buffer: *mut sound_buffer_type) {
     }
     if (*buffer).type_ == sound_type_sound_ogg as byte {
         let ogg = core::ptr::addr_of_mut!((*buffer).__bindgen_anon_1) as *mut ogg_type;
-        stb_vorbis_close((*ogg).decoder);
+        drop(Box::from_raw((*ogg).decoder as *mut crate::ogg_decode::OggDecoder));
         free((*ogg).file_contents as *mut c_void);
     }
     free(buffer as *mut c_void);

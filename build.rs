@@ -43,7 +43,8 @@ fn main() {
     // Compile all C sources except main.c (Rust provides main)
     // Ported to Rust: seg004
     // data.c ported to Rust (rust/src/globals.rs) -- see docs/plans Step B
-    let sources = [
+    // stb_vorbis.c replaced by the symphonia crate (rust/src/ogg_decode.rs) -- see docs/plans Step B
+    let sources: [&str; 0] = [
         // seg000.c ported to Rust
         // seg008.c ported to Rust
         // seg009.c ported to Rust
@@ -56,7 +57,7 @@ fn main() {
         // menu.c ported to Rust
         // midi.c ported to Rust
         // opl3.c ported to Rust
-        "src/stb_vorbis.c",
+        // stb_vorbis.c replaced by symphonia
         // state_dump.c ported to Rust
     ];
 
@@ -73,7 +74,11 @@ fn main() {
     for source in &sources {
         build.file(source);
     }
-    build.compile("sdlpop");
+    // cc::Build errors on an empty file list (nothing for `ar` to archive); only
+    // compile/link the C static lib once there's at least one C source left to build.
+    if !sources.is_empty() {
+        build.compile("sdlpop");
+    }
 
     println!("cargo:rustc-link-lib=m");
 

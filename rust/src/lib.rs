@@ -76,6 +76,7 @@ pub mod replay;
 pub mod opl3;
 pub mod midi;
 pub mod menu;
+pub mod ogg_decode;
 
 // Shared support for tests that touch real files on disk (quicksave, hall-of-fame,
 // long-term save). `getenv`/`setenv` are process-global, not thread-local, and `cargo
