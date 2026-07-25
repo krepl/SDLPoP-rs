@@ -5,29 +5,12 @@
 
 use std::os::raw::{c_int, c_short};
 use super::*;
+use crate::platform::{InputSource, Renderer};
 
 extern "C" { fn dump_frame_state(); }
 
 // File-local global (declared in seg003.c, not exported via data.c).
 static mut distance_mirror: i8 = 0;
-
-// SDL functions not captured by our bindings (which allowlist only src/).
-extern "C" {
-    fn SDL_Delay(ms: u32);
-    fn SDL_HapticRumblePlay(haptic: *mut SDL_Haptic, strength: f32, length: u32) -> c_int;
-    fn SDL_GameControllerRumble(
-        gamecontroller: *mut SDL_GameController,
-        low_frequency_rumble: u16,
-        high_frequency_rumble: u16,
-        duration_ms: u32,
-    ) -> c_int;
-    fn SDL_JoystickRumble(
-        joystick: *mut SDL_Joystick,
-        low_frequency_rumble: u16,
-        high_frequency_rumble: u16,
-        duration_ms: u32,
-    ) -> c_int;
-}
 
 unsafe fn y_clip_at(idx: usize) -> i16 {
     *core::ptr::addr_of!(y_clip).cast::<i16>().add(idx)
@@ -254,7 +237,7 @@ pub unsafe extern "C" fn redraw_screen(drawing_different_room: c_int) {
     if drawing_different_room != 0 {
         draw_rect(&rect_top, colorids_color_0_black as c_int);
         update_screen();
-        SDL_Delay(100);
+        crate::platform::sdl::shared_renderer().delay(100);
     }
     different_room = 0;
     if is_blind_mode != 0 {
@@ -751,13 +734,7 @@ pub unsafe extern "C" fn flash_if_hurt() -> c_int {
         return 1;
     } else if hitp_delta < 0 {
         if is_joyst_mode != 0 && enable_controller_rumble != 0 {
-            if !sdl_haptic.is_null() {
-                SDL_HapticRumblePlay(sdl_haptic, 1.0, 100);
-            } else if !sdl_controller_.is_null() {
-                SDL_GameControllerRumble(sdl_controller_, 0xFFFF, 0xFFFF, 100);
-            } else {
-                SDL_JoystickRumble(sdl_joystick_, 0xFFFF, 0xFFFF, 100);
-            }
+            crate::platform::sdl::shared_input().rumble(1.0, 100);
         }
         do_flash(colorids_color_12_brightred as c_short);
         return 1;

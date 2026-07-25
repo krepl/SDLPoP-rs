@@ -200,33 +200,51 @@ impl AudioBackend for SdlAudio {
 }
 
 pub struct SdlInput {
-    event_pump: EventPump,
-    video: sdl2::VideoSubsystem,
-    timer: TimerSubsystem,
+    event_pump: Option<EventPump>,
+    video: Option<sdl2::VideoSubsystem>,
+    timer: Option<TimerSubsystem>,
+    // Opened at SdlPlatform::new() time for future use (hotplug handling, once that
+    // migrates too), but NOT what rumble() below reads from -- see its comment.
+    #[allow(dead_code)]
     controller: Option<sdl2::controller::GameController>,
+    #[allow(dead_code)]
     joystick: Option<sdl2::joystick::Joystick>,
+    #[allow(dead_code)]
     haptic: Option<sdl2::haptic::Haptic>,
+}
+
+static mut SHARED_INPUT: SdlInput =
+    SdlInput { event_pump: None, video: None, timer: None, controller: None, joystick: None, haptic: None };
+
+#[allow(static_mut_refs)]
+pub fn shared_input() -> &'static mut SdlInput {
+    unsafe { &mut SHARED_INPUT }
 }
 
 impl InputSource for SdlInput {
     fn key_state(&self, scancode: c_int) -> bool {
         let Some(code) = Scancode::from_i32(scancode) else { return false };
-        self.event_pump.keyboard_state().is_scancode_pressed(code)
+        let event_pump = self.event_pump.as_ref().expect("key_state: no event pump (SdlPlatform not constructed yet)");
+        event_pump.keyboard_state().is_scancode_pressed(code)
     }
     fn mouse_state(&self) -> (c_int, c_int, bool, bool) {
-        let state = self.event_pump.mouse_state();
+        let event_pump = self.event_pump.as_ref().expect("mouse_state: no event pump (SdlPlatform not constructed yet)");
+        let state = event_pump.mouse_state();
         (state.x(), state.y(), state.left(), state.right())
     }
     fn start_text_input(&mut self, x: c_int, y: c_int, w: c_int, h: c_int) {
-        self.video.text_input().set_rect(Rect::new(x, y, w as u32, h as u32));
-        self.video.text_input().start();
+        let video = self.video.as_ref().expect("start_text_input: no video subsystem (SdlPlatform not constructed yet)");
+        video.text_input().set_rect(Rect::new(x, y, w as u32, h as u32));
+        video.text_input().start();
     }
     fn stop_text_input(&mut self) {
-        self.video.text_input().stop();
+        let video = self.video.as_ref().expect("stop_text_input: no video subsystem (SdlPlatform not constructed yet)");
+        video.text_input().stop();
     }
     fn add_one_shot_timer(&mut self, delay_ms: u32, callback: Box<dyn FnOnce() + Send>) {
+        let timer_subsystem = self.timer.as_ref().expect("add_one_shot_timer: no timer subsystem (SdlPlatform not constructed yet)");
         let mut callback = Some(callback);
-        let timer = self.timer.add_timer(
+        let timer = timer_subsystem.add_timer(
             delay_ms,
             Box::new(move || {
                 if let Some(cb) = callback.take() {
@@ -240,13 +258,24 @@ impl InputSource for SdlInput {
         // must be leaked, not held, for a genuinely one-shot fire-once timer.
         std::mem::forget(timer);
     }
+    // Reads the same raw sdl_haptic/sdl_controller_/sdl_joystick_ globals seg003.rs
+    // read directly before this migration (populated by seg009.rs's raw-FFI controller
+    // init, which hasn't itself migrated to this trait yet -- see the AudioBackend
+    // lock/unlock/pause comment on SdlAudio for the identical reasoning). Preserves the
+    // exact haptic -> controller -> joystick fallback order, including the original's
+    // quirk of calling SDL_JoystickRumble even when sdl_joystick_ is null if neither of
+    // the other two is available (SDL_JoystickRumble on a null pointer just returns an
+    // error code, so this was always harmless, not a bug worth fixing here).
     fn rumble(&mut self, strength: f32, duration_ms: u32) {
-        if let Some(haptic) = &mut self.haptic {
-            haptic.rumble_play(strength, duration_ms);
-        } else if let Some(controller) = &mut self.controller {
-            let _ = controller.set_rumble((strength * 65535.0) as u16, (strength * 65535.0) as u16, duration_ms);
-        } else if let Some(joystick) = &mut self.joystick {
-            let _ = joystick.set_rumble((strength * 65535.0) as u16, (strength * 65535.0) as u16, duration_ms);
+        unsafe {
+            let level = (strength * 65535.0) as u16;
+            if !crate::sdl_haptic.is_null() {
+                sdl2::sys::SDL_HapticRumblePlay(crate::sdl_haptic as *mut sdl2::sys::SDL_Haptic, strength, duration_ms);
+            } else if !crate::sdl_controller_.is_null() {
+                sdl2::sys::SDL_GameControllerRumble(crate::sdl_controller_ as *mut sdl2::sys::SDL_GameController, level, level, duration_ms);
+            } else {
+                sdl2::sys::SDL_JoystickRumble(crate::sdl_joystick_ as *mut sdl2::sys::SDL_Joystick, level, level, duration_ms);
+            }
         }
     }
 }
@@ -291,13 +320,13 @@ impl SdlPlatform {
         Ok(SdlPlatform {
             renderer: SdlRenderer { canvas: Some(canvas), _image_context: Some(image_context) },
             audio: SdlAudio { subsystem: Some(audio_subsystem), device: None },
-            input: SdlInput { event_pump, video, timer, controller, joystick: None, haptic },
+            input: SdlInput { event_pump: Some(event_pump), video: Some(video), timer: Some(timer), controller, joystick: None, haptic },
             files: SdlFiles,
         })
     }
 
     pub fn poll_events(&mut self) -> Vec<Event> {
-        self.input.event_pump.poll_iter().collect()
+        self.input.event_pump.as_mut().expect("poll_events: no event pump").poll_iter().collect()
     }
 }
 
