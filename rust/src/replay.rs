@@ -42,22 +42,11 @@ extern "C" {
     fn mkdir(path: *const c_char, mode: u32) -> c_int;
     fn stat(path: *const c_char, buf: *mut stat_t) -> c_int;
     static mut stderr: *mut FILE;
-
-    // SDL (not emitted by bindgen, which only processes src/)
-    fn SDL_RWFromMem(mem: *mut c_void, size: c_int) -> *mut SDL_RWops;
-    fn SDL_RWtell(context: *mut SDL_RWops) -> i64;
-    fn SDL_RWclose(context: *mut SDL_RWops) -> c_int;
-    fn SDL_ShowSimpleMessageBox(
-        flags: u32,
-        title: *const c_char,
-        message: *const c_char,
-        window: *mut SDL_Window,
-    ) -> c_int;
 }
+use crate::platform::Renderer;
 
 const SEEK_SET: c_int = 0;
 const SEEK_CUR: c_int = 1;
-const SDL_MESSAGEBOX_ERROR: u32 = 0x00000010;
 
 // glibc x86-64 struct stat (144 bytes). We only read st_ctim.
 #[repr(C)]
@@ -511,11 +500,9 @@ pub unsafe extern "C" fn start_with_replay_file(filename: *const c_char) {
                 exit(0);
             }
 
-            SDL_ShowSimpleMessageBox(
-                SDL_MESSAGEBOX_ERROR,
-                cs!("SDLPoP"),
-                error_message.as_ptr(),
-                null_mut(),
+            crate::platform::sdl::shared_renderer().show_message_box(
+                std::ffi::CStr::from_ptr(cs!("SDLPoP")),
+                std::ffi::CStr::from_ptr(error_message.as_ptr()),
             );
             return;
         }
@@ -745,13 +732,14 @@ unsafe fn save_options_to_buffer(
     max_size: usize,
     process_section_func: section_fn,
 ) -> usize {
-    let rw = SDL_RWFromMem(options_buffer, max_size as c_int);
+    let renderer = crate::platform::sdl::shared_renderer();
+    let rw = renderer.rw_from_mem(options_buffer, max_size as c_int);
     process_section_func(rw, process_rw_write as rw_process_fn);
-    let mut section_size: i64 = SDL_RWtell(rw);
+    let mut section_size: i64 = renderer.rw_tell(rw);
     if section_size < 0 {
         section_size = 0;
     }
-    SDL_RWclose(rw);
+    renderer.rw_close(rw);
     section_size as usize
 }
 
@@ -761,9 +749,10 @@ unsafe fn load_options_from_buffer(
     options_size: usize,
     process_section_func: section_fn,
 ) {
-    let rw = SDL_RWFromMem(options_buffer, options_size as c_int);
+    let renderer = crate::platform::sdl::shared_renderer();
+    let rw = renderer.rw_from_mem(options_buffer, options_size as c_int);
     process_section_func(rw, process_rw_read as rw_process_fn);
-    SDL_RWclose(rw);
+    renderer.rw_close(rw);
 }
 
 #[no_mangle]

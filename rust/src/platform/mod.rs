@@ -31,7 +31,7 @@ pub mod sdl;
 
 use std::os::raw::c_int;
 
-use crate::{SDL_Color, SDL_PixelFormat, SDL_Rect, SDL_Surface};
+use crate::{SDL_Color, SDL_PixelFormat, SDL_RWops, SDL_Rect, SDL_Surface};
 
 pub trait Renderer {
     /// Full `SDL_CreateRGBSurface` signature (depth + RGBA masks), not just
@@ -76,6 +76,17 @@ pub trait Renderer {
     /// Frame pacing (`SDL_Delay`). Not really a "renderer" operation, but every current
     /// caller is inside a render/game loop, and there's no better-fitting trait yet.
     unsafe fn delay(&mut self, ms: u32);
+    /// Wraps a memory buffer as an `SDL_RWops` stream (`SDL_RWFromMem`) -- used for
+    /// replay-options serialization (replay.rs) via the same `rw_process_fn`/
+    /// `section_fn` function-pointer types `sdl_rw_wrappers.rs`/`menu.rs` share, which
+    /// still take `*mut SDL_RWops` directly; not a "renderer" concern either, same
+    /// reasoning as `delay`.
+    unsafe fn rw_from_mem(&mut self, buf: *mut std::os::raw::c_void, size: c_int) -> *mut SDL_RWops;
+    unsafe fn rw_tell(&mut self, rw: *mut SDL_RWops) -> i64;
+    unsafe fn rw_close(&mut self, rw: *mut SDL_RWops);
+    /// `SDL_ShowSimpleMessageBox` -- the modal error dialog shown when a replay file
+    /// fails to load outside `--validate` mode.
+    unsafe fn show_message_box(&mut self, title: &std::ffi::CStr, message: &std::ffi::CStr);
 }
 
 /// The mixed digi/speaker/MIDI/OGG output sink. `opl3.rs`'s synth math and the mixing

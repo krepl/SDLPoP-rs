@@ -156,6 +156,23 @@ impl Renderer for SdlRenderer {
     unsafe fn delay(&mut self, ms: u32) {
         sdl2::sys::SDL_Delay(ms);
     }
+
+    unsafe fn rw_from_mem(&mut self, buf: *mut std::os::raw::c_void, size: c_int) -> *mut crate::SDL_RWops {
+        sdl2::sys::SDL_RWFromMem(buf, size) as *mut crate::SDL_RWops
+    }
+
+    unsafe fn rw_tell(&mut self, rw: *mut crate::SDL_RWops) -> i64 {
+        sdl2::sys::SDL_RWtell(rw as *mut sdl2::sys::SDL_RWops)
+    }
+
+    unsafe fn rw_close(&mut self, rw: *mut crate::SDL_RWops) {
+        sdl2::sys::SDL_RWclose(rw as *mut sdl2::sys::SDL_RWops);
+    }
+
+    unsafe fn show_message_box(&mut self, title: &std::ffi::CStr, message: &std::ffi::CStr) {
+        const SDL_MESSAGEBOX_ERROR: u32 = 0x00000010;
+        sdl2::sys::SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title.as_ptr(), message.as_ptr(), std::ptr::null_mut());
+    }
 }
 
 pub struct SdlAudio {
