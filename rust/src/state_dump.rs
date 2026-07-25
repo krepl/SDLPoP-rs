@@ -2,6 +2,11 @@
 #![allow(non_snake_case)]
 #![allow(static_mut_refs)]
 
+// Not part of the Step D State-facade migration: this module's entire purpose is to
+// reflectively dump every named global (gameplay, rendering, config alike) to a trace
+// file for the differential harness. It is diagnostic instrumentation, not gameplay
+// logic, and (like SDL/audio/replay infra) is out of `State`'s scope by design.
+
 use std::os::raw::{c_char, c_int, c_void};
 use super::*;
 
