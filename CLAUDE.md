@@ -50,6 +50,8 @@ scripts/run_harness.sh --compare A.trace B.trace  # diff two arbitrary traces
 
 The golden trace (`traces/golden.trace`) was generated from the all-C build and is committed as the correctness reference. `compare_traces.py` supports `--all`, `--tick N`, `--ignore FIELD`.
 
+Plain `scripts/run_harness.sh` runs `scripts/smoke_test.sh` first: it launches the real binary via its normal interactive startup (not `validate`) and confirms it runs a few seconds without panicking. This exists because `validate` mode skips window creation and most of the live input path, so startup-only bugs (e.g. the missing `SdlPlatform` event-pump wiring fixed in commit `4a11238`) are invisible to the replay comparisons — 30/30 replays passed the entire time that bug existed. Run it standalone with `scripts/smoke_test.sh [duration_seconds]`.
+
 **Harness gotchas:** The game `chdir(exe_dir)` when loading a replay (see `replay.c:277`), so relative paths passed via `POPTRACE_OUT` break. The harness uses absolute paths to work around this. The Rust binary (`target/debug/prince`) resolves data assets relative to its own path, so `target/debug/data` and `target/debug/replays` must be symlinked to the project-root copies — the harness does this automatically.
 
 ## Architecture

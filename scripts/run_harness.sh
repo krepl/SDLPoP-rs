@@ -152,6 +152,13 @@ case "${1:-}" in
     cargo build --manifest-path "$ROOT/Cargo.toml" 2>&1
     ;;
   "")
+    # Smoke test first (fail fast): the replay comparisons below all run through
+    # `prince validate`, which skips window creation and most of the live input
+    # path -- see scripts/smoke_test.sh's header comment for why that's a real
+    # coverage gap, not redundant with what follows.
+    "$ROOT/scripts/smoke_test.sh" || exit 1
+    echo ""
+
     failures=0
     for pair in "${PAIRS[@]}"; do
       replay="${pair%%|*}"
