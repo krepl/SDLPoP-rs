@@ -8,6 +8,12 @@
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+// Plain Rust translations of what used to be src/data.c's globals (Step B of the
+// post-port refactor plan). Spliced at crate-root scope, same as bindings.rs above, so
+// every existing `use super::*;` call site keeps resolving them exactly as before --
+// zero call-site changes. See globals.rs's own header comment for details.
+include!("globals.rs");
+
 // Shared libc functions used across multiple modules.
 // FILE comes from bindings.rs (pub type FILE = _IO_FILE).
 // Declared once here; modules bring them in via `use super::*`.
