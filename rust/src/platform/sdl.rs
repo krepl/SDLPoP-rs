@@ -50,10 +50,14 @@ pub struct SdlRenderer {
 // touch `canvas` -- only `present`/`set_fullscreen`/`show_cursor` need a real window,
 // which nothing constructs yet (seg009.rs's own window/canvas init hasn't migrated).
 // Those three panic with a clear message if reached before a real `SdlPlatform` exists.
-static mut SHARED_RENDERER: SdlRenderer = SdlRenderer { canvas: None, _image_context: None };
+// Typed as the backend-selected alias (see platform::backend), not `SdlRenderer` directly,
+// so a second backend only ever needs a new cfg arm there -- this declaration doesn't
+// change, and neither does any of the ~224 call sites that call `shared_renderer()`.
+static mut SHARED_RENDERER: crate::platform::backend::ActiveRenderer =
+    SdlRenderer { canvas: None, _image_context: None };
 
 #[allow(static_mut_refs)]
-pub fn shared_renderer() -> &'static mut SdlRenderer {
+pub fn shared_renderer() -> &'static mut crate::platform::backend::ActiveRenderer {
     unsafe { &mut SHARED_RENDERER }
 }
 
@@ -402,10 +406,12 @@ pub struct SdlAudio {
 // real window) to reach them. `shared_audio()` is a minimal always-available singleton
 // for exactly that: no init beyond what SDL_Init already did elsewhere (still via raw
 // FFI in seg009.rs, not yet migrated -- see the exit-criteria note on `open()` below).
-static mut SHARED_AUDIO: SdlAudio = SdlAudio { subsystem: None, device: None };
+// See shared_renderer()'s comment: typed as the backend-selected alias.
+static mut SHARED_AUDIO: crate::platform::backend::ActiveAudio =
+    SdlAudio { subsystem: None, device: None };
 
 #[allow(static_mut_refs)]
-pub fn shared_audio() -> &'static mut SdlAudio {
+pub fn shared_audio() -> &'static mut crate::platform::backend::ActiveAudio {
     unsafe { &mut SHARED_AUDIO }
 }
 
@@ -466,11 +472,12 @@ pub struct SdlInput {
     haptic: Option<sdl2::haptic::Haptic>,
 }
 
-static mut SHARED_INPUT: SdlInput =
+// See shared_renderer()'s comment: typed as the backend-selected alias.
+static mut SHARED_INPUT: crate::platform::backend::ActiveInput =
     SdlInput { event_pump: None, video: None, timer: None, controller: None, joystick: None, haptic: None };
 
 #[allow(static_mut_refs)]
-pub fn shared_input() -> &'static mut SdlInput {
+pub fn shared_input() -> &'static mut crate::platform::backend::ActiveInput {
     unsafe { &mut SHARED_INPUT }
 }
 

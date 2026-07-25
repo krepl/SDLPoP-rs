@@ -27,6 +27,7 @@
 //! are `unsafe fn` like virtually everything else in this crate. Full ownership safety
 //! for surfaces is Step D's job, alongside de-globalization.
 
+pub mod backend;
 pub mod sdl;
 
 use std::os::raw::c_int;
