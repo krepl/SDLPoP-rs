@@ -116,6 +116,14 @@ impl Renderer for SdlRenderer {
         sdl2::sys::SDL_MapRGBA(format as *const sdl2::sys::SDL_PixelFormat, r, g, b, a)
     }
 
+    unsafe fn save_png(&mut self, surf: *mut SDL_Surface, path: &std::ffi::CStr) -> c_int {
+        sdl2::sys::image::IMG_SavePNG(as_sys_surface(surf), path.as_ptr())
+    }
+
+    unsafe fn get_error(&mut self) -> *const std::os::raw::c_char {
+        sdl2::sys::SDL_GetError()
+    }
+
     unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int {
         sdl2::sys::SDL_UpperBlit(as_sys_surface(src), as_sys_rect(src_rect), as_sys_surface(dst), dst_rect as *mut sdl2::sys::SDL_Rect)
     }

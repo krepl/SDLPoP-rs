@@ -59,6 +59,11 @@ pub trait Renderer {
     unsafe fn set_blend_mode(&mut self, surf: *mut SDL_Surface, mode: c_int) -> c_int;
     unsafe fn set_alpha_mod(&mut self, surf: *mut SDL_Surface, alpha: u8);
     unsafe fn map_rgba(&mut self, format: *const SDL_PixelFormat, r: u8, g: u8, b: u8, a: u8) -> u32;
+    /// `IMG_SavePNG`. Returns the raw SDL result code, same reasoning as `set_blend_mode`.
+    unsafe fn save_png(&mut self, surf: *mut SDL_Surface, path: &std::ffi::CStr) -> c_int;
+    /// `SDL_GetError` -- the error string for the most recent failing SDL call on this
+    /// thread. Not owned by the caller; SDL invalidates it on the next SDL call.
+    unsafe fn get_error(&mut self) -> *const std::os::raw::c_char;
     /// Returns the raw SDL result code, same reasoning as `set_blend_mode`.
     unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int;
     /// Returns the raw SDL result code, same reasoning as `set_blend_mode`.

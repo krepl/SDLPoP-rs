@@ -5,6 +5,7 @@
 
 use std::os::raw::{c_char, c_int, c_short, c_uint, c_void};
 use super::*;
+use crate::platform::Renderer;
 
 extern "C" {
     fn snprintf(buf: *mut c_char, size: usize, fmt: *const c_char, ...) -> c_int;
@@ -13,26 +14,6 @@ extern "C" {
     fn mkdir(path: *const c_char, mode: c_uint) -> c_int;
     fn memset(s: *mut c_void, c: c_int, n: usize) -> *mut c_void;
     fn exit(code: c_int) -> !;
-    fn SDL_CreateRGBSurface(
-        flags: u32,
-        width: c_int,
-        height: c_int,
-        depth: c_int,
-        Rmask: u32,
-        Gmask: u32,
-        Bmask: u32,
-        Amask: u32,
-    ) -> *mut SDL_Surface;
-    fn SDL_UpperBlit(
-        src: *mut SDL_Surface,
-        srcrect: *const SDL_Rect,
-        dst: *mut SDL_Surface,
-        dstrect: *mut SDL_Rect,
-    ) -> c_int;
-    fn SDL_FreeSurface(surface: *mut SDL_Surface);
-    fn IMG_SavePNG(surface: *mut SDL_Surface, file: *const c_char) -> c_int;
-    // IMG_GetError is a macro for SDL_GetError in SDL_image.h.
-    fn SDL_GetError() -> *const c_char;
     static mut stderr: *mut FILE;
 }
 
@@ -149,7 +130,7 @@ unsafe fn show_result(result: c_int, what: *const c_char) {
             b"Could not save %s to \"%s\". Error: %s\n\0".as_ptr() as *const c_char,
             what,
             screenshot_filename.as_ptr(),
-            SDL_GetError(),
+            crate::platform::sdl::shared_renderer().get_error(),
         );
         snprintf(
             sprintf_temp.as_mut_ptr(),
@@ -167,7 +148,7 @@ unsafe fn show_result(result: c_int, what: *const c_char) {
 #[no_mangle]
 pub unsafe extern "C" fn save_screenshot() {
     make_screenshot_filename();
-    let result = IMG_SavePNG(get_final_surface(), screenshot_filename.as_ptr() as *const c_char);
+    let result = crate::platform::sdl::shared_renderer().save_png(get_final_surface(), std::ffi::CStr::from_ptr(screenshot_filename.as_ptr()));
     show_result(result, b"screenshot\0".as_ptr() as *const c_char);
 }
 
@@ -795,8 +776,7 @@ pub unsafe extern "C" fn save_level_screenshot(want_extras: bool) {
     let image_width = map_width * 320;
     let image_height = map_height * 189 + 3 + 8;
 
-    let map_surface = SDL_CreateRGBSurface(
-        0,
+    let map_surface = crate::platform::sdl::shared_renderer().create_surface(
         image_width,
         image_height,
         32,
@@ -870,17 +850,17 @@ pub unsafe extern "C" fn save_level_screenshot(want_extras: bool) {
                     draw_extras();
                 }
 
-                SDL_UpperBlit(onscreen_surface_, core::ptr::null(), map_surface, &mut dest_rect);
+                crate::platform::sdl::shared_renderer().blit(onscreen_surface_, core::ptr::null(), map_surface, &mut dest_rect);
             }
         }
     }
     switch_to_room(old_room);
 
     make_screenshot_filename();
-    let result = IMG_SavePNG(map_surface, screenshot_filename.as_ptr() as *const c_char);
+    let result = crate::platform::sdl::shared_renderer().save_png(map_surface, std::ffi::CStr::from_ptr(screenshot_filename.as_ptr()));
     show_result(result, b"level map\0".as_ptr() as *const c_char);
 
-    SDL_FreeSurface(map_surface);
+    crate::platform::sdl::shared_renderer().free_surface(map_surface);
 }
 
 #[no_mangle]
