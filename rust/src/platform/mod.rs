@@ -46,13 +46,26 @@ pub trait Renderer {
     /// straight from disk today). Null on failure, matching `IMG_Load`/`IMG_Load_RW`.
     unsafe fn load_image_from_memory(&mut self, bytes: &[u8]) -> *mut SDL_Surface;
     unsafe fn load_image_from_file(&mut self, path: &std::ffi::CStr) -> *mut SDL_Surface;
-    unsafe fn lock_surface(&mut self, surf: *mut SDL_Surface);
+    /// Raw `IMG_Load_RW` -- `load_image_from_memory` above bundles
+    /// `SDL_RWFromConstMem`+`IMG_Load_RW`+`SDL_RWclose` into one call, which doesn't fit
+    /// callers (seg009.rs's own `load_image`) that need distinct error handling/logging
+    /// around each of the three steps.
+    unsafe fn img_load_rw(&mut self, rw: *mut SDL_RWops, freesrc: c_int) -> *mut SDL_Surface;
+    /// Returns the raw SDL result code (0 success) -- seg009.rs checks it, unlike the
+    /// earlier callers that motivated the original void signature.
+    unsafe fn lock_surface(&mut self, surf: *mut SDL_Surface) -> c_int;
     unsafe fn unlock_surface(&mut self, surf: *mut SDL_Surface);
     /// `enable` is the raw `SDL_SetColorKey` flag arg -- `hflip` (seg008.rs) both
     /// enables a color key (`true`, matching every earlier caller) and disables one
     /// (`false`), so this can't hardcode "always enable" like the original draft did.
-    unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, enable: bool, key: u32);
+    /// Returns the raw SDL result code, same reasoning as `lock_surface`.
+    unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, enable: bool, key: u32) -> c_int;
     unsafe fn set_palette(&mut self, surf: *mut SDL_Surface, colors: *const SDL_Color, first_color: c_int, n_colors: c_int);
+    /// Same underlying `SDL_SetPaletteColors` call as `set_palette`, but operating on
+    /// an already-extracted `*mut SDL_Palette` directly -- some callers (seg009.rs)
+    /// already have the palette pointer in hand rather than a surface to derive it
+    /// from.
+    unsafe fn set_palette_colors(&mut self, palette: *mut crate::SDL_Palette, colors: *const SDL_Color, first_color: c_int, n_colors: c_int) -> c_int;
     /// `SDL_SetSurfacePalette` -- installs an existing `SDL_Palette` object wholesale
     /// (`hflip`'s output surface reuses its source's palette), a different operation
     /// from `set_palette` above (which edits specific color entries in place).
@@ -93,7 +106,7 @@ pub trait Renderer {
     /// reasoning as `delay`.
     unsafe fn rw_from_mem(&mut self, buf: *mut std::os::raw::c_void, size: c_int) -> *mut SDL_RWops;
     unsafe fn rw_tell(&mut self, rw: *mut SDL_RWops) -> i64;
-    unsafe fn rw_close(&mut self, rw: *mut SDL_RWops);
+    unsafe fn rw_close(&mut self, rw: *mut SDL_RWops) -> c_int;
     unsafe fn rw_write(&mut self, rw: *mut SDL_RWops, ptr: *const std::os::raw::c_void, size: usize, num: usize) -> usize;
     unsafe fn rw_read(&mut self, rw: *mut SDL_RWops, ptr: *mut std::os::raw::c_void, size: usize, maxnum: usize) -> usize;
     /// `SDL_ShowSimpleMessageBox` -- the modal error dialog shown when a replay file
@@ -119,6 +132,58 @@ pub trait Renderer {
     unsafe fn render_get_logical_size(&mut self, renderer: *mut crate::SDL_Renderer) -> (c_int, c_int);
     unsafe fn render_get_viewport(&mut self, renderer: *mut crate::SDL_Renderer) -> SDL_Rect;
     unsafe fn render_set_integer_scale(&mut self, renderer: *mut crate::SDL_Renderer, enable: bool) -> c_int;
+
+    // ------------------------------------------------------------------------------
+    // seg009.rs's platform-init/lifecycle surface: SDL_Init/CreateWindow/CreateRenderer/
+    // OpenAudio/controller+haptic setup/the event loop. Same relocation-not-redesign
+    // rule as everywhere else in this trait -- these are still the exact SDL calls
+    // seg009.rs made before, just behind the trait now. Actually restructuring game
+    // startup to build and own a real `SdlPlatform` end to end (rather than populating
+    // the same `window_`/`renderer_`/etc. globals these calls already write into) is
+    // out of scope for Step C; see the plan's Step D notes on de-globalization.
+    // ------------------------------------------------------------------------------
+    unsafe fn map_rgb(&mut self, format: *const SDL_PixelFormat, r: u8, g: u8, b: u8) -> u32;
+    unsafe fn set_clip_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect) -> c_int;
+    unsafe fn convert_surface_format(&mut self, src: *mut SDL_Surface, pixel_format: u32, flags: u32) -> *mut SDL_Surface;
+    unsafe fn blit_scaled(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int;
+    unsafe fn set_window_icon(&mut self, window: *mut crate::SDL_Window, icon: *mut SDL_Surface);
+    unsafe fn rw_from_const_mem(&mut self, mem: *const std::os::raw::c_void, size: c_int) -> *mut SDL_RWops;
+    unsafe fn create_texture(&mut self, renderer: *mut crate::SDL_Renderer, format: u32, access: c_int, w: c_int, h: c_int) -> *mut crate::SDL_Texture;
+    unsafe fn update_texture(&mut self, texture: *mut crate::SDL_Texture, rect: *const SDL_Rect, pixels: *const std::os::raw::c_void, pitch: c_int) -> c_int;
+    unsafe fn set_render_target(&mut self, renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture) -> c_int;
+    unsafe fn render_clear(&mut self, renderer: *mut crate::SDL_Renderer) -> c_int;
+    unsafe fn render_copy(&mut self, renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture, src_rect: *const SDL_Rect, dst_rect: *const SDL_Rect) -> c_int;
+    unsafe fn render_present(&mut self, renderer: *mut crate::SDL_Renderer);
+    unsafe fn render_set_logical_size(&mut self, renderer: *mut crate::SDL_Renderer, w: c_int, h: c_int) -> c_int;
+    unsafe fn get_renderer_output_size(&mut self, renderer: *mut crate::SDL_Renderer) -> (c_int, c_int);
+    /// Only `SDL_RendererInfo.flags` is ever read (checking `SDL_RENDERER_TARGETTEXTURE`
+    /// support), so this returns just that instead of the full struct -- `SDL_RendererInfo`
+    /// isn't otherwise shared across modules.
+    unsafe fn get_renderer_info_flags(&mut self, renderer: *mut crate::SDL_Renderer) -> u32;
+    unsafe fn set_hint(&mut self, name: &std::ffi::CStr, value: &std::ffi::CStr) -> c_int;
+    unsafe fn sdl_init(&mut self, flags: u32) -> c_int;
+    unsafe fn sdl_init_subsystem(&mut self, flags: u32) -> c_int;
+    unsafe fn sdl_quit(&mut self);
+    unsafe fn create_window(&mut self, title: &std::ffi::CStr, x: c_int, y: c_int, w: c_int, h: c_int, flags: u32) -> *mut crate::SDL_Window;
+    unsafe fn create_renderer(&mut self, window: *mut crate::SDL_Window, index: c_int, flags: u32) -> *mut crate::SDL_Renderer;
+    /// `desired`/`obtained` are `*mut SDL_AudioSpec` -- typed as raw `c_void` pointers
+    /// because seg009.rs defines its own local (ABI-matching) `SDL_AudioSpec` struct
+    /// rather than using a shared type, so the trait can't name it without creating a
+    /// circular dependency back into seg009.rs.
+    unsafe fn open_audio_raw(&mut self, desired: *mut std::os::raw::c_void, obtained: *mut std::os::raw::c_void) -> c_int;
+    unsafe fn num_joysticks(&mut self) -> c_int;
+    unsafe fn is_game_controller(&mut self, joystick_index: c_int) -> bool;
+    unsafe fn game_controller_open(&mut self, joystick_index: c_int) -> *mut crate::SDL_GameController;
+    unsafe fn game_controller_close(&mut self, controller: *mut crate::SDL_GameController);
+    unsafe fn game_controller_from_instance_id(&mut self, joyid: i32) -> *mut crate::SDL_GameController;
+    unsafe fn game_controller_add_mappings_from_file(&mut self, path: &std::ffi::CStr) -> c_int;
+    unsafe fn joystick_open(&mut self, device_index: c_int) -> *mut crate::SDL_Joystick;
+    unsafe fn haptic_open(&mut self, device_index: c_int) -> *mut crate::SDL_Haptic;
+    unsafe fn haptic_rumble_init(&mut self, haptic: *mut crate::SDL_Haptic) -> c_int;
+    /// `event` is `*mut SDL_Event` -- same reasoning as `open_audio_raw` for the
+    /// `c_void` typing (seg009.rs's own hand-rolled, ABI-matching `SDL_Event` union).
+    unsafe fn push_event(&mut self, event: *mut std::os::raw::c_void) -> c_int;
+    unsafe fn poll_event(&mut self, event: *mut std::os::raw::c_void) -> c_int;
 }
 
 /// The mixed digi/speaker/MIDI/OGG output sink. `opl3.rs`'s synth math and the mixing

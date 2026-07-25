@@ -278,80 +278,11 @@ union SDL_Event {
 }
 
 // ============================================================================
-// SDL functions
+// SDL functions -- all behind the Renderer/AudioBackend/InputSource traits now
+// (rust/src/platform/), reached via crate::platform::sdl::shared_renderer()/
+// shared_audio()/shared_input(). See those modules for the raw sdl2::sys calls.
 // ============================================================================
-extern "C" {
-    fn SDL_GetError() -> *const c_char;
-    fn SDL_Quit();
-    fn SDL_Init(flags: u32) -> c_int;
-    fn SDL_InitSubSystem(flags: u32) -> c_int;
-    fn SDL_NumJoysticks() -> c_int;
-    fn SDL_GameControllerAddMappingsFromRW(rw: *mut SDL_RWops, freesrc: c_int) -> c_int;
-    fn SDL_RWFromFile(file: *const c_char, mode: *const c_char) -> *mut SDL_RWops;
-    fn SDL_IsGameController(joystick_index: c_int) -> c_int;
-    fn SDL_GameControllerOpen(joystick_index: c_int) -> *mut SDL_GameController;
-    fn SDL_GameControllerClose(gamecontroller: *mut SDL_GameController);
-    fn SDL_GameControllerFromInstanceID(joyid: i32) -> *mut SDL_GameController;
-    fn SDL_JoystickOpen(device_index: c_int) -> *mut SDL_Joystick;
-    fn SDL_HapticOpen(device_index: c_int) -> *mut SDL_Haptic;
-    fn SDL_HapticRumbleInit(haptic: *mut SDL_Haptic) -> c_int;
-    fn SDL_CreateRGBSurface(flags: u32, width: c_int, height: c_int, depth: c_int,
-                            rmask: u32, gmask: u32, bmask: u32, amask: u32) -> *mut SDL_Surface;
-    fn SDL_FreeSurface(surface: *mut SDL_Surface);
-    fn SDL_LockSurface(surface: *mut SDL_Surface) -> c_int;
-    fn SDL_UnlockSurface(surface: *mut SDL_Surface);
-    fn SDL_SetColorKey(surface: *mut SDL_Surface, flag: c_int, key: u32) -> c_int;
-    fn SDL_SetPaletteColors(palette: *mut SDL_Palette, colors: *const SDL_Color,
-                            firstcolor: c_int, ncolors: c_int) -> c_int;
-    fn SDL_RWFromConstMem(mem: *const c_void, size: c_int) -> *mut SDL_RWops;
-    fn SDL_RWclose(context: *mut SDL_RWops) -> c_int;
-    fn IMG_Load_RW(src: *mut SDL_RWops, freesrc: c_int) -> *mut SDL_Surface;
-    fn IMG_Load(file: *const c_char) -> *mut SDL_Surface;
-    fn SDL_ConvertSurfaceFormat(src: *mut SDL_Surface, pixel_format: u32, flags: u32) -> *mut SDL_Surface;
-    fn SDL_ConvertSurface(src: *mut SDL_Surface, fmt: *const SDL_PixelFormat, flags: u32) -> *mut SDL_Surface;
-    fn SDL_SetSurfaceBlendMode(surface: *mut SDL_Surface, blend_mode: c_int) -> c_int;
-    fn SDL_SetSurfaceAlphaMod(surface: *mut SDL_Surface, alpha: u8) -> c_int;
-    fn SDL_MapRGB(format: *const SDL_PixelFormat, r: u8, g: u8, b: u8) -> u32;
-    fn SDL_MapRGBA(format: *const SDL_PixelFormat, r: u8, g: u8, b: u8, a: u8) -> u32;
-    fn SDL_UpperBlit(src: *mut SDL_Surface, srcrect: *const SDL_Rect,
-                     dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int;
-    fn SDL_UpperBlitScaled(src: *mut SDL_Surface, srcrect: *const SDL_Rect,
-                           dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int;
-    fn SDL_FillRect(dst: *mut SDL_Surface, rect: *const SDL_Rect, color: u32) -> c_int;
-    fn SDL_SetClipRect(surface: *mut SDL_Surface, rect: *const SDL_Rect) -> c_int;
-    fn SDL_GetVersion(ver: *mut SDL_version);
-    fn SDL_OpenAudio(desired: *mut SDL_AudioSpec, obtained: *mut SDL_AudioSpec) -> c_int;
-    fn SDL_PauseAudio(pause_on: c_int);
-    fn SDL_LockAudio();
-    fn SDL_UnlockAudio();
-    fn SDL_PushEvent(event: *mut SDL_Event) -> c_int;
-    fn SDL_PollEvent(event: *mut SDL_Event) -> c_int;
-    fn SDL_Delay(ms: u32);
-    fn SDL_GetPerformanceCounter() -> u64;
-    fn SDL_GetPerformanceFrequency() -> u64;
-    fn SDL_RenderSetLogicalSize(renderer: *mut SDL_Renderer, w: c_int, h: c_int) -> c_int;
-    fn SDL_GetRendererOutputSize(renderer: *mut SDL_Renderer, w: *mut c_int, h: *mut c_int) -> c_int;
-    fn SDL_RenderGetLogicalSize(renderer: *mut SDL_Renderer, w: *mut c_int, h: *mut c_int);
-    fn SDL_RenderSetIntegerScale(renderer: *mut SDL_Renderer, enable: c_int) -> c_int;
-    fn SDL_CreateTexture(renderer: *mut SDL_Renderer, format: u32, access: c_int, w: c_int, h: c_int) -> *mut SDL_Texture;
-    fn SDL_SetHint(name: *const c_char, value: *const c_char) -> c_int;
-    fn SDL_CreateWindow(title: *const c_char, x: c_int, y: c_int, w: c_int, h: c_int, flags: u32) -> *mut SDL_Window;
-    fn SDL_CreateRenderer(window: *mut SDL_Window, index: c_int, flags: u32) -> *mut SDL_Renderer;
-    fn SDL_GetRendererInfo(renderer: *mut SDL_Renderer, info: *mut SDL_RendererInfo) -> c_int;
-    fn SDL_SetWindowIcon(window: *mut SDL_Window, icon: *mut SDL_Surface);
-    fn SDL_ShowCursor(toggle: c_int) -> c_int;
-    fn SDL_UpdateTexture(texture: *mut SDL_Texture, rect: *const SDL_Rect, pixels: *const c_void, pitch: c_int) -> c_int;
-    fn SDL_SetRenderTarget(renderer: *mut SDL_Renderer, texture: *mut SDL_Texture) -> c_int;
-    fn SDL_RenderClear(renderer: *mut SDL_Renderer) -> c_int;
-    fn SDL_RenderCopy(renderer: *mut SDL_Renderer, texture: *mut SDL_Texture, srcrect: *const SDL_Rect, dstrect: *const SDL_Rect) -> c_int;
-    fn SDL_RenderPresent(renderer: *mut SDL_Renderer);
-    fn SDL_GetWindowFlags(window: *mut SDL_Window) -> u32;
-    fn SDL_SetWindowFullscreen(window: *mut SDL_Window, flags: u32) -> c_int;
-    fn SDL_GetKeyboardState(numkeys: *mut c_int) -> *const u8;
-    fn SDL_SetTextInputRect(rect: *mut SDL_Rect);
-    fn SDL_StartTextInput();
-    fn SDL_StopTextInput();
-}
+use crate::platform::{AudioBackend, InputSource, Renderer};
 
 // Defined in menu.c (still compiled as C); not in proto.h.
 extern "C" {
@@ -362,23 +293,23 @@ extern "C" {
 #[inline]
 unsafe fn SDL_BlitSurface(src: *mut SDL_Surface, srcrect: *const SDL_Rect,
                           dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int {
-    SDL_UpperBlit(src, srcrect, dst, dstrect)
+    crate::platform::sdl::shared_renderer().blit(src, srcrect, dst, dstrect)
 }
 #[inline]
 unsafe fn SDL_BlitScaled(src: *mut SDL_Surface, srcrect: *const SDL_Rect,
                          dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int {
-    SDL_UpperBlitScaled(src, srcrect, dst, dstrect)
+    crate::platform::sdl::shared_renderer().blit_scaled(src, srcrect, dst, dstrect)
 }
 
 // IMG_GetError is a macro for SDL_GetError.
 #[inline]
 unsafe fn IMG_GetError() -> *const c_char {
-    SDL_GetError()
+    crate::platform::sdl::shared_renderer().get_error()
 }
 // SDL_GameControllerAddMappingsFromFile is a macro.
 #[inline]
 unsafe fn SDL_GameControllerAddMappingsFromFile(file: *const c_char) -> c_int {
-    SDL_GameControllerAddMappingsFromRW(SDL_RWFromFile(file, b"rb\0".as_ptr() as *const c_char), 1)
+    crate::platform::sdl::shared_renderer().game_controller_add_mappings_from_file(std::ffi::CStr::from_ptr(file))
 }
 
 // SDL_ISPIXELFORMAT_INDEXED macro
@@ -667,7 +598,7 @@ include!("seg009_hc_font_data.rs");
 // seg009: sdlperror
 #[no_mangle]
 pub unsafe extern "C" fn sdlperror(header: *const c_char) {
-    let error = SDL_GetError();
+    let error = crate::platform::sdl::shared_renderer().get_error();
     printf(cs!("%s: %s\n"), header, error);
 }
 
@@ -874,7 +805,7 @@ pub unsafe extern "C" fn quit(exit_code: c_int) {
 // seg009:0C90 restore_stuff
 #[no_mangle]
 pub unsafe extern "C" fn restore_stuff() {
-    SDL_Quit();
+    crate::platform::sdl::shared_renderer().sdl_quit();
 }
 
 // seg009:0E33 key_test_quit
@@ -1094,7 +1025,7 @@ pub unsafe extern "C" fn free_chtab(chtab_ptr: *mut chtab_type) {
     while id < n_images {
         let curr_image = *images.add(id as usize);
         if !curr_image.is_null() {
-            SDL_FreeSurface(curr_image);
+            crate::platform::sdl::shared_renderer().free_surface(curr_image);
         }
         id += 1;
     }
@@ -1408,12 +1339,12 @@ pub unsafe extern "C" fn decode_image(image_data: *mut image_data_type, pal: *mu
     free(dest as *mut c_void);
     dest = null_mut();
     let _ = dest;
-    let image = SDL_CreateRGBSurface(0, width, height, 8, 0, 0, 0, 0);
+    let image = crate::platform::sdl::shared_renderer().create_surface(width, height, 8, 0, 0, 0, 0);
     if image.is_null() {
         sdlperror(cs!("decode_image: SDL_CreateRGBSurface"));
         quit(1);
     }
-    if SDL_LockSurface(image) != 0 {
+    if crate::platform::sdl::shared_renderer().lock_surface(image) != 0 {
         sdlperror(cs!("decode_image: SDL_LockSurface"));
     }
     for y in 0..height {
@@ -1423,7 +1354,7 @@ pub unsafe extern "C" fn decode_image(image_data: *mut image_data_type, pal: *mu
             width as usize,
         );
     }
-    SDL_UnlockSurface(image);
+    crate::platform::sdl::shared_renderer().unlock_surface(image);
     free(image_8bpp as *mut c_void);
     image_8bpp = null_mut();
     let _ = image_8bpp;
@@ -1440,7 +1371,7 @@ pub unsafe extern "C" fn decode_image(image_data: *mut image_data_type, pal: *mu
     colors[0].g = 0;
     colors[0].b = 0;
     colors[0].a = SDL_ALPHA_TRANSPARENT;
-    SDL_SetPaletteColors((*(*image).format).palette, colors.as_ptr(), 0, 16);
+    crate::platform::sdl::shared_renderer().set_palette_colors((*(*image).format).palette, colors.as_ptr(), 0, 16);
     image
 }
 
@@ -1459,16 +1390,16 @@ pub unsafe extern "C" fn load_image(resource_id: c_int, pal: *mut dat_pal_type) 
             image = decode_image(image_data as *mut image_data_type, pal);
         }
         data_location_data_directory => {
-            let rw = SDL_RWFromConstMem(image_data, size);
+            let rw = crate::platform::sdl::shared_renderer().rw_from_const_mem(image_data, size);
             if rw.is_null() {
                 sdlperror(cs!("load_image: SDL_RWFromConstMem"));
                 return null_mut();
             }
-            image = IMG_Load_RW(rw, 0);
+            image = crate::platform::sdl::shared_renderer().img_load_rw(rw, 0);
             if image.is_null() {
                 printf(cs!("load_image: IMG_Load_RW: %s\n"), IMG_GetError());
             }
-            if SDL_RWclose(rw) != 0 {
+            if crate::platform::sdl::shared_renderer().rw_close(rw) != 0 {
                 sdlperror(cs!("load_image: SDL_RWclose"));
             }
         }
@@ -1478,7 +1409,7 @@ pub unsafe extern "C" fn load_image(resource_id: c_int, pal: *mut dat_pal_type) 
         free(image_data);
     }
     if !image.is_null() {
-        if SDL_SetColorKey(image, SDL_TRUE, 0) != 0 {
+        if crate::platform::sdl::shared_renderer().set_color_key(image, true, 0) != 0 {
             sdlperror(cs!("load_image: SDL_SetColorKey"));
             quit(1);
         }
@@ -1497,28 +1428,28 @@ pub unsafe extern "C" fn draw_image_transp(image: *mut image_type, _mask: *mut i
 // seg009:157E set_joy_mode
 #[no_mangle]
 pub unsafe extern "C" fn set_joy_mode() -> c_int {
-    if SDL_NumJoysticks() < 1 {
+    if crate::platform::sdl::shared_renderer().num_joysticks() < 1 {
         is_joyst_mode = 0;
     } else {
         if gamecontrollerdb_file[0] != 0 {
             SDL_GameControllerAddMappingsFromFile(gamecontrollerdb_file.as_ptr());
         }
-        if SDL_IsGameController(0) != 0 {
-            sdl_controller_ = SDL_GameControllerOpen(0);
+        if crate::platform::sdl::shared_renderer().is_game_controller(0) {
+            sdl_controller_ = crate::platform::sdl::shared_renderer().game_controller_open(0);
             if sdl_controller_.is_null() {
                 is_joyst_mode = 0;
             } else {
                 is_joyst_mode = 1;
             }
         } else {
-            sdl_joystick_ = SDL_JoystickOpen(0);
+            sdl_joystick_ = crate::platform::sdl::shared_renderer().joystick_open(0);
             is_joyst_mode = 1;
             using_sdl_joystick_interface = 1;
         }
     }
     if enable_controller_rumble != 0 && is_joyst_mode != 0 {
-        sdl_haptic = SDL_HapticOpen(0);
-        SDL_HapticRumbleInit(sdl_haptic);
+        sdl_haptic = crate::platform::sdl::shared_renderer().haptic_open(0);
+        crate::platform::sdl::shared_renderer().haptic_rumble_init(sdl_haptic);
     } else {
         sdl_haptic = null_mut();
     }
@@ -1529,19 +1460,19 @@ pub unsafe extern "C" fn set_joy_mode() -> c_int {
 // seg009:178B make_offscreen_buffer
 #[no_mangle]
 pub unsafe extern "C" fn make_offscreen_buffer(rect: *const rect_type) -> *mut surface_type {
-    SDL_CreateRGBSurface(0, (*rect).right as c_int, (*rect).bottom as c_int, 24, Rmsk, Gmsk, Bmsk, 0)
+    crate::platform::sdl::shared_renderer().create_surface((*rect).right as c_int, (*rect).bottom as c_int, 24, Rmsk, Gmsk, Bmsk, 0)
 }
 
 // seg009:17BD free_surface
 #[no_mangle]
 pub unsafe extern "C" fn free_surface(surface: *mut surface_type) {
-    SDL_FreeSurface(surface);
+    crate::platform::sdl::shared_renderer().free_surface(surface);
 }
 
 // seg009:17EA free_peel
 #[no_mangle]
 pub unsafe extern "C" fn free_peel(peel_ptr: *mut peel_type) {
-    SDL_FreeSurface((*peel_ptr).peel);
+    crate::platform::sdl::shared_renderer().free_surface((*peel_ptr).peel);
     free(peel_ptr as *mut c_void);
 }
 
@@ -1579,12 +1510,12 @@ pub unsafe extern "C" fn flip_not_ega(memory: *mut byte, height: c_int, stride: 
 #[no_mangle]
 pub unsafe extern "C" fn flip_screen(surface: *mut surface_type) {
     if graphics_mode as c_int != grmodes_gmEga as c_int {
-        if SDL_LockSurface(surface) != 0 {
+        if crate::platform::sdl::shared_renderer().lock_surface(surface) != 0 {
             sdlperror(cs!("flip_screen: SDL_LockSurface"));
             quit(1);
         }
         flip_not_ega((*surface).pixels as *mut byte, (*surface).h, (*surface).pitch);
-        SDL_UnlockSurface(surface);
+        crate::platform::sdl::shared_renderer().unlock_surface(surface);
     }
 }
 
@@ -1642,7 +1573,7 @@ unsafe fn load_font_from_data(data: *mut rawfont_type) -> font_type {
         }
         let image = decode_image(image_data, &mut dat_pal);
         *images.add(index as usize) = image;
-        if SDL_SetColorKey(image, SDL_TRUE, 0) != 0 {
+        if crate::platform::sdl::shared_renderer().set_color_key(image, true, 0) != 0 {
             sdlperror(cs!("load_font_from_data: SDL_SetColorKey"));
             quit(1);
         }
@@ -2061,8 +1992,7 @@ pub unsafe extern "C" fn input_str(
 ) -> c_int {
     let mut sdlrect: SDL_Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut sdlrect);
-    SDL_SetTextInputRect(&mut sdlrect);
-    SDL_StartTextInput();
+    crate::platform::sdl::shared_input().start_text_input(sdlrect.x, sdlrect.y, sdlrect.w, sdlrect.h);
 
     let mut key: word;
     let mut current_xpos: c_short;
@@ -2097,7 +2027,7 @@ pub unsafe extern "C" fn input_str(
                 }
                 if key as c_int == SDL_SCANCODE_RETURN {
                     *buffer.offset(length as isize) = 0;
-                    SDL_StopTextInput();
+                    crate::platform::sdl::shared_input().stop_text_input();
                     return length as c_int;
                 } else {
                     break;
@@ -2116,7 +2046,7 @@ pub unsafe extern "C" fn input_str(
         if key as c_int == SDL_SCANCODE_ESCAPE {
             draw_rect(rect, bgcolor);
             *buffer.offset(0) = 0;
-            SDL_StopTextInput();
+            crate::platform::sdl::shared_input().stop_text_input();
             return -1;
         }
         if length != 0 && (key as c_int == SDL_SCANCODE_BACKSPACE || key as c_int == SDL_SCANCODE_DELETE) {
@@ -2176,7 +2106,7 @@ pub unsafe extern "C" fn restore_peel(peel_ptr: *mut peel_type) {
 pub unsafe extern "C" fn read_peel_from_screen(rect: *const rect_type) -> *mut peel_type {
     let result = calloc(1, core::mem::size_of::<peel_type>()) as *mut peel_type;
     (*result).rect = *rect;
-    let peel_surface = SDL_CreateRGBSurface(0, ((*rect).right - (*rect).left) as c_int, ((*rect).bottom - (*rect).top) as c_int, 24, Rmsk, Gmsk, Bmsk, 0);
+    let peel_surface = crate::platform::sdl::shared_renderer().create_surface(((*rect).right - (*rect).left) as c_int, ((*rect).bottom - (*rect).top) as c_int, 24, Rmsk, Gmsk, Bmsk, 0);
     if peel_surface.is_null() {
         sdlperror(cs!("read_peel_from_screen: SDL_CreateRGBSurface"));
         quit(1);
@@ -2232,35 +2162,35 @@ unsafe fn speaker_sound_stop() {
     if speaker_playing == 0 {
         return;
     }
-    SDL_LockAudio();
+    crate::platform::sdl::shared_audio().lock();
     speaker_playing = 0;
     current_speaker_sound = null_mut();
     speaker_note_index = 0;
     current_speaker_note_samples_already_emitted = 0;
-    SDL_UnlockAudio();
+    crate::platform::sdl::shared_audio().unlock();
 }
 
 unsafe fn stop_digi() {
     if digi_playing == 0 {
         return;
     }
-    SDL_LockAudio();
+    crate::platform::sdl::shared_audio().lock();
     digi_playing = 0;
     digi_buffer = null_mut();
     digi_remaining_length = 0;
     digi_remaining_pos = null_mut();
-    SDL_UnlockAudio();
+    crate::platform::sdl::shared_audio().unlock();
 }
 
 unsafe fn stop_ogg() {
-    SDL_PauseAudio(1);
+    crate::platform::sdl::shared_audio().pause(true);
     if ogg_playing == 0 {
         return;
     }
     ogg_playing = 0;
-    SDL_LockAudio();
+    crate::platform::sdl::shared_audio().lock();
     ogg_decoder = null_mut();
-    SDL_UnlockAudio();
+    crate::platform::sdl::shared_audio().unlock();
 }
 
 // seg009:7214 stop_sounds
@@ -2318,7 +2248,7 @@ unsafe fn speaker_callback(_userdata: *mut c_void, mut stream: *mut u8, len: c_i
             let mut event: SDL_Event = core::mem::zeroed();
             event.type_ = SDL_USEREVENT;
             event.user.code = userevent_SOUND;
-            SDL_PushEvent(&mut event);
+            crate::platform::sdl::shared_renderer().push_event(&mut event as *mut SDL_Event as *mut c_void);
             return;
         }
 
@@ -2350,7 +2280,7 @@ unsafe fn play_speaker_sound(buffer: *mut sound_buffer_type) {
     current_speaker_sound = core::ptr::addr_of_mut!((*buffer).__bindgen_anon_1) as *mut speaker_type;
     speaker_note_index = 0;
     speaker_playing = 1;
-    SDL_PauseAudio(0);
+    crate::platform::sdl::shared_audio().pause(false);
 }
 
 unsafe fn digi_callback(_userdata: *mut c_void, stream: *mut u8, len: c_int) {
@@ -2366,7 +2296,7 @@ unsafe fn digi_callback(_userdata: *mut c_void, stream: *mut u8, len: c_int) {
         event.type_ = SDL_USEREVENT;
         event.user.code = userevent_SOUND;
         digi_playing = 0;
-        SDL_PushEvent(&mut event);
+        crate::platform::sdl::shared_renderer().push_event(&mut event as *mut SDL_Event as *mut c_void);
     }
     digi_remaining_length -= copy_len;
     digi_remaining_pos = digi_remaining_pos.add(copy_len as usize);
@@ -2398,7 +2328,7 @@ unsafe fn ogg_callback(_userdata: *mut c_void, stream: *mut u8, len: c_int) {
         event.type_ = SDL_USEREVENT;
         event.user.code = userevent_SOUND;
         ogg_playing = 0;
-        SDL_PushEvent(&mut event);
+        crate::platform::sdl::shared_renderer().push_event(&mut event as *mut SDL_Event as *mut c_void);
     }
 }
 
@@ -2443,8 +2373,8 @@ pub unsafe extern "C" fn init_digi() {
         return;
     }
     let desired_audioformat: u16;
-    let mut version: SDL_version = core::mem::zeroed();
-    SDL_GetVersion(&mut version);
+    let (vmajor, vminor, vpatch) = crate::platform::sdl::shared_renderer().linked_sdl_version();
+    let version = SDL_version { major: vmajor, minor: vminor, patch: vpatch };
     if version.major <= 2 && version.minor <= 0 && version.patch <= 3 {
         desired_audioformat = AUDIO_U8;
         printf(cs!("Your SDL.dll is older than 2.0.4. Using 8-bit audio format to work around resampling bug."));
@@ -2460,7 +2390,7 @@ pub unsafe extern "C" fn init_digi() {
     (*desired).samples = 1024;
     (*desired).callback = Some(audio_callback);
     (*desired).userdata = null_mut();
-    if SDL_OpenAudio(desired, null_mut()) != 0 {
+    if crate::platform::sdl::shared_renderer().open_audio_raw(desired as *mut c_void, null_mut()) != 0 {
         sdlperror(cs!("init_digi: SDL_OpenAudio"));
         digi_unavailable = 1;
         return;
@@ -2580,10 +2510,10 @@ unsafe fn play_ogg_sound(buffer: *mut sound_buffer_type) {
     let decoder = (*ogg).decoder as *mut crate::ogg_decode::OggDecoder;
     // Need to rewind the music, or else the decoder might continue where it left off.
     (*decoder).seek_start();
-    SDL_LockAudio();
+    crate::platform::sdl::shared_audio().lock();
     ogg_decoder = decoder;
-    SDL_UnlockAudio();
-    SDL_PauseAudio(0);
+    crate::platform::sdl::shared_audio().unlock();
+    crate::platform::sdl::shared_audio().pause(false);
     ogg_playing = 1;
 }
 
@@ -2702,13 +2632,13 @@ unsafe fn play_digi_sound(buffer: *mut sound_buffer_type) {
         return;
     }
     let converted = core::ptr::addr_of!((*buffer).__bindgen_anon_1) as *const converted_audio_type;
-    SDL_LockAudio();
+    crate::platform::sdl::shared_audio().lock();
     digi_buffer = (*converted).samples as *mut byte;
     digi_playing = 1;
     digi_remaining_length = (*converted).length;
     digi_remaining_pos = digi_buffer;
-    SDL_UnlockAudio();
-    SDL_PauseAudio(0);
+    crate::platform::sdl::shared_audio().unlock();
+    crate::platform::sdl::shared_audio().pause(false);
 }
 
 // seg009 free_sound
@@ -3019,13 +2949,13 @@ pub unsafe extern "C" fn method_1_blit_rect(target_surface: *mut surface_type, s
 
     if blit == blitters_blitters_0_no_transp as c_int {
         // Disable transparency.
-        if SDL_SetColorKey(source_surface, 0, 0) != 0 {
+        if crate::platform::sdl::shared_renderer().set_color_key(source_surface, false, 0) != 0 {
             sdlperror(cs!("method_1_blit_rect: SDL_SetColorKey"));
             quit(1);
         }
     } else {
         // Enable transparency.
-        if SDL_SetColorKey(source_surface, SDL_TRUE, 0) != 0 {
+        if crate::platform::sdl::shared_renderer().set_color_key(source_surface, true, 0) != 0 {
             sdlperror(cs!("method_1_blit_rect: SDL_SetColorKey"));
             quit(1);
         }
@@ -3041,15 +2971,15 @@ pub unsafe extern "C" fn method_1_blit_rect(target_surface: *mut surface_type, s
 pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int, ypos: c_int, _blitter: c_int, color: byte) -> *mut image_type {
     let w = (*image).w;
     let h = (*image).h;
-    if SDL_SetColorKey(image, SDL_TRUE, 0) != 0 {
+    if crate::platform::sdl::shared_renderer().set_color_key(image, true, 0) != 0 {
         sdlperror(cs!("method_3_blit_mono: SDL_SetColorKey"));
         quit(1);
     }
-    let colored_image = SDL_ConvertSurfaceFormat(image, SDL_PIXELFORMAT_ARGB8888, 0);
+    let colored_image = crate::platform::sdl::shared_renderer().convert_surface_format(image, SDL_PIXELFORMAT_ARGB8888, 0);
 
-    SDL_SetSurfaceBlendMode(colored_image, SDL_BLENDMODE_NONE);
+    crate::platform::sdl::shared_renderer().set_blend_mode(colored_image, SDL_BLENDMODE_NONE);
 
-    if SDL_LockSurface(colored_image) != 0 {
+    if crate::platform::sdl::shared_renderer().lock_surface(colored_image) != 0 {
         sdlperror(cs!("method_3_blit_mono: SDL_LockSurface"));
         quit(1);
     }
@@ -3057,7 +2987,7 @@ pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int,
     let pr = palette[color as usize].r;
     let pg = palette[color as usize].g;
     let pb = palette[color as usize].b;
-    let rgb_color: u32 = SDL_MapRGB((*colored_image).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8) & 0xFFFFFF;
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8) & 0xFFFFFF;
     let stride = (*colored_image).pitch;
     for y in 0..h {
         let mut pixel_ptr = ((*colored_image).pixels as *mut byte).offset((stride * y) as isize) as *mut u32;
@@ -3066,46 +2996,46 @@ pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int,
             pixel_ptr = pixel_ptr.add(1);
         }
     }
-    SDL_UnlockSurface(colored_image);
+    crate::platform::sdl::shared_renderer().unlock_surface(colored_image);
 
     let src_rect = SDL_Rect { x: 0, y: 0, w: (*image).w, h: (*image).h };
     let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: (*image).w, h: (*image).h };
 
-    SDL_SetSurfaceBlendMode(colored_image, SDL_BLENDMODE_BLEND);
-    SDL_SetSurfaceBlendMode(current_target_surface, SDL_BLENDMODE_BLEND);
-    SDL_SetSurfaceAlphaMod(colored_image, 255);
+    crate::platform::sdl::shared_renderer().set_blend_mode(colored_image, SDL_BLENDMODE_BLEND);
+    crate::platform::sdl::shared_renderer().set_blend_mode(current_target_surface, SDL_BLENDMODE_BLEND);
+    crate::platform::sdl::shared_renderer().set_alpha_mod(colored_image, 255);
     if SDL_BlitSurface(colored_image, &src_rect, current_target_surface, &mut dest_rect) != 0 {
         sdlperror(cs!("method_3_blit_mono: SDL_BlitSurface"));
         quit(1);
     }
-    SDL_FreeSurface(colored_image);
+    crate::platform::sdl::shared_renderer().free_surface(colored_image);
 
     image
 }
 
 unsafe fn RGB24_bug_check() -> bool {
     if !RGB24_bug_checked {
-        let test_surface = SDL_CreateRGBSurface(0, 1, 1, 24, 0, 0, 0, 0);
+        let test_surface = crate::platform::sdl::shared_renderer().create_surface(1, 1, 24, 0, 0, 0, 0);
         if test_surface.is_null() {
             sdlperror(cs!("SDL_CreateSurface in RGB24_bug_check"));
         }
-        SDL_FillRect(test_surface, core::ptr::null(), SDL_MapRGB((*test_surface).format, 0xFF, 0, 0));
-        if SDL_LockSurface(test_surface) != 0 {
+        crate::platform::sdl::shared_renderer().fill_rect(test_surface, core::ptr::null(), crate::platform::sdl::shared_renderer().map_rgb((*test_surface).format, 0xFF, 0, 0));
+        if crate::platform::sdl::shared_renderer().lock_surface(test_surface) != 0 {
             sdlperror(cs!("SDL_LockSurface in RGB24_bug_check"));
         }
         RGB24_bug_affected = (*((*test_surface).pixels as *const u32) & (*(*test_surface).format).Rmask) == 0;
-        SDL_UnlockSurface(test_surface);
-        SDL_FreeSurface(test_surface);
+        crate::platform::sdl::shared_renderer().unlock_surface(test_surface);
+        crate::platform::sdl::shared_renderer().free_surface(test_surface);
         RGB24_bug_checked = true;
     }
     RGB24_bug_affected
 }
 
-unsafe fn safe_SDL_FillRect(dst: *mut SDL_Surface, rect: *const SDL_Rect, mut color: u32) -> c_int {
+unsafe fn safe_fill_rect(dst: *mut SDL_Surface, rect: *const SDL_Rect, mut color: u32) -> c_int {
     if (*(*dst).format).BitsPerPixel == 24 && RGB24_bug_check() {
         color = ((color & 0xFF) << 16) | (color & 0xFF00) | ((color & 0xFF0000) >> 16);
     }
-    SDL_FillRect(dst, rect, color)
+    crate::platform::sdl::shared_renderer().fill_rect(dst, rect, color)
 }
 
 // seg009 method_5_rect
@@ -3116,8 +3046,8 @@ pub unsafe extern "C" fn method_5_rect(rect: *const rect_type, _blit: c_int, col
     let pr = palette[color as usize].r;
     let pg = palette[color as usize].g;
     let pb = palette[color as usize].b;
-    let rgb_color: u32 = SDL_MapRGBA((*current_target_surface).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8, 0xFF);
-    if safe_SDL_FillRect(current_target_surface, &dest_rect, rgb_color) != 0 {
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*current_target_surface).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8, 0xFF);
+    if safe_fill_rect(current_target_surface, &dest_rect, rgb_color) != 0 {
         sdlperror(cs!("method_5_rect: SDL_FillRect"));
         quit(1);
     }
@@ -3132,8 +3062,8 @@ pub unsafe extern "C" fn draw_rect_with_alpha(rect: *const rect_type, color: byt
     let pr = palette[color as usize].r;
     let pg = palette[color as usize].g;
     let pb = palette[color as usize].b;
-    let rgb_color: u32 = SDL_MapRGBA((*overlay_surface).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8, alpha);
-    if safe_SDL_FillRect(current_target_surface, &dest_rect, rgb_color) != 0 {
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*overlay_surface).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8, alpha);
+    if safe_fill_rect(current_target_surface, &dest_rect, rgb_color) != 0 {
         sdlperror(cs!("draw_rect_with_alpha: SDL_FillRect"));
         quit(1);
     }
@@ -3151,8 +3081,8 @@ pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte)
     let pr = palette[color as usize].r;
     let pg = palette[color as usize].g;
     let pb = palette[color as usize].b;
-    let rgb_color: u32 = SDL_MapRGBA((*overlay_surface).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8, 0xFF);
-    if SDL_LockSurface(current_target_surface) != 0 {
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*overlay_surface).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8, 0xFF);
+    if crate::platform::sdl::shared_renderer().lock_surface(current_target_surface) != 0 {
         sdlperror(cs!("draw_rect_contours: SDL_LockSurface"));
         quit(1);
     }
@@ -3180,7 +3110,7 @@ pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte)
         pixel = pixel.add(1);
     }
 
-    SDL_UnlockSurface(current_target_surface);
+    crate::platform::sdl::shared_renderer().unlock_surface(current_target_surface);
 }
 
 unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, image: *mut SDL_Surface, src_rect: *mut SDL_Rect) {
@@ -3188,12 +3118,12 @@ unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, i
         printf(cs!("blit_xor: dest_rect and src_rect have different sizes\n"));
         quit(1);
     }
-    let helper_surface = SDL_CreateRGBSurface(0, (*dest_rect).w, (*dest_rect).h, 24, Rmsk, Gmsk, Bmsk, 0);
+    let helper_surface = crate::platform::sdl::shared_renderer().create_surface((*dest_rect).w, (*dest_rect).h, 24, Rmsk, Gmsk, Bmsk, 0);
     if helper_surface.is_null() {
         sdlperror(cs!("blit_xor: SDL_CreateRGBSurface"));
         quit(1);
     }
-    let image_24 = SDL_ConvertSurface(image, (*helper_surface).format, 0);
+    let image_24 = crate::platform::sdl::shared_renderer().convert_surface(image, (*helper_surface).format, 0);
     if image_24.is_null() {
         sdlperror(cs!("blit_xor: SDL_CreateRGBSurface"));
         quit(1);
@@ -3204,11 +3134,11 @@ unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, i
         sdlperror(cs!("blit_xor: SDL_BlitSurface"));
         quit(1);
     }
-    if SDL_LockSurface(image_24) != 0 {
+    if crate::platform::sdl::shared_renderer().lock_surface(image_24) != 0 {
         sdlperror(cs!("blit_xor: SDL_LockSurface"));
         quit(1);
     }
-    if SDL_LockSurface(helper_surface) != 0 {
+    if crate::platform::sdl::shared_renderer().lock_surface(helper_surface) != 0 {
         sdlperror(cs!("blit_xor: SDL_LockSurface"));
         quit(1);
     }
@@ -3222,28 +3152,28 @@ unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, i
         p_src = p_src.add(1);
         p_dest = p_dest.add(1);
     }
-    SDL_UnlockSurface(image_24);
-    SDL_UnlockSurface(helper_surface);
+    crate::platform::sdl::shared_renderer().unlock_surface(image_24);
+    crate::platform::sdl::shared_renderer().unlock_surface(helper_surface);
     // Put the new area in place of the old one.
     if SDL_BlitSurface(helper_surface, src_rect, target_surface, dest_rect) != 0 {
         sdlperror(cs!("blit_xor: SDL_BlitSurface 2065"));
         quit(1);
     }
-    SDL_FreeSurface(image_24);
-    SDL_FreeSurface(helper_surface);
+    crate::platform::sdl::shared_renderer().free_surface(image_24);
+    crate::platform::sdl::shared_renderer().free_surface(helper_surface);
 }
 
 // USE_COLORED_TORCHES
 unsafe fn draw_colored_torch(color: c_int, image: *mut SDL_Surface, xpos: c_int, ypos: c_int) {
-    if SDL_SetColorKey(image, SDL_TRUE, 0) != 0 {
+    if crate::platform::sdl::shared_renderer().set_color_key(image, true, 0) != 0 {
         sdlperror(cs!("draw_colored_torch: SDL_SetColorKey"));
         quit(1);
     }
 
-    let colored_image = SDL_ConvertSurfaceFormat(image, SDL_PIXELFORMAT_ARGB8888, 0);
-    SDL_SetSurfaceBlendMode(colored_image, SDL_BLENDMODE_NONE);
+    let colored_image = crate::platform::sdl::shared_renderer().convert_surface_format(image, SDL_PIXELFORMAT_ARGB8888, 0);
+    crate::platform::sdl::shared_renderer().set_blend_mode(colored_image, SDL_BLENDMODE_NONE);
 
-    if SDL_LockSurface(colored_image) != 0 {
+    if crate::platform::sdl::shared_renderer().lock_surface(colored_image) != 0 {
         sdlperror(cs!("draw_colored_torch: SDL_LockSurface"));
         quit(1);
     }
@@ -3253,8 +3183,8 @@ unsafe fn draw_colored_torch(color: c_int, image: *mut SDL_Surface, xpos: c_int,
     let iRed = ((color >> 4) & 3) * 85;
     let iGreen = ((color >> 2) & 3) * 85;
     let iBlue = ((color >> 0) & 3) * 85;
-    let old_color: u32 = SDL_MapRGB((*colored_image).format, 0xFC, 0x84, 0x00) & 0xFFFFFF;
-    let new_color: u32 = SDL_MapRGB((*colored_image).format, iRed as u8, iGreen as u8, iBlue as u8) & 0xFFFFFF;
+    let old_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, 0xFC, 0x84, 0x00) & 0xFFFFFF;
+    let new_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, iRed as u8, iGreen as u8, iBlue as u8) & 0xFFFFFF;
     let stride = (*colored_image).pitch;
     for y in 0..h {
         let mut pixel_ptr = ((*colored_image).pixels as *mut byte).offset((stride * y) as isize) as *mut u32;
@@ -3265,10 +3195,10 @@ unsafe fn draw_colored_torch(color: c_int, image: *mut SDL_Surface, xpos: c_int,
             pixel_ptr = pixel_ptr.add(1);
         }
     }
-    SDL_UnlockSurface(colored_image);
+    crate::platform::sdl::shared_renderer().unlock_surface(colored_image);
 
     method_6_blit_img_to_scr(colored_image, xpos, ypos, blitters_blitters_0_no_transp as c_int);
-    SDL_FreeSurface(colored_image);
+    crate::platform::sdl::shared_renderer().free_surface(colored_image);
 }
 
 // seg009 method_6_blit_img_to_scr
@@ -3297,21 +3227,21 @@ pub unsafe extern "C" fn method_6_blit_img_to_scr(image: *mut image_type, xpos: 
         return image;
     }
 
-    SDL_SetSurfaceBlendMode(image, SDL_BLENDMODE_NONE);
-    SDL_SetColorKey(image, SDL_FALSE, 0);
-    SDL_SetSurfaceAlphaMod(image, 255);
+    crate::platform::sdl::shared_renderer().set_blend_mode(image, SDL_BLENDMODE_NONE);
+    crate::platform::sdl::shared_renderer().set_color_key(image, false, 0);
+    crate::platform::sdl::shared_renderer().set_alpha_mod(image, 255);
 
     if blit == blitters_blitters_0_no_transp as c_int {
         if SDL_ISPIXELFORMAT_INDEXED((*(*image).format).format) {
-            SDL_SetColorKey(image, SDL_FALSE, 0);
+            crate::platform::sdl::shared_renderer().set_color_key(image, false, 0);
         } else {
-            SDL_SetSurfaceBlendMode(image, SDL_BLENDMODE_NONE);
+            crate::platform::sdl::shared_renderer().set_blend_mode(image, SDL_BLENDMODE_NONE);
         }
     } else {
         if SDL_ISPIXELFORMAT_INDEXED((*(*image).format).format) {
-            SDL_SetColorKey(image, SDL_TRUE, 0);
+            crate::platform::sdl::shared_renderer().set_color_key(image, true, 0);
         } else {
-            SDL_SetSurfaceBlendMode(image, SDL_BLENDMODE_BLEND);
+            crate::platform::sdl::shared_renderer().set_blend_mode(image, SDL_BLENDMODE_BLEND);
         }
     }
     if SDL_BlitSurface(image, &src_rect, current_target_surface, &mut dest_rect) != 0 {
@@ -3324,9 +3254,9 @@ pub unsafe extern "C" fn method_6_blit_img_to_scr(image: *mut image_type, xpos: 
 #[no_mangle]
 pub unsafe extern "C" fn apply_aspect_ratio() {
     if use_correct_aspect_ratio != 0 {
-        SDL_RenderSetLogicalSize(renderer_, 320 * 5, 200 * 6); // 4:3
+        crate::platform::sdl::shared_renderer().render_set_logical_size(renderer_, 320 * 5, 200 * 6); // 4:3
     } else {
-        SDL_RenderSetLogicalSize(renderer_, 320, 200); // 16:10
+        crate::platform::sdl::shared_renderer().render_set_logical_size(renderer_, 320, 200); // 16:10
     }
     window_resized();
 }
@@ -3335,21 +3265,18 @@ pub unsafe extern "C" fn apply_aspect_ratio() {
 #[no_mangle]
 pub unsafe extern "C" fn window_resized() {
     if use_integer_scaling != 0 {
-        let mut window_width: c_int = 0;
-        let mut window_height: c_int = 0;
-        SDL_GetRendererOutputSize(renderer_, &mut window_width, &mut window_height);
-        let mut render_width: c_int = 0;
-        let mut render_height: c_int = 0;
-        SDL_RenderGetLogicalSize(renderer_, &mut render_width, &mut render_height);
-        let makes_sense = (window_width >= render_width && window_height >= render_height) as c_int;
-        SDL_RenderSetIntegerScale(renderer_, makes_sense);
+        let renderer = crate::platform::sdl::shared_renderer();
+        let (window_width, window_height) = renderer.get_renderer_output_size(renderer_);
+        let (render_width, render_height) = renderer.render_get_logical_size(renderer_);
+        let makes_sense = window_width >= render_width && window_height >= render_height;
+        renderer.render_set_integer_scale(renderer_, makes_sense);
     }
 }
 
 unsafe fn init_overlay() {
     if !overlay_initialized {
-        overlay_surface = SDL_CreateRGBSurface(0, 320, 200, 32, Rmsk, Gmsk, Bmsk, Amsk);
-        merged_surface = SDL_CreateRGBSurface(0, 320, 200, 24, Rmsk, Gmsk, Bmsk, 0);
+        overlay_surface = crate::platform::sdl::shared_renderer().create_surface(320, 200, 32, Rmsk, Gmsk, Bmsk, Amsk);
+        merged_surface = crate::platform::sdl::shared_renderer().create_surface(320, 200, 24, Rmsk, Gmsk, Bmsk, 0);
         overlay_initialized = true;
     }
 }
@@ -3360,24 +3287,24 @@ unsafe fn init_scaling() {
         return;
     }
     if texture_sharp.is_null() {
-        texture_sharp = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, 320, 200);
+        texture_sharp = crate::platform::sdl::shared_renderer().create_texture(renderer_, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, 320, 200);
     }
     if scaling_type == 1 {
         if !is_renderer_targettexture_supported && onscreen_surface_2x.is_null() {
-            onscreen_surface_2x = SDL_CreateRGBSurface(0, 320 * 2, 200 * 2, 24, Rmsk, Gmsk, Bmsk, 0);
+            onscreen_surface_2x = crate::platform::sdl::shared_renderer().create_surface(320 * 2, 200 * 2, 24, Rmsk, Gmsk, Bmsk, 0);
         }
         if texture_fuzzy.is_null() {
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char, cs!("1"));
+            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("1")));
             let access = if is_renderer_targettexture_supported { SDL_TEXTUREACCESS_TARGET } else { SDL_TEXTUREACCESS_STREAMING };
-            texture_fuzzy = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGB24, access, 320 * 2, 200 * 2);
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char, cs!("0"));
+            texture_fuzzy = crate::platform::sdl::shared_renderer().create_texture(renderer_, SDL_PIXELFORMAT_RGB24, access, 320 * 2, 200 * 2);
+            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("0")));
         }
         target_texture = texture_fuzzy;
     } else if scaling_type == 2 {
         if texture_blurry.is_null() {
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char, cs!("1"));
-            texture_blurry = SDL_CreateTexture(renderer_, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, 320, 200);
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char, cs!("0"));
+            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("1")));
+            texture_blurry = crate::platform::sdl::shared_renderer().create_texture(renderer_, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, 320, 200);
+            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("0")));
         }
         target_texture = texture_blurry;
     } else {
@@ -3392,13 +3319,13 @@ unsafe fn init_scaling() {
 // seg009:38ED set_gr_mode
 #[no_mangle]
 pub unsafe extern "C" fn set_gr_mode(_grmode: byte) {
-    SDL_SetHint(SDL_HINT_WINDOWS_DISABLE_THREAD_NAMING.as_ptr() as *const c_char, cs!("1"));
-    if SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_NOPARACHUTE | SDL_INIT_GAMECONTROLLER) != 0 {
+    crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_WINDOWS_DISABLE_THREAD_NAMING.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("1")));
+    if crate::platform::sdl::shared_renderer().sdl_init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_NOPARACHUTE | SDL_INIT_GAMECONTROLLER) != 0 {
         sdlperror(cs!("set_gr_mode: SDL_Init"));
         quit(1);
     }
     if enable_controller_rumble != 0 {
-        if SDL_InitSubSystem(SDL_INIT_HAPTIC) != 0 {
+        if crate::platform::sdl::shared_renderer().sdl_init_subsystem(SDL_INIT_HAPTIC) != 0 {
             printf(cs!("Warning: Haptic subsystem unavailable, ignoring enable_controller_rumble = true\n"));
         }
     }
@@ -3420,8 +3347,8 @@ pub unsafe extern "C" fn set_gr_mode(_grmode: byte) {
 
     if is_validate_mode == 0 {
         // run without a window if validating a replay
-        window_ = SDL_CreateWindow(
-            cs!("Prince of Persia (SDLPoP) v1.24 RC"),
+        window_ = crate::platform::sdl::shared_renderer().create_window(
+            std::ffi::CStr::from_ptr(cs!("Prince of Persia (SDLPoP) v1.24 RC")),
             SDL_WINDOWPOS_UNDEFINED,
             SDL_WINDOWPOS_UNDEFINED,
             pop_window_width as c_int,
@@ -3430,7 +3357,7 @@ pub unsafe extern "C" fn set_gr_mode(_grmode: byte) {
         );
     }
     // Make absolutely sure that VSync will be off, to prevent timer issues.
-    SDL_SetHint(SDL_HINT_RENDER_VSYNC.as_ptr() as *const c_char, cs!("0"));
+    crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_VSYNC.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("0")));
     flags = 0;
     match use_hardware_acceleration {
         0 => {
@@ -3441,29 +3368,27 @@ pub unsafe extern "C" fn set_gr_mode(_grmode: byte) {
         }
         _ => {}
     }
-    renderer_ = SDL_CreateRenderer(window_, -1, flags | SDL_RENDERER_TARGETTEXTURE);
-    let mut renderer_info: SDL_RendererInfo = core::mem::zeroed();
-    if SDL_GetRendererInfo(renderer_, &mut renderer_info) == 0 {
-        if renderer_info.flags & SDL_RENDERER_TARGETTEXTURE != 0 {
-            is_renderer_targettexture_supported = true;
-        }
+    renderer_ = crate::platform::sdl::shared_renderer().create_renderer(window_, -1, flags | SDL_RENDERER_TARGETTEXTURE);
+    let renderer_info_flags = crate::platform::sdl::shared_renderer().get_renderer_info_flags(renderer_);
+    if renderer_info_flags & SDL_RENDERER_TARGETTEXTURE != 0 {
+        is_renderer_targettexture_supported = true;
     }
     if use_integer_scaling != 0 {
-        SDL_RenderSetIntegerScale(renderer_, SDL_TRUE);
+        crate::platform::sdl::shared_renderer().render_set_integer_scale(renderer_, true);
     }
 
     let mut __icon_lf = [0 as c_char; POP_MAX_PATH];
-    let icon = IMG_Load(locate_file_(cs!("data/icon.png"), __icon_lf.as_mut_ptr(), POP_MAX_PATH as c_int));
+    let icon = crate::platform::sdl::shared_renderer().load_image_from_file(std::ffi::CStr::from_ptr(locate_file_(cs!("data/icon.png"), __icon_lf.as_mut_ptr(), POP_MAX_PATH as c_int)));
     if icon.is_null() {
         sdlperror(cs!("set_gr_mode: Could not load icon"));
     } else {
-        SDL_SetWindowIcon(window_, icon);
+        crate::platform::sdl::shared_renderer().set_window_icon(window_, icon);
     }
 
     apply_aspect_ratio();
     window_resized();
 
-    onscreen_surface_ = SDL_CreateRGBSurface(0, 320, 200, 24, Rmsk, Gmsk, Bmsk, 0);
+    onscreen_surface_ = crate::platform::sdl::shared_renderer().create_surface(320, 200, 24, Rmsk, Gmsk, Bmsk, 0);
     if onscreen_surface_.is_null() {
         sdlperror(cs!("set_gr_mode: SDL_CreateRGBSurface"));
         quit(1);
@@ -3471,7 +3396,7 @@ pub unsafe extern "C" fn set_gr_mode(_grmode: byte) {
     init_overlay();
     init_scaling();
     if start_fullscreen != 0 {
-        SDL_ShowCursor(SDL_DISABLE);
+        crate::platform::sdl::shared_renderer().show_cursor(false);
     }
 
     graphics_mode = grmodes_gmMcgaVga as byte;
@@ -3578,30 +3503,30 @@ pub unsafe extern "C" fn update_screen() {
     if scaling_type == 1 {
         // Make "fuzzy pixels" like DOSBox does.
         if is_renderer_targettexture_supported {
-            SDL_UpdateTexture(texture_sharp, core::ptr::null(), (*surface).pixels, (*surface).pitch);
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char, cs!("1"));
-            SDL_SetRenderTarget(renderer_, target_texture);
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char, cs!("0"));
-            SDL_RenderClear(renderer_);
-            SDL_RenderCopy(renderer_, texture_sharp, core::ptr::null(), core::ptr::null());
-            SDL_SetRenderTarget(renderer_, null_mut());
+            crate::platform::sdl::shared_renderer().update_texture(texture_sharp, core::ptr::null(), (*surface).pixels, (*surface).pitch);
+            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("1")));
+            crate::platform::sdl::shared_renderer().set_render_target(renderer_, target_texture);
+            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("0")));
+            crate::platform::sdl::shared_renderer().render_clear(renderer_);
+            crate::platform::sdl::shared_renderer().render_copy(renderer_, texture_sharp, core::ptr::null(), core::ptr::null());
+            crate::platform::sdl::shared_renderer().set_render_target(renderer_, null_mut());
         } else {
             SDL_BlitScaled(surface, core::ptr::null(), onscreen_surface_2x, null_mut());
             surface = onscreen_surface_2x;
-            SDL_UpdateTexture(target_texture, core::ptr::null(), (*surface).pixels, (*surface).pitch);
+            crate::platform::sdl::shared_renderer().update_texture(target_texture, core::ptr::null(), (*surface).pixels, (*surface).pitch);
         }
     } else {
-        SDL_UpdateTexture(target_texture, core::ptr::null(), (*surface).pixels, (*surface).pitch);
+        crate::platform::sdl::shared_renderer().update_texture(target_texture, core::ptr::null(), (*surface).pixels, (*surface).pitch);
     }
-    SDL_RenderClear(renderer_);
-    SDL_RenderCopy(renderer_, target_texture, core::ptr::null(), core::ptr::null());
-    SDL_RenderPresent(renderer_);
+    crate::platform::sdl::shared_renderer().render_clear(renderer_);
+    crate::platform::sdl::shared_renderer().render_copy(renderer_, target_texture, core::ptr::null(), core::ptr::null());
+    crate::platform::sdl::shared_renderer().render_present(renderer_);
 }
 
 // seg009 reset_timer
 #[no_mangle]
 pub unsafe extern "C" fn reset_timer(timer_index: c_int) {
-    timer_last_counter[timer_index as usize] = SDL_GetPerformanceCounter();
+    timer_last_counter[timer_index as usize] = crate::platform::sdl::shared_renderer().performance_counter();
 }
 
 // seg009 get_ticks_per_sec
@@ -3641,18 +3566,18 @@ pub unsafe extern "C" fn start_timer(timer_index: c_int, length: c_int) {
     if replaying != 0 && skipping_replay != 0 {
         return;
     }
-    timer_last_counter[timer_index as usize] = SDL_GetPerformanceCounter();
+    timer_last_counter[timer_index as usize] = crate::platform::sdl::shared_renderer().performance_counter();
     wait_time[timer_index as usize] = length;
 }
 
 unsafe fn toggle_fullscreen() {
-    let flags = SDL_GetWindowFlags(window_);
+    let flags = crate::platform::sdl::shared_renderer().get_window_flags(window_);
     if flags & SDL_WINDOW_FULLSCREEN_DESKTOP != 0 {
-        SDL_SetWindowFullscreen(window_, 0);
-        SDL_ShowCursor(SDL_ENABLE);
+        crate::platform::sdl::shared_renderer().set_fullscreen(false);
+        crate::platform::sdl::shared_renderer().show_cursor(true);
     } else {
-        SDL_SetWindowFullscreen(window_, SDL_WINDOW_FULLSCREEN_DESKTOP);
-        SDL_ShowCursor(SDL_DISABLE);
+        crate::platform::sdl::shared_renderer().set_fullscreen(true);
+        crate::platform::sdl::shared_renderer().show_cursor(false);
     }
 }
 
@@ -3660,7 +3585,7 @@ unsafe fn toggle_fullscreen() {
 #[no_mangle]
 pub unsafe extern "C" fn process_events() {
     let mut event: SDL_Event = core::mem::zeroed();
-    while SDL_PollEvent(&mut event) == 1 {
+    while crate::platform::sdl::shared_renderer().poll_event(&mut event as *mut SDL_Event as *mut c_void) == 1 {
         match event.type_ {
             x if x == SDL_KEYDOWN => 'kd: {
                 let modifier = event.key.keysym.r#mod as c_int;
@@ -3780,7 +3705,7 @@ pub unsafe extern "C" fn process_events() {
                 }
             }
             x if x == SDL_CONTROLLERDEVICEADDED => {
-                SDL_GameControllerOpen(event.cdevice.which);
+                crate::platform::sdl::shared_renderer().game_controller_open(event.cdevice.which);
                 if gamecontrollerdb_file[0] != 0 {
                     SDL_GameControllerAddMappingsFromFile(gamecontrollerdb_file.as_ptr());
                 }
@@ -3788,15 +3713,15 @@ pub unsafe extern "C" fn process_events() {
                 using_sdl_joystick_interface = 0;
             }
             x if x == SDL_CONTROLLERDEVICEREMOVED => {
-                if sdl_controller_ == SDL_GameControllerFromInstanceID(event.cdevice.which) {
+                if sdl_controller_ == crate::platform::sdl::shared_renderer().game_controller_from_instance_id(event.cdevice.which) {
                     sdl_controller_ = null_mut();
                     is_joyst_mode = 0;
                     is_keyboard_mode = 1;
                 }
-                SDL_GameControllerClose(SDL_GameControllerFromInstanceID(event.cdevice.which));
+                crate::platform::sdl::shared_renderer().game_controller_close(crate::platform::sdl::shared_renderer().game_controller_from_instance_id(event.cdevice.which));
             }
             x if x == SDL_CONTROLLERBUTTONDOWN => {
-                sdl_controller_ = SDL_GameControllerFromInstanceID(event.cdevice.which);
+                sdl_controller_ = crate::platform::sdl::shared_renderer().game_controller_from_instance_id(event.cdevice.which);
                 if is_joyst_mode == 0 {
                     is_joyst_mode = 1;
                     is_keyboard_mode = 0;
@@ -3934,8 +3859,7 @@ pub unsafe extern "C" fn process_events() {
                     update_screen();
                 } else if event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED {
                     // If Alt is held down from Alt+Tab: ignore it until it's released.
-                    let state = SDL_GetKeyboardState(core::ptr::null_mut());
-                    if *state.offset(SDL_SCANCODE_TAB as isize) != 0 {
+                    if crate::platform::sdl::shared_input().key_state(SDL_SCANCODE_TAB) {
                         ignore_tab = true;
                     }
                 }
@@ -3991,7 +3915,7 @@ pub unsafe extern "C" fn do_simple_wait(timer_index: c_int) {
     }
     update_screen();
     while has_timer_stopped(timer_index) == 0 {
-        SDL_Delay(1);
+        crate::platform::sdl::shared_renderer().delay(1);
         process_events();
     }
 }
@@ -4004,7 +3928,7 @@ pub unsafe extern "C" fn do_wait(timer_index: c_int) -> c_int {
     }
     update_screen();
     while has_timer_stopped(timer_index) == 0 {
-        SDL_Delay(1);
+        crate::platform::sdl::shared_renderer().delay(1);
         process_events();
         let key = do_paused();
         if key != 0 && (word_1D63A != 0 || key == 0x1B) {
@@ -4017,7 +3941,7 @@ pub unsafe extern "C" fn do_wait(timer_index: c_int) -> c_int {
 // seg009:78E9 init_timer
 #[no_mangle]
 pub unsafe extern "C" fn init_timer(frequency: c_int) {
-    perf_frequency = SDL_GetPerformanceFrequency();
+    perf_frequency = crate::platform::sdl::shared_renderer().performance_frequency();
     fps = frequency;
     milliseconds_per_tick = 1000.0f32 / fps as f32;
     perf_counters_per_tick = perf_frequency / fps as u64;
@@ -4029,13 +3953,13 @@ pub unsafe extern "C" fn init_timer(frequency: c_int) {
 pub unsafe extern "C" fn set_clip_rect(rect: *const rect_type) {
     let mut clip_rect: SDL_Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut clip_rect);
-    SDL_SetClipRect(current_target_surface, &clip_rect);
+    crate::platform::sdl::shared_renderer().set_clip_rect(current_target_surface, &clip_rect);
 }
 
 // seg009:365C reset_clip_rect
 #[no_mangle]
 pub unsafe extern "C" fn reset_clip_rect() {
-    SDL_SetClipRect(current_target_surface, core::ptr::null());
+    crate::platform::sdl::shared_renderer().set_clip_rect(current_target_surface, core::ptr::null());
 }
 
 // seg009:1983 set_bg_attr
@@ -4046,7 +3970,7 @@ pub unsafe extern "C" fn set_bg_attr(vga_pal_index: c_int, hc_pal_index: c_int) 
     }
     if vga_pal_index == 0 {
         // Make the black pixels transparent.
-        if SDL_SetColorKey(offscreen_surface, SDL_TRUE, 0) != 0 {
+        if crate::platform::sdl::shared_renderer().set_color_key(offscreen_surface, true, 0) != 0 {
             sdlperror(cs!("set_bg_attr: SDL_SetColorKey"));
             quit(1);
         }
@@ -4056,9 +3980,9 @@ pub unsafe extern "C" fn set_bg_attr(vga_pal_index: c_int, hc_pal_index: c_int) 
         let pr = palette[hc_pal_index as usize].r;
         let pg = palette[hc_pal_index as usize].g;
         let pb = palette[hc_pal_index as usize].b;
-        let rgb_color: u32 = SDL_MapRGB((*onscreen_surface_).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8);
+        let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*onscreen_surface_).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8);
         // First clear the screen with the color of the flash.
-        if safe_SDL_FillRect(onscreen_surface_, &rect, rgb_color) != 0 {
+        if safe_fill_rect(onscreen_surface_, &rect, rgb_color) != 0 {
             sdlperror(cs!("set_bg_attr: SDL_FillRect"));
             quit(1);
         }
@@ -4077,7 +4001,7 @@ pub unsafe extern "C" fn set_bg_attr(vga_pal_index: c_int, hc_pal_index: c_int) 
         if upside_down != 0 {
             flip_screen(offscreen_surface);
         }
-        if SDL_SetColorKey(offscreen_surface, 0, 0) != 0 {
+        if crate::platform::sdl::shared_renderer().set_color_key(offscreen_surface, false, 0) != 0 {
             sdlperror(cs!("set_bg_attr: SDL_SetColorKey"));
             quit(1);
         }
@@ -4194,11 +4118,11 @@ pub unsafe extern "C" fn fade_in_frame(palette_buffer: *mut palette_fade_type) -
     }
 
     let h = (*offscreen_surface).h;
-    if SDL_LockSurface(onscreen_surface_) != 0 {
+    if crate::platform::sdl::shared_renderer().lock_surface(onscreen_surface_) != 0 {
         sdlperror(cs!("fade_in_frame: SDL_LockSurface"));
         quit(1);
     }
-    if SDL_LockSurface(offscreen_surface) != 0 {
+    if crate::platform::sdl::shared_renderer().lock_surface(offscreen_surface) != 0 {
         sdlperror(cs!("fade_in_frame: SDL_LockSurface"));
         quit(1);
     }
@@ -4218,8 +4142,8 @@ pub unsafe extern "C" fn fade_in_frame(palette_buffer: *mut palette_fade_type) -
             off_pixel_ptr = off_pixel_ptr.add(1);
         }
     }
-    SDL_UnlockSurface(onscreen_surface_);
-    SDL_UnlockSurface(offscreen_surface);
+    crate::platform::sdl::shared_renderer().unlock_surface(onscreen_surface_);
+    crate::platform::sdl::shared_renderer().unlock_surface(offscreen_surface);
 
     do_simple_wait(1); // can interrupt fading of cutscene
     ((*palette_buffer).fade_pos == 0) as c_int
@@ -4310,11 +4234,11 @@ pub unsafe extern "C" fn fade_out_frame(palette_buffer: *mut palette_fade_type) 
     }
 
     let h = (*offscreen_surface).h;
-    if SDL_LockSurface(onscreen_surface_) != 0 {
+    if crate::platform::sdl::shared_renderer().lock_surface(onscreen_surface_) != 0 {
         sdlperror(cs!("fade_out_frame: SDL_LockSurface"));
         quit(1);
     }
-    if SDL_LockSurface(offscreen_surface) != 0 {
+    if crate::platform::sdl::shared_renderer().lock_surface(offscreen_surface) != 0 {
         sdlperror(cs!("fade_out_frame: SDL_LockSurface"));
         quit(1);
     }
@@ -4334,8 +4258,8 @@ pub unsafe extern "C" fn fade_out_frame(palette_buffer: *mut palette_fade_type) 
             off_pixel_ptr = off_pixel_ptr.add(1);
         }
     }
-    SDL_UnlockSurface(onscreen_surface_);
-    SDL_UnlockSurface(offscreen_surface);
+    crate::platform::sdl::shared_renderer().unlock_surface(onscreen_surface_);
+    crate::platform::sdl::shared_renderer().unlock_surface(offscreen_surface);
 
     do_simple_wait(timerids_timer_1 as c_int); // can interrupt fading of cutscene
     finished_fading as c_int
@@ -4391,7 +4315,7 @@ pub unsafe extern "C" fn set_chtab_palette(chtab: *mut chtab_type, mut colors: *
                     if (*current_palette).ncolors < n_colors_to_be_set {
                         n_colors_to_be_set = (*current_palette).ncolors;
                     }
-                    if SDL_SetPaletteColors(current_palette, scolors, 0, n_colors_to_be_set) != 0 {
+                    if crate::platform::sdl::shared_renderer().set_palette_colors(current_palette, scolors, 0, n_colors_to_be_set) != 0 {
                         sdlperror(cs!("set_chtab_palette: SDL_SetPaletteColors"));
                         quit(1);
                     }
@@ -4408,7 +4332,7 @@ pub unsafe extern "C" fn has_timer_stopped(index: c_int) -> c_int {
     if (replaying != 0 && skipping_replay != 0) || is_validate_mode != 0 {
         return 1;
     }
-    let mut current_counter = SDL_GetPerformanceCounter();
+    let mut current_counter = crate::platform::sdl::shared_renderer().performance_counter();
     let ticks_elapsed = ((current_counter / perf_counters_per_tick) - (timer_last_counter[index as usize] / perf_counters_per_tick)) as c_int;
     let overshoot = ticks_elapsed - wait_time[index as usize];
     if overshoot >= 0 {

@@ -77,22 +77,30 @@ impl Renderer for SdlRenderer {
         sdl2::sys::image::IMG_Load(path.as_ptr()) as *mut SDL_Surface
     }
 
-    unsafe fn lock_surface(&mut self, surf: *mut SDL_Surface) {
-        sdl2::sys::SDL_LockSurface(as_sys_surface(surf));
+    unsafe fn img_load_rw(&mut self, rw: *mut crate::SDL_RWops, freesrc: c_int) -> *mut SDL_Surface {
+        sdl2::sys::image::IMG_Load_RW(rw as *mut sdl2::sys::SDL_RWops, freesrc) as *mut SDL_Surface
+    }
+
+    unsafe fn lock_surface(&mut self, surf: *mut SDL_Surface) -> c_int {
+        sdl2::sys::SDL_LockSurface(as_sys_surface(surf))
     }
 
     unsafe fn unlock_surface(&mut self, surf: *mut SDL_Surface) {
         sdl2::sys::SDL_UnlockSurface(as_sys_surface(surf));
     }
 
-    unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, enable: bool, key: u32) {
-        sdl2::sys::SDL_SetColorKey(as_sys_surface(surf), enable as c_int, key);
+    unsafe fn set_color_key(&mut self, surf: *mut SDL_Surface, enable: bool, key: u32) -> c_int {
+        sdl2::sys::SDL_SetColorKey(as_sys_surface(surf), enable as c_int, key)
     }
 
     unsafe fn set_palette(&mut self, surf: *mut SDL_Surface, colors: *const SDL_Color, first_color: c_int, n_colors: c_int) {
         let sys_surf = as_sys_surface(surf);
         let palette = (*(*sys_surf).format).palette;
         sdl2::sys::SDL_SetPaletteColors(palette, colors as *const sdl2::sys::SDL_Color, first_color, n_colors);
+    }
+
+    unsafe fn set_palette_colors(&mut self, palette: *mut crate::SDL_Palette, colors: *const SDL_Color, first_color: c_int, n_colors: c_int) -> c_int {
+        sdl2::sys::SDL_SetPaletteColors(palette as *mut sdl2::sys::SDL_Palette, colors as *const sdl2::sys::SDL_Color, first_color, n_colors)
     }
 
     unsafe fn set_surface_palette(&mut self, surf: *mut SDL_Surface, palette: *mut crate::SDL_Palette) -> c_int {
@@ -175,8 +183,8 @@ impl Renderer for SdlRenderer {
         sdl2::sys::SDL_RWtell(rw as *mut sdl2::sys::SDL_RWops)
     }
 
-    unsafe fn rw_close(&mut self, rw: *mut crate::SDL_RWops) {
-        sdl2::sys::SDL_RWclose(rw as *mut sdl2::sys::SDL_RWops);
+    unsafe fn rw_close(&mut self, rw: *mut crate::SDL_RWops) -> c_int {
+        sdl2::sys::SDL_RWclose(rw as *mut sdl2::sys::SDL_RWops)
     }
 
     unsafe fn show_message_box(&mut self, title: &std::ffi::CStr, message: &std::ffi::CStr) {
@@ -239,6 +247,146 @@ impl Renderer for SdlRenderer {
     unsafe fn render_set_integer_scale(&mut self, renderer: *mut crate::SDL_Renderer, enable: bool) -> c_int {
         let flag = if enable { sdl2::sys::SDL_bool::SDL_TRUE } else { sdl2::sys::SDL_bool::SDL_FALSE };
         sdl2::sys::SDL_RenderSetIntegerScale(renderer as *mut sdl2::sys::SDL_Renderer, flag)
+    }
+
+    unsafe fn map_rgb(&mut self, format: *const crate::SDL_PixelFormat, r: u8, g: u8, b: u8) -> u32 {
+        sdl2::sys::SDL_MapRGB(format as *const sdl2::sys::SDL_PixelFormat, r, g, b)
+    }
+
+    unsafe fn set_clip_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect) -> c_int {
+        sdl2::sys::SDL_SetClipRect(as_sys_surface(surf), as_sys_rect(rect)) as c_int
+    }
+
+    unsafe fn convert_surface_format(&mut self, src: *mut SDL_Surface, pixel_format: u32, flags: u32) -> *mut SDL_Surface {
+        sdl2::sys::SDL_ConvertSurfaceFormat(as_sys_surface(src), pixel_format, flags) as *mut SDL_Surface
+    }
+
+    unsafe fn blit_scaled(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int {
+        sdl2::sys::SDL_UpperBlitScaled(as_sys_surface(src), as_sys_rect(src_rect), as_sys_surface(dst), dst_rect as *mut sdl2::sys::SDL_Rect)
+    }
+
+    unsafe fn set_window_icon(&mut self, window: *mut crate::SDL_Window, icon: *mut SDL_Surface) {
+        sdl2::sys::SDL_SetWindowIcon(window as *mut sdl2::sys::SDL_Window, as_sys_surface(icon));
+    }
+
+    unsafe fn rw_from_const_mem(&mut self, mem: *const std::os::raw::c_void, size: c_int) -> *mut crate::SDL_RWops {
+        sdl2::sys::SDL_RWFromConstMem(mem, size) as *mut crate::SDL_RWops
+    }
+
+    unsafe fn create_texture(&mut self, renderer: *mut crate::SDL_Renderer, format: u32, access: c_int, w: c_int, h: c_int) -> *mut crate::SDL_Texture {
+        sdl2::sys::SDL_CreateTexture(renderer as *mut sdl2::sys::SDL_Renderer, format, access, w, h) as *mut crate::SDL_Texture
+    }
+
+    unsafe fn update_texture(&mut self, texture: *mut crate::SDL_Texture, rect: *const SDL_Rect, pixels: *const std::os::raw::c_void, pitch: c_int) -> c_int {
+        sdl2::sys::SDL_UpdateTexture(texture as *mut sdl2::sys::SDL_Texture, as_sys_rect(rect), pixels, pitch)
+    }
+
+    unsafe fn set_render_target(&mut self, renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture) -> c_int {
+        sdl2::sys::SDL_SetRenderTarget(renderer as *mut sdl2::sys::SDL_Renderer, texture as *mut sdl2::sys::SDL_Texture)
+    }
+
+    unsafe fn render_clear(&mut self, renderer: *mut crate::SDL_Renderer) -> c_int {
+        sdl2::sys::SDL_RenderClear(renderer as *mut sdl2::sys::SDL_Renderer)
+    }
+
+    unsafe fn render_copy(&mut self, renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture, src_rect: *const SDL_Rect, dst_rect: *const SDL_Rect) -> c_int {
+        sdl2::sys::SDL_RenderCopy(renderer as *mut sdl2::sys::SDL_Renderer, texture as *mut sdl2::sys::SDL_Texture, as_sys_rect(src_rect), as_sys_rect(dst_rect))
+    }
+
+    unsafe fn render_present(&mut self, renderer: *mut crate::SDL_Renderer) {
+        sdl2::sys::SDL_RenderPresent(renderer as *mut sdl2::sys::SDL_Renderer);
+    }
+
+    unsafe fn render_set_logical_size(&mut self, renderer: *mut crate::SDL_Renderer, w: c_int, h: c_int) -> c_int {
+        sdl2::sys::SDL_RenderSetLogicalSize(renderer as *mut sdl2::sys::SDL_Renderer, w, h)
+    }
+
+    unsafe fn get_renderer_output_size(&mut self, renderer: *mut crate::SDL_Renderer) -> (c_int, c_int) {
+        let (mut w, mut h) = (0, 0);
+        sdl2::sys::SDL_GetRendererOutputSize(renderer as *mut sdl2::sys::SDL_Renderer, &mut w, &mut h);
+        (w, h)
+    }
+
+    unsafe fn get_renderer_info_flags(&mut self, renderer: *mut crate::SDL_Renderer) -> u32 {
+        let mut info: sdl2::sys::SDL_RendererInfo = std::mem::zeroed();
+        if sdl2::sys::SDL_GetRendererInfo(renderer as *mut sdl2::sys::SDL_Renderer, &mut info) == 0 {
+            info.flags
+        } else {
+            0
+        }
+    }
+
+    unsafe fn set_hint(&mut self, name: &std::ffi::CStr, value: &std::ffi::CStr) -> c_int {
+        sdl2::sys::SDL_SetHint(name.as_ptr(), value.as_ptr()) as c_int
+    }
+
+    unsafe fn sdl_init(&mut self, flags: u32) -> c_int {
+        sdl2::sys::SDL_Init(flags)
+    }
+
+    unsafe fn sdl_init_subsystem(&mut self, flags: u32) -> c_int {
+        sdl2::sys::SDL_InitSubSystem(flags)
+    }
+
+    unsafe fn sdl_quit(&mut self) {
+        sdl2::sys::SDL_Quit();
+    }
+
+    unsafe fn create_window(&mut self, title: &std::ffi::CStr, x: c_int, y: c_int, w: c_int, h: c_int, flags: u32) -> *mut crate::SDL_Window {
+        sdl2::sys::SDL_CreateWindow(title.as_ptr(), x, y, w, h, flags) as *mut crate::SDL_Window
+    }
+
+    unsafe fn create_renderer(&mut self, window: *mut crate::SDL_Window, index: c_int, flags: u32) -> *mut crate::SDL_Renderer {
+        sdl2::sys::SDL_CreateRenderer(window as *mut sdl2::sys::SDL_Window, index, flags) as *mut crate::SDL_Renderer
+    }
+
+    unsafe fn open_audio_raw(&mut self, desired: *mut std::os::raw::c_void, obtained: *mut std::os::raw::c_void) -> c_int {
+        sdl2::sys::SDL_OpenAudio(desired as *mut sdl2::sys::SDL_AudioSpec, obtained as *mut sdl2::sys::SDL_AudioSpec)
+    }
+
+    unsafe fn num_joysticks(&mut self) -> c_int {
+        sdl2::sys::SDL_NumJoysticks()
+    }
+
+    unsafe fn is_game_controller(&mut self, joystick_index: c_int) -> bool {
+        sdl2::sys::SDL_IsGameController(joystick_index) == sdl2::sys::SDL_bool::SDL_TRUE
+    }
+
+    unsafe fn game_controller_open(&mut self, joystick_index: c_int) -> *mut crate::SDL_GameController {
+        sdl2::sys::SDL_GameControllerOpen(joystick_index) as *mut crate::SDL_GameController
+    }
+
+    unsafe fn game_controller_close(&mut self, controller: *mut crate::SDL_GameController) {
+        sdl2::sys::SDL_GameControllerClose(controller as *mut sdl2::sys::SDL_GameController);
+    }
+
+    unsafe fn game_controller_from_instance_id(&mut self, joyid: i32) -> *mut crate::SDL_GameController {
+        sdl2::sys::SDL_GameControllerFromInstanceID(joyid) as *mut crate::SDL_GameController
+    }
+
+    unsafe fn game_controller_add_mappings_from_file(&mut self, path: &std::ffi::CStr) -> c_int {
+        let rw = sdl2::sys::SDL_RWFromFile(path.as_ptr(), b"rb\0".as_ptr() as *const std::os::raw::c_char);
+        sdl2::sys::SDL_GameControllerAddMappingsFromRW(rw, 1)
+    }
+
+    unsafe fn joystick_open(&mut self, device_index: c_int) -> *mut crate::SDL_Joystick {
+        sdl2::sys::SDL_JoystickOpen(device_index) as *mut crate::SDL_Joystick
+    }
+
+    unsafe fn haptic_open(&mut self, device_index: c_int) -> *mut crate::SDL_Haptic {
+        sdl2::sys::SDL_HapticOpen(device_index) as *mut crate::SDL_Haptic
+    }
+
+    unsafe fn haptic_rumble_init(&mut self, haptic: *mut crate::SDL_Haptic) -> c_int {
+        sdl2::sys::SDL_HapticRumbleInit(haptic as *mut sdl2::sys::SDL_Haptic)
+    }
+
+    unsafe fn push_event(&mut self, event: *mut std::os::raw::c_void) -> c_int {
+        sdl2::sys::SDL_PushEvent(event as *mut sdl2::sys::SDL_Event)
+    }
+
+    unsafe fn poll_event(&mut self, event: *mut std::os::raw::c_void) -> c_int {
+        sdl2::sys::SDL_PollEvent(event as *mut sdl2::sys::SDL_Event)
     }
 }
 
