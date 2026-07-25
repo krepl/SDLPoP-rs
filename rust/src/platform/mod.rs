@@ -104,6 +104,21 @@ pub trait Renderer {
     unsafe fn linked_sdl_version(&mut self) -> (u8, u8, u8);
     /// `SDL_GetPerformanceCounter` -- high-resolution frame-timing counter.
     unsafe fn performance_counter(&mut self) -> u64;
+    unsafe fn performance_frequency(&mut self) -> u64;
+    unsafe fn rw_from_file(&mut self, path: &std::ffi::CStr, mode: &std::ffi::CStr) -> *mut SDL_RWops;
+    /// `SDL_GetScancodeName` -- human-readable key-bind label (menu.rs's controls page).
+    unsafe fn get_scancode_name(&mut self, scancode: u32) -> *const std::os::raw::c_char;
+    unsafe fn get_window_flags(&mut self, window: *mut crate::SDL_Window) -> u32;
+    // The four below operate on the raw `*mut SDL_Renderer`/`*mut SDL_Window` the game
+    // already holds in the `renderer_`/`window_` globals, not on `self`'s own
+    // canvas/window -- same reasoning as `AudioBackend::lock`/`unlock`/`pause` reading
+    // the raw `sdl_haptic`/etc. globals: seg009.rs's own window/renderer creation
+    // hasn't migrated to this trait yet, so `self`'s canvas is unset for any instance
+    // that exists today, but the real renderer_/window_ pointers are already live.
+    unsafe fn render_get_scale(&mut self, renderer: *mut crate::SDL_Renderer) -> (f32, f32);
+    unsafe fn render_get_logical_size(&mut self, renderer: *mut crate::SDL_Renderer) -> (c_int, c_int);
+    unsafe fn render_get_viewport(&mut self, renderer: *mut crate::SDL_Renderer) -> SDL_Rect;
+    unsafe fn render_set_integer_scale(&mut self, renderer: *mut crate::SDL_Renderer, enable: bool) -> c_int;
 }
 
 /// The mixed digi/speaker/MIDI/OGG output sink. `opl3.rs`'s synth math and the mixing

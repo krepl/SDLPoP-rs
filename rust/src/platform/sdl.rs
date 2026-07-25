@@ -150,15 +150,17 @@ impl Renderer for SdlRenderer {
         canvas.present();
     }
 
+    // Reads/writes the raw `window_` global directly, not `self.canvas` -- same
+    // reasoning as the render_get_*/get_window_flags family below: seg009.rs's own
+    // window creation hasn't migrated to this trait yet, so `self.canvas` is unset for
+    // any instance that exists today, but `window_` is already live.
     unsafe fn set_fullscreen(&mut self, fullscreen: bool) {
-        let canvas = self.canvas.as_mut().expect("set_fullscreen: no window (SdlPlatform not constructed yet)");
-        let mode = if fullscreen { sdl2::video::FullscreenType::Desktop } else { sdl2::video::FullscreenType::Off };
-        let _ = canvas.window_mut().set_fullscreen(mode);
+        const SDL_WINDOW_FULLSCREEN_DESKTOP: u32 = 0x1001;
+        sdl2::sys::SDL_SetWindowFullscreen(crate::window_ as *mut sdl2::sys::SDL_Window, if fullscreen { SDL_WINDOW_FULLSCREEN_DESKTOP } else { 0 });
     }
 
     unsafe fn show_cursor(&mut self, show: bool) {
-        let canvas = self.canvas.as_ref().expect("show_cursor: no window (SdlPlatform not constructed yet)");
-        canvas.window().subsystem().sdl().mouse().show_cursor(show);
+        sdl2::sys::SDL_ShowCursor(show as c_int);
     }
 
     unsafe fn delay(&mut self, ms: u32) {
@@ -198,6 +200,45 @@ impl Renderer for SdlRenderer {
 
     unsafe fn performance_counter(&mut self) -> u64 {
         sdl2::sys::SDL_GetPerformanceCounter()
+    }
+
+    unsafe fn performance_frequency(&mut self) -> u64 {
+        sdl2::sys::SDL_GetPerformanceFrequency()
+    }
+
+    unsafe fn rw_from_file(&mut self, path: &std::ffi::CStr, mode: &std::ffi::CStr) -> *mut crate::SDL_RWops {
+        sdl2::sys::SDL_RWFromFile(path.as_ptr(), mode.as_ptr()) as *mut crate::SDL_RWops
+    }
+
+    unsafe fn get_scancode_name(&mut self, scancode: u32) -> *const std::os::raw::c_char {
+        sdl2::sys::SDL_GetScancodeName(std::mem::transmute::<u32, sdl2::sys::SDL_Scancode>(scancode))
+    }
+
+    unsafe fn get_window_flags(&mut self, window: *mut crate::SDL_Window) -> u32 {
+        sdl2::sys::SDL_GetWindowFlags(window as *mut sdl2::sys::SDL_Window)
+    }
+
+    unsafe fn render_get_scale(&mut self, renderer: *mut crate::SDL_Renderer) -> (f32, f32) {
+        let (mut sx, mut sy) = (0.0f32, 0.0f32);
+        sdl2::sys::SDL_RenderGetScale(renderer as *mut sdl2::sys::SDL_Renderer, &mut sx, &mut sy);
+        (sx, sy)
+    }
+
+    unsafe fn render_get_logical_size(&mut self, renderer: *mut crate::SDL_Renderer) -> (c_int, c_int) {
+        let (mut w, mut h) = (0, 0);
+        sdl2::sys::SDL_RenderGetLogicalSize(renderer as *mut sdl2::sys::SDL_Renderer, &mut w, &mut h);
+        (w, h)
+    }
+
+    unsafe fn render_get_viewport(&mut self, renderer: *mut crate::SDL_Renderer) -> SDL_Rect {
+        let mut rect: sdl2::sys::SDL_Rect = std::mem::zeroed();
+        sdl2::sys::SDL_RenderGetViewport(renderer as *mut sdl2::sys::SDL_Renderer, &mut rect);
+        SDL_Rect { x: rect.x, y: rect.y, w: rect.w, h: rect.h }
+    }
+
+    unsafe fn render_set_integer_scale(&mut self, renderer: *mut crate::SDL_Renderer, enable: bool) -> c_int {
+        let flag = if enable { sdl2::sys::SDL_bool::SDL_TRUE } else { sdl2::sys::SDL_bool::SDL_FALSE };
+        sdl2::sys::SDL_RenderSetIntegerScale(renderer as *mut sdl2::sys::SDL_Renderer, flag)
     }
 }
 

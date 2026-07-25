@@ -7,32 +7,12 @@
 use std::os::raw::{c_char, c_int, c_short, c_void};
 use core::ptr::{addr_of, addr_of_mut, null, null_mut};
 use super::*;
+use crate::platform::{InputSource, Renderer};
 
 // ============================================================================
 // SDL / libc externs not present in bindings.rs
 // ============================================================================
 extern "C" {
-    fn SDL_GetMouseState(x: *mut c_int, y: *mut c_int) -> u32;
-    fn SDL_SetWindowFullscreen(window: *mut SDL_Window, flags: u32) -> c_int;
-    fn SDL_RenderGetScale(renderer: *mut SDL_Renderer, scaleX: *mut f32, scaleY: *mut f32);
-    fn SDL_RenderGetLogicalSize(renderer: *mut SDL_Renderer, w: *mut c_int, h: *mut c_int);
-    fn SDL_RenderGetViewport(renderer: *mut SDL_Renderer, rect: *mut SDL_Rect);
-    fn SDL_RenderSetIntegerScale(renderer: *mut SDL_Renderer, enable: c_int) -> c_int;
-    fn SDL_GetScancodeName(scancode: u32) -> *const c_char;
-    fn SDL_UpperBlit(src: *mut SDL_Surface, srcrect: *const SDL_Rect, dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int;
-    fn SDL_MapRGBA(fmt: *const SDL_PixelFormat, r: u8, g: u8, b: u8, a: u8) -> u32;
-    fn SDL_FillRect(dst: *mut SDL_Surface, rect: *const SDL_Rect, color: u32) -> c_int;
-    fn SDL_GetWindowFlags(window: *mut SDL_Window) -> u32;
-    fn SDL_ShowCursor(toggle: c_int) -> c_int;
-    fn SDL_GetPerformanceFrequency() -> u64;
-    fn SDL_GetPerformanceCounter() -> u64;
-    fn SDL_Delay(ms: u32);
-    fn SDL_SetColorKey(surface: *mut SDL_Surface, flag: c_int, key: u32) -> c_int;
-    fn SDL_RWFromFile(file: *const c_char, mode: *const c_char) -> *mut SDL_RWops;
-    fn SDL_RWwrite(ctx: *mut SDL_RWops, ptr: *const c_void, size: usize, n: usize) -> usize;
-    fn SDL_RWread(ctx: *mut SDL_RWops, ptr: *mut c_void, size: usize, maxnum: usize) -> usize;
-    fn SDL_RWclose(ctx: *mut SDL_RWops) -> c_int;
-
     fn snprintf(s: *mut c_char, n: usize, format: *const c_char, ...) -> c_int;
     fn strlen(s: *const c_char) -> usize;
     fn strncpy(dst: *mut c_char, src: *const c_char, n: usize) -> *mut c_char;
@@ -56,7 +36,7 @@ extern "C" {
 #[inline]
 unsafe fn SDL_BlitSurface(src: *mut SDL_Surface, srcrect: *const SDL_Rect,
                            dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int {
-    SDL_UpperBlit(src, srcrect, dst, dstrect)
+    crate::platform::sdl::shared_renderer().blit(src, srcrect, dst, dstrect)
 }
 
 // glibc x86-64 struct stat (144 bytes). We only read st_mtim.
@@ -1273,10 +1253,9 @@ unsafe fn is_mouse_over_rect(rect: *const rect_type) -> bool {
 unsafe fn read_mouse_state() {
     let mut scale_x: f32 = 0.0;
     let mut scale_y: f32 = 0.0;
-    SDL_RenderGetScale(renderer_, &mut scale_x, &mut scale_y);
-    let mut logical_width: c_int = 0;
-    let mut logical_height: c_int = 0;
-    SDL_RenderGetLogicalSize(renderer_, &mut logical_width, &mut logical_height);
+    let renderer = crate::platform::sdl::shared_renderer();
+    (scale_x, scale_y) = renderer.render_get_scale(renderer_);
+    let (logical_width, logical_height) = renderer.render_get_logical_size(renderer_);
     let logical_scale_x = logical_width / 320;
     let logical_scale_y = logical_height / 200;
     scale_x *= logical_scale_x as f32;
@@ -1284,13 +1263,12 @@ unsafe fn read_mouse_state() {
     if !(scale_x > 0.0 && scale_y > 0.0 && logical_scale_x > 0 && logical_scale_y > 0) {
         return;
     }
-    let mut viewport: SDL_Rect = core::mem::zeroed();
-    SDL_RenderGetViewport(renderer_, &mut viewport);
+    let mut viewport = renderer.render_get_viewport(renderer_);
     viewport.x /= logical_scale_x;
     viewport.y /= logical_scale_y;
     let last_mouse_x = mouse_x;
     let last_mouse_y = mouse_y;
-    SDL_GetMouseState(&mut mouse_x, &mut mouse_y);
+    (mouse_x, mouse_y, _, _) = crate::platform::sdl::shared_input().mouse_state();
     mouse_x = (mouse_x as f32 / scale_x - viewport.x as f32 + 0.5) as c_int;
     mouse_y = (mouse_y as f32 / scale_y - viewport.y as f32 + 0.5) as c_int;
     mouse_moved = last_mouse_x != mouse_x || last_mouse_y != mouse_y;
@@ -1485,7 +1463,7 @@ unsafe fn turn_setting_on_off(setting_id: c_int, new_state: u8, linked: *mut c_v
     match setting_id {
         SETTING_FULLSCREEN => {
             start_fullscreen = new_state;
-            SDL_SetWindowFullscreen(window_, (new_state != 0) as u32 * SDL_WINDOW_FULLSCREEN_DESKTOP);
+            crate::platform::sdl::shared_renderer().set_fullscreen(new_state != 0);
         }
         SETTING_USE_CORRECT_ASPECT_RATIO => {
             use_correct_aspect_ratio = new_state;
@@ -1496,7 +1474,7 @@ unsafe fn turn_setting_on_off(setting_id: c_int, new_state: u8, linked: *mut c_v
             if new_state != 0 {
                 window_resized();
             } else {
-                SDL_RenderSetIntegerScale(renderer_, SDL_FALSE);
+                crate::platform::sdl::shared_renderer().render_set_integer_scale(renderer_, false);
             }
         }
         SETTING_ENABLE_LIGHTING => {
@@ -1588,7 +1566,7 @@ unsafe fn draw_setting_explanation(setting: *mut setting_type) {
 unsafe fn draw_image_with_blending(image: *mut image_type, xpos: c_int, ypos: c_int) {
     let src_rect = SDL_Rect { x: 0, y: 0, w: (*image).w, h: (*image).h };
     let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: (*image).w, h: (*image).h };
-    SDL_SetColorKey(image, SDL_TRUE, 0);
+    crate::platform::sdl::shared_renderer().set_color_key(image, true, 0);
     if SDL_BlitSurface(image, &src_rect, current_target_surface, &mut dest_rect) != 0 {
         sdlperror(cs!("SDL_BlitSurface"));
         quit(1);
@@ -1657,8 +1635,9 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
 
         let mut dest_rect: SDL_Rect = core::mem::zeroed();
         rect_to_sdlrect(&setting_box, &mut dest_rect);
-        let rgb_color = SDL_MapRGBA((*overlay_surface).format, 55, 55, 55, 255);
-        if SDL_FillRect(overlay_surface, &dest_rect, rgb_color) != 0 {
+        let renderer = crate::platform::sdl::shared_renderer();
+        let rgb_color = renderer.map_rgba((*overlay_surface).format, 55, 55, 55, 255);
+        if renderer.fill_rect(overlay_surface, &dest_rect, rgb_color) != 0 {
             sdlperror(cs!("draw_setting: SDL_FillRect"));
             quit(1);
         }
@@ -1760,7 +1739,7 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
     } else if (*setting).style as c_int == SETTING_STYLE_KEY && !disabled {
         let value = get_setting_value(setting);
         let mut value_text = [0 as c_char; 256];
-        snprintf(value_text.as_mut_ptr(), 256, cs!("%s (%d)"), SDL_GetScancodeName(value as u32), value);
+        snprintf(value_text.as_mut_ptr(), 256, cs!("%s (%d)"), crate::platform::sdl::shared_renderer().get_scancode_name(value as u32), value);
         show_text_with_color(&text_rect, 1, -1, value_text.as_ptr(), selected_color);
     } else {
         // show text only
@@ -2050,8 +2029,9 @@ unsafe fn draw_confirmation_dialog(which_dialog: c_int, text: *const c_char) {
 
         if highlighted_button != old_highlighted_button {
             old_highlighted_button = highlighted_button;
-            let clear_color = SDL_MapRGBA((*current_target_surface).format, 0, 0, 0, 255);
-            SDL_FillRect(overlay_surface, null(), clear_color);
+            let renderer = crate::platform::sdl::shared_renderer();
+            let clear_color = renderer.map_rgba((*current_target_surface).format, 0, 0, 0, 255);
+            renderer.fill_rect(overlay_surface, null(), clear_color);
             draw_rect(addr_of!((*copyprot_dialog).peel_rect), colorids_color_0_black as c_int);
             dialog_method_2_frame(copyprot_dialog);
             let mut rect: rect_type = core::mem::zeroed();
@@ -2078,7 +2058,7 @@ unsafe fn draw_confirmation_dialog(which_dialog: c_int, text: *const c_char) {
             update_screen();
         }
 
-        SDL_Delay(1);
+        crate::platform::sdl::shared_renderer().delay(1);
     }
     current_dialog_box = 0;
     clear_menu_controls();
@@ -2114,8 +2094,9 @@ unsafe fn draw_select_level_dialog() {
             textstate.ptr_font = addr_of_mut!(hc_font);
 
             old_edited_level_number = menu_current_level as c_int;
-            let clear_color = SDL_MapRGBA((*current_target_surface).format, 0, 0, 0, 255);
-            SDL_FillRect(overlay_surface, null(), clear_color);
+            let renderer = crate::platform::sdl::shared_renderer();
+            let clear_color = renderer.map_rgba((*current_target_surface).format, 0, 0, 0, 255);
+            renderer.fill_rect(overlay_surface, null(), clear_color);
             draw_rect(addr_of!((*copyprot_dialog).peel_rect), colorids_color_0_black as c_int);
             dialog_method_2_frame(copyprot_dialog);
             let mut rect: rect_type = core::mem::zeroed();
@@ -2134,7 +2115,7 @@ unsafe fn draw_select_level_dialog() {
             textstate.ptr_font = saved_font;
         }
 
-        SDL_Delay(1);
+        crate::platform::sdl::shared_renderer().delay(1);
     }
     clear_menu_controls();
 }
@@ -2191,7 +2172,7 @@ pub unsafe extern "C" fn draw_menu() {
         if have_mouse_input || have_keyboard_or_controller_input {
             need_full_menu_redraw_count = 2;
         } else if need_full_menu_redraw_count == 0 {
-            SDL_Delay(1);
+            crate::platform::sdl::shared_renderer().delay(1);
             continue;
         }
 
@@ -2235,15 +2216,16 @@ pub unsafe extern "C" fn process_additional_menu_input() {
     have_mouse_input =
         mouse_moved || mouse_clicked || mouse_button_clicked_right || menu_control_scroll_y != 0;
 
-    let flags = SDL_GetWindowFlags(window_);
+    let renderer = crate::platform::sdl::shared_renderer();
+    let flags = renderer.get_window_flags(window_);
     if flags & SDL_WINDOW_FULLSCREEN_DESKTOP != 0 {
         if have_mouse_input {
-            SDL_ShowCursor(SDL_ENABLE);
+            renderer.show_cursor(true);
         } else if have_keyboard_or_controller_input {
-            SDL_ShowCursor(SDL_DISABLE);
+            renderer.show_cursor(false);
         }
     } else {
-        SDL_ShowCursor(SDL_ENABLE);
+        renderer.show_cursor(true);
     }
 }
 
@@ -2291,11 +2273,12 @@ pub unsafe extern "C" fn key_test_paused_menu(mut key: c_int) -> c_int {
                 needed_timeout_s = 0.3f32;
                 joy_xy_released = false;
             }
-            let current_counter = SDL_GetPerformanceCounter();
+            let renderer = crate::platform::sdl::shared_renderer();
+            let current_counter = renderer.performance_counter();
             if current_counter > joy_xy_timeout_counter {
                 menu_control_x = joy_x;
                 menu_control_y = joy_y;
-                joy_xy_timeout_counter = current_counter + (SDL_GetPerformanceFrequency() as f32 * needed_timeout_s) as u64;
+                joy_xy_timeout_counter = current_counter + (renderer.performance_frequency() as f32 * needed_timeout_s) as u64;
                 return 0;
             }
         }
@@ -2471,16 +2454,20 @@ unsafe fn calculate_exe_crc() {
 #[no_mangle]
 pub unsafe extern "C" fn save_ingame_settings() {
     let mut __lf = [0u8; POP_MAX_PATH];
-    let rw = SDL_RWFromFile(locate_save_file_(cs!("SDLPoP.cfg"), __lf.as_mut_ptr() as *mut c_char, POP_MAX_PATH as c_int), cs!("wb"));
+    let renderer = crate::platform::sdl::shared_renderer();
+    let rw = renderer.rw_from_file(
+        std::ffi::CStr::from_ptr(locate_save_file_(cs!("SDLPoP.cfg"), __lf.as_mut_ptr() as *mut c_char, POP_MAX_PATH as c_int)),
+        std::ffi::CStr::from_ptr(cs!("wb")),
+    );
     if !rw.is_null() {
         calculate_exe_crc();
-        SDL_RWwrite(rw, addr_of!(exe_crc) as *const c_void, std::mem::size_of::<u32>(), 1);
+        renderer.rw_write(rw, addr_of!(exe_crc) as *const c_void, std::mem::size_of::<u32>(), 1);
         let levelset_name_length = strnlen(levelset_name.as_ptr(), 255) as u8;
-        SDL_RWwrite(rw, addr_of!(levelset_name_length) as *const c_void, 1, 1);
-        SDL_RWwrite(rw, levelset_name.as_ptr() as *const c_void, levelset_name_length as usize, 1);
+        renderer.rw_write(rw, addr_of!(levelset_name_length) as *const c_void, 1, 1);
+        renderer.rw_write(rw, levelset_name.as_ptr() as *const c_void, levelset_name_length as usize, 1);
         process_ingame_settings_user_managed(rw, process_rw_write);
         process_ingame_settings_mod_managed(rw, process_rw_write);
-        SDL_RWclose(rw);
+        renderer.rw_close(rw);
     }
 }
 
@@ -2499,22 +2486,23 @@ pub unsafe extern "C" fn load_ingame_settings() {
             return;
         }
     }
-    let rw = SDL_RWFromFile(cfg_filename, cs!("rb"));
+    let renderer = crate::platform::sdl::shared_renderer();
+    let rw = renderer.rw_from_file(std::ffi::CStr::from_ptr(cfg_filename), std::ffi::CStr::from_ptr(cs!("rb")));
     if !rw.is_null() {
         calculate_exe_crc();
         let mut expected_crc: u32 = 0;
-        SDL_RWread(rw, &mut expected_crc as *mut u32 as *mut c_void, std::mem::size_of::<u32>(), 1);
+        renderer.rw_read(rw, &mut expected_crc as *mut u32 as *mut c_void, std::mem::size_of::<u32>(), 1);
         if exe_crc == expected_crc {
             let mut cfg_levelset_name_length: u8 = 0;
             let mut cfg_levelset_name = [0u8; 256];
-            SDL_RWread(rw, &mut cfg_levelset_name_length as *mut u8 as *mut c_void, 1, 1);
-            SDL_RWread(rw, cfg_levelset_name.as_mut_ptr() as *mut c_void, cfg_levelset_name_length as usize, 1);
+            renderer.rw_read(rw, &mut cfg_levelset_name_length as *mut u8 as *mut c_void, 1, 1);
+            renderer.rw_read(rw, cfg_levelset_name.as_mut_ptr() as *mut c_void, cfg_levelset_name_length as usize, 1);
             process_ingame_settings_user_managed(rw, process_rw_read);
             if strncmp(levelset_name.as_ptr(), cfg_levelset_name.as_ptr() as *const c_char, 256) == 0 {
                 process_ingame_settings_mod_managed(rw, process_rw_read);
             }
         }
-        SDL_RWclose(rw);
+        renderer.rw_close(rw);
     }
 }
 
@@ -2529,11 +2517,12 @@ pub unsafe extern "C" fn menu_was_closed() {
         save_ingame_settings();
         were_settings_changed = false;
     }
-    let flags = SDL_GetWindowFlags(window_);
+    let renderer = crate::platform::sdl::shared_renderer();
+    let flags = renderer.get_window_flags(window_);
     if flags & SDL_WINDOW_FULLSCREEN_DESKTOP != 0 {
-        SDL_ShowCursor(SDL_DISABLE);
+        renderer.show_cursor(false);
     } else {
-        SDL_ShowCursor(SDL_ENABLE);
+        renderer.show_cursor(true);
     }
 }
 
