@@ -295,6 +295,17 @@ pub unsafe extern "C" fn pop_main() {
         start_with_replay_file(temp);
     }
 
+    // Headless testing support -- not in the original C. Forces SDL's dummy video/audio
+    // drivers so the game runs its *real* startup path (window creation, event pump, audio
+    // init) with no real display or sound device needed, unlike `validate` mode, which
+    // skips window creation and most of the input path entirely (see the SdlPlatform
+    // event-pump startup panic this gap let through, fixed in commit 4a11238). Must be set
+    // before parse_grmode()/set_gr_mode() below, which is where SDL_Init actually runs.
+    if !cp(b"headless\0").is_null() {
+        std::env::set_var("SDL_VIDEODRIVER", "dummy");
+        std::env::set_var("SDL_AUDIODRIVER", "dummy");
+    }
+
     parse_grmode();
     current_target_surface = rect_sthg(onscreen_surface_, addr_of!(screen_rect));
     set_hc_pal();

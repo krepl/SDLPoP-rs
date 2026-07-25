@@ -34,11 +34,12 @@ fi
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 
-# SDL_VIDEODRIVER=dummy: no real display needed, still exercises real window/
-# renderer/event-pump creation (unlike validate mode, which skips the window
-# entirely). SDL_AUDIODRIVER=dummy: see run_harness.sh's comment on the same
-# flag -- avoids a ~30s ALSA probe hang on hosts without a working audio server.
-timeout --kill-after=2 "$DURATION" env SDL_AUDIODRIVER=dummy SDL_VIDEODRIVER=dummy "$BINARY" >"$out" 2>&1
+# `headless` (seg000.rs's pop_main, not part of the original C) sets SDL's dummy
+# video/audio drivers from inside the binary itself -- no real display needed, but
+# still exercises real window/renderer/event-pump creation (unlike validate mode,
+# which skips the window entirely). Self-contained: doesn't depend on whoever
+# launches this script remembering to set SDL_VIDEODRIVER/SDL_AUDIODRIVER first.
+timeout --kill-after=2 "$DURATION" "$BINARY" headless >"$out" 2>&1
 status=$?
 
 # timeout's exit codes for "still running when killed" (124 on SIGTERM, 137 if
