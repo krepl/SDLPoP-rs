@@ -5,6 +5,7 @@
 
 use std::os::raw::{c_int, c_short, c_char};
 use super::*;
+use crate::state::State;
 
 // File-local globals (defined in seg007.c, not exported via proto.h).
 static mut curmob_index: u16 = 0;
@@ -25,16 +26,16 @@ unsafe fn tbl_line_at(idx: usize) -> u16 {
 }
 
 // seg007:0000
-#[no_mangle]
-pub unsafe extern "C" fn process_trobs() {
+unsafe fn process_trobs_impl(state: &mut State) {
     let mut need_delete: u16 = 0;
-    if trobs_count == 0 { return; }
+    if *state.trobs_count() == 0 { return; }
     let mut index: u16 = 0;
-    while index < trobs_count as u16 {
-        trob = trobs[index as usize];
-        animate_tile();
-        trobs[index as usize].type_ = trob.type_;
-        if trob.type_ < 0 {
+    while index < *state.trobs_count() as u16 {
+        *state.trob() = state.trobs()[index as usize];
+        animate_tile_impl(state);
+        let t = state.trob().type_;
+        state.trobs()[index as usize].type_ = t;
+        if t < 0 {
             need_delete = 1;
         }
         index += 1;
@@ -42,151 +43,205 @@ pub unsafe extern "C" fn process_trobs() {
     if need_delete != 0 {
         let mut new_index: u16 = 0;
         let mut idx: u16 = 0;
-        while idx < trobs_count as u16 {
-            if trobs[idx as usize].type_ >= 0 {
-                trobs[new_index as usize] = trobs[idx as usize];
+        while idx < *state.trobs_count() as u16 {
+            if state.trobs()[idx as usize].type_ >= 0 {
+                state.trobs()[new_index as usize] = state.trobs()[idx as usize];
                 new_index += 1;
             }
             idx += 1;
         }
-        trobs_count = new_index as c_short;
+        *state.trobs_count() = new_index as c_short;
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn process_trobs() {
+    process_trobs_impl(&mut State);
 }
 
 // seg007:00AF
+unsafe fn animate_tile_impl(state: &mut State) {
+    get_room_address(state.trob().room as c_int);
+    let tp = state.trob().tilepos as c_short;
+    match get_curr_tile_impl(state, tp) {
+        t if t == tiles_tiles_19_torch as c_short
+          || t == tiles_tiles_30_torch_with_debris as c_short => animate_torch_impl(state),
+        t if t == tiles_tiles_6_closer as c_short
+          || t == tiles_tiles_15_opener as c_short => animate_button_impl(state),
+        t if t == tiles_tiles_2_spike as c_short => animate_spike_impl(state),
+        t if t == tiles_tiles_11_loose as c_short => animate_loose_impl(state),
+        t if t == tiles_tiles_0_empty as c_short => animate_empty_impl(state),
+        t if t == tiles_tiles_18_chomper as c_short => animate_chomper_impl(state),
+        t if t == tiles_tiles_4_gate as c_short => animate_door_impl(state),
+        t if t == tiles_tiles_16_level_door_left as c_short => animate_leveldoor_impl(state),
+        t if t == tiles_tiles_10_potion as c_short => animate_potion_impl(state),
+        t if t == tiles_tiles_22_sword as c_short => animate_sword_impl(state),
+        _ => { state.trob().type_ = -1; }
+    }
+    let tilepos = state.trob().tilepos as usize;
+    let cm = *state.curr_modifier();
+    *curr_room_modif.add(tilepos) = cm;
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn animate_tile() {
-    get_room_address(trob.room as c_int);
-    match get_curr_tile(trob.tilepos as c_short) {
-        t if t == tiles_tiles_19_torch as c_short
-          || t == tiles_tiles_30_torch_with_debris as c_short => animate_torch(),
-        t if t == tiles_tiles_6_closer as c_short
-          || t == tiles_tiles_15_opener as c_short => animate_button(),
-        t if t == tiles_tiles_2_spike as c_short => animate_spike(),
-        t if t == tiles_tiles_11_loose as c_short => animate_loose(),
-        t if t == tiles_tiles_0_empty as c_short => animate_empty(),
-        t if t == tiles_tiles_18_chomper as c_short => animate_chomper(),
-        t if t == tiles_tiles_4_gate as c_short => animate_door(),
-        t if t == tiles_tiles_16_level_door_left as c_short => animate_leveldoor(),
-        t if t == tiles_tiles_10_potion as c_short => animate_potion(),
-        t if t == tiles_tiles_22_sword as c_short => animate_sword(),
-        _ => { trob.type_ = -1; }
-    }
-    *curr_room_modif.add(trob.tilepos as usize) = curr_modifier;
+    animate_tile_impl(&mut State);
 }
 
 // seg007:0166
-#[no_mangle]
-pub unsafe extern "C" fn is_trob_in_drawn_room() -> c_short {
-    if trob.room as u16 != drawn_room {
-        trob.type_ = -1;
+unsafe fn is_trob_in_drawn_room_impl(state: &mut State) -> c_short {
+    if state.trob().room as u16 != *state.drawn_room() {
+        state.trob().type_ = -1;
         0
     } else {
         1
     }
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn is_trob_in_drawn_room() -> c_short {
+    is_trob_in_drawn_room_impl(&mut State)
+}
+
 // seg007:017E
+unsafe fn set_redraw_anim_right_impl(state: &mut State) {
+    let pos = get_trob_right_pos_in_drawn_room_impl(state);
+    set_redraw_anim_impl(state, pos, 1);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn set_redraw_anim_right() {
-    set_redraw_anim(get_trob_right_pos_in_drawn_room(), 1);
+    set_redraw_anim_right_impl(&mut State);
 }
 
 // seg007:018C
+unsafe fn set_redraw_anim_curr_impl(state: &mut State) {
+    let pos = get_trob_pos_in_drawn_room_impl(state);
+    set_redraw_anim_impl(state, pos, 1);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn set_redraw_anim_curr() {
-    set_redraw_anim(get_trob_pos_in_drawn_room(), 1);
+    set_redraw_anim_curr_impl(&mut State);
 }
 
 // seg007:019A
+unsafe fn redraw_at_trob_impl(state: &mut State) {
+    *state.redraw_height() = 63;
+    let tilepos = get_trob_pos_in_drawn_room_impl(state);
+    set_redraw_full_impl(state, tilepos, 1);
+    set_wipe_impl(state, tilepos, 1);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn redraw_at_trob() {
-    redraw_height = 63;
-    let tilepos = get_trob_pos_in_drawn_room();
-    set_redraw_full(tilepos, 1);
-    set_wipe(tilepos, 1);
+    redraw_at_trob_impl(&mut State);
 }
 
 // seg007:01C5
+unsafe fn redraw_21h_impl(state: &mut State) {
+    *state.redraw_height() = 0x21;
+    redraw_tile_height_impl(state);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn redraw_21h() {
-    redraw_height = 0x21;
-    redraw_tile_height();
+    redraw_21h_impl(&mut State);
 }
 
 // seg007:01D0
+unsafe fn redraw_11h_impl(state: &mut State) {
+    *state.redraw_height() = 0x11;
+    redraw_tile_height_impl(state);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn redraw_11h() {
-    redraw_height = 0x11;
-    redraw_tile_height();
+    redraw_11h_impl(&mut State);
 }
 
 // seg007:01DB
+unsafe fn redraw_20h_impl(state: &mut State) {
+    *state.redraw_height() = 0x20;
+    redraw_tile_height_impl(state);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn redraw_20h() {
-    redraw_height = 0x20;
-    redraw_tile_height();
+    redraw_20h_impl(&mut State);
 }
 
 // seg007:01E6
+unsafe fn draw_trob_impl(state: &mut State) {
+    let tilepos = get_trob_right_pos_in_drawn_room_impl(state);
+    set_redraw_anim_impl(state, tilepos, 1);
+    set_redraw_fore_impl(state, tilepos, 1);
+    let above = get_trob_right_above_pos_in_drawn_room_impl(state);
+    set_redraw_anim_impl(state, above, 1);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn draw_trob() {
-    let tilepos = get_trob_right_pos_in_drawn_room();
-    set_redraw_anim(tilepos, 1);
-    set_redraw_fore(tilepos, 1);
-    set_redraw_anim(get_trob_right_above_pos_in_drawn_room(), 1);
+    draw_trob_impl(&mut State);
 }
 
 // seg007:0218
+unsafe fn redraw_tile_height_impl(state: &mut State) {
+    let mut tilepos = get_trob_pos_in_drawn_room_impl(state);
+    set_redraw_full_impl(state, tilepos, 1);
+    set_wipe_impl(state, tilepos, 1);
+    tilepos = get_trob_right_pos_in_drawn_room_impl(state);
+    set_redraw_full_impl(state, tilepos, 1);
+    set_wipe_impl(state, tilepos, 1);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn redraw_tile_height() {
-    let mut tilepos = get_trob_pos_in_drawn_room();
-    set_redraw_full(tilepos, 1);
-    set_wipe(tilepos, 1);
-    tilepos = get_trob_right_pos_in_drawn_room();
-    set_redraw_full(tilepos, 1);
-    set_wipe(tilepos, 1);
+    redraw_tile_height_impl(&mut State);
 }
 
 // seg007:0258
-#[no_mangle]
-pub unsafe extern "C" fn get_trob_pos_in_drawn_room() -> c_short {
-    let mut tilepos = trob.tilepos as c_short;
-    if trob.room as u16 == room_A {
+unsafe fn get_trob_pos_in_drawn_room_impl(state: &mut State) -> c_short {
+    let mut tilepos = state.trob().tilepos as c_short;
+    if state.trob().room as u16 == *state.room_A() {
         if tilepos >= 20 && tilepos < 30 {
             tilepos = 19 - tilepos;
         } else {
             tilepos = 30;
         }
-    } else if trob.room as u16 != drawn_room {
+    } else if state.trob().room as u16 != *state.drawn_room() {
         tilepos = 30;
     }
     tilepos
 }
 
-// seg007:029D
 #[no_mangle]
-pub unsafe extern "C" fn get_trob_right_pos_in_drawn_room() -> c_short {
-    let mut tilepos = trob.tilepos as c_short;
-    if trob.room as u16 == drawn_room {
+pub unsafe extern "C" fn get_trob_pos_in_drawn_room() -> c_short {
+    get_trob_pos_in_drawn_room_impl(&mut State)
+}
+
+// seg007:029D
+unsafe fn get_trob_right_pos_in_drawn_room_impl(state: &mut State) -> c_short {
+    let mut tilepos = state.trob().tilepos as c_short;
+    if state.trob().room as u16 == *state.drawn_room() {
         if tilepos % 10 != 9 {
             tilepos += 1;
         } else {
             tilepos = 30;
         }
-    } else if trob.room as u16 == room_L {
+    } else if state.trob().room as u16 == *state.room_L() {
         if tilepos % 10 == 9 {
             tilepos -= 9;
         } else {
             tilepos = 30;
         }
-    } else if trob.room as u16 == room_A {
+    } else if state.trob().room as u16 == *state.room_A() {
         if tilepos >= 20 && tilepos < 29 {
             tilepos = 18 - tilepos; // 20..28 -> -2..-10
         } else {
             tilepos = 30;
         }
-    } else if trob.room as u16 == room_AL && tilepos == 29 {
+    } else if state.trob().room as u16 == *state.room_AL() && tilepos == 29 {
         tilepos = -1;
     } else {
         tilepos = 30;
@@ -194,11 +249,15 @@ pub unsafe extern "C" fn get_trob_right_pos_in_drawn_room() -> c_short {
     tilepos
 }
 
-// seg007:032C
 #[no_mangle]
-pub unsafe extern "C" fn get_trob_right_above_pos_in_drawn_room() -> c_short {
-    let mut tilepos = trob.tilepos as c_short;
-    if trob.room as u16 == drawn_room {
+pub unsafe extern "C" fn get_trob_right_pos_in_drawn_room() -> c_short {
+    get_trob_right_pos_in_drawn_room_impl(&mut State)
+}
+
+// seg007:032C
+unsafe fn get_trob_right_above_pos_in_drawn_room_impl(state: &mut State) -> c_short {
+    let mut tilepos = state.trob().tilepos as c_short;
+    if state.trob().room as u16 == *state.drawn_room() {
         if tilepos % 10 != 9 {
             if tilepos < 10 {
                 tilepos = -(tilepos + 2); // 0..8 -> -2..-10
@@ -208,7 +267,7 @@ pub unsafe extern "C" fn get_trob_right_above_pos_in_drawn_room() -> c_short {
         } else {
             tilepos = 30;
         }
-    } else if trob.room as u16 == room_L {
+    } else if state.trob().room as u16 == *state.room_L() {
         if tilepos == 9 {
             tilepos = -1;
         } else if tilepos % 10 == 9 {
@@ -216,13 +275,13 @@ pub unsafe extern "C" fn get_trob_right_above_pos_in_drawn_room() -> c_short {
         } else {
             tilepos = 30;
         }
-    } else if trob.room as u16 == room_B {
+    } else if state.trob().room as u16 == *state.room_B() {
         if tilepos < 9 {
             tilepos += 21;
         } else {
             tilepos = 30;
         }
-    } else if trob.room as u16 == room_BL && tilepos == 9 {
+    } else if state.trob().room as u16 == *state.room_BL() && tilepos == 9 {
         tilepos = 20;
     } else {
         tilepos = 30;
@@ -230,172 +289,210 @@ pub unsafe extern "C" fn get_trob_right_above_pos_in_drawn_room() -> c_short {
     tilepos
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn get_trob_right_above_pos_in_drawn_room() -> c_short {
+    get_trob_right_above_pos_in_drawn_room_impl(&mut State)
+}
+
 // seg007:03CF
+unsafe fn animate_torch_impl(state: &mut State) {
+    let trob_tilepos = state.trob().tilepos;
+    if state.trob().room as u16 == *state.drawn_room()
+        || (state.trob().room as u16 == *state.room_L() && (trob_tilepos % 10) == 9)
+    {
+        let cm = *state.curr_modifier();
+        *state.curr_modifier() = get_torch_frame(cm as c_short) as u8;
+        set_redraw_anim_right_impl(state);
+    } else {
+        state.trob().type_ = -1;
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn animate_torch() {
-    if trob.room as u16 == drawn_room
-        || (trob.room as u16 == room_L && (trob.tilepos % 10) == 9)
-    {
-        curr_modifier = get_torch_frame(curr_modifier as c_short) as u8;
-        set_redraw_anim_right();
-    } else {
-        trob.type_ = -1;
-    }
+    animate_torch_impl(&mut State);
 }
 
 // seg007:03E9
-#[no_mangle]
-pub unsafe extern "C" fn animate_potion() {
-    if trob.type_ >= 0 && is_trob_in_drawn_room() != 0 {
-        let type_bits = curr_modifier & 0xF8;
-        curr_modifier = bubble_next_frame((curr_modifier & 0x07) as c_short) as u8 | type_bits;
+unsafe fn animate_potion_impl(state: &mut State) {
+    if state.trob().type_ >= 0 && is_trob_in_drawn_room_impl(state) != 0 {
+        let type_bits = *state.curr_modifier() & 0xF8;
+        *state.curr_modifier() = bubble_next_frame((*state.curr_modifier() & 0x07) as c_short) as u8 | type_bits;
         // USE_COPYPROT is active
-        if current_level as u16 == 15 {
-            set_redraw_anim_curr();
+        if *state.current_level() as u16 == 15 {
+            set_redraw_anim_curr_impl(state);
             return;
         }
         // FIX_LOOSE_NEXT_TO_POTION is active
-        redraw_at_trob();
+        redraw_at_trob_impl(state);
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn animate_potion() {
+    animate_potion_impl(&mut State);
 }
 
 // seg007:0425
-#[no_mangle]
-pub unsafe extern "C" fn animate_sword() {
-    if is_trob_in_drawn_room() != 0 {
-        curr_modifier = curr_modifier.wrapping_sub(1);
-        if curr_modifier == 0 {
-            curr_modifier = (prandom(255) as u8 & 0x3F) + 0x28;
+unsafe fn animate_sword_impl(state: &mut State) {
+    if is_trob_in_drawn_room_impl(state) != 0 {
+        *state.curr_modifier() = state.curr_modifier().wrapping_sub(1);
+        if *state.curr_modifier() == 0 {
+            *state.curr_modifier() = (prandom(255) as u8 & 0x3F) + 0x28;
         }
         // FIX_LOOSE_NEXT_TO_POTION is active
-        redraw_at_trob();
+        redraw_at_trob_impl(state);
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn animate_sword() {
+    animate_sword_impl(&mut State);
 }
 
 // seg007:0448
-#[no_mangle]
-pub unsafe extern "C" fn animate_chomper() {
-    if trob.type_ >= 0 {
-        let blood = curr_modifier & 0x80;
-        let mut frame = (curr_modifier & 0x7F).wrapping_add(1);
+unsafe fn animate_chomper_impl(state: &mut State) {
+    if state.trob().type_ >= 0 {
+        let blood = *state.curr_modifier() & 0x80;
+        let mut frame = (*state.curr_modifier() & 0x7F).wrapping_add(1);
         if frame > (*custom).chomper_speed {
             frame = 1;
         }
-        curr_modifier = blood | frame;
+        *state.curr_modifier() = blood | frame;
         if frame == 2 {
             play_sound(soundids_sound_47_chomper as c_int);
         }
-        if (trob.room as u16 != drawn_room
-            || trob.tilepos / 10 != Kid.curr_row as u8
-            || (Kid.alive >= 0 && blood == 0))
-            && (curr_modifier & 0x7F) >= 6
+        let trob_room = state.trob().room;
+        let trob_tilepos = state.trob().tilepos;
+        if (trob_room as u16 != *state.drawn_room()
+            || trob_tilepos / 10 != state.Kid().curr_row as u8
+            || (state.Kid().alive >= 0 && blood == 0))
+            && (*state.curr_modifier() & 0x7F) >= 6
         {
-            trob.type_ = -1;
+            state.trob().type_ = -1;
         }
     }
-    if (curr_modifier & 0x7F) < 6 {
-        redraw_at_trob();
+    if (*state.curr_modifier() & 0x7F) < 6 {
+        redraw_at_trob_impl(state);
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn animate_chomper() {
+    animate_chomper_impl(&mut State);
 }
 
 // seg007:04D3
-#[no_mangle]
-pub unsafe extern "C" fn animate_spike() {
-    if trob.type_ >= 0 {
-        if curr_modifier == 0xFF { return; }
-        if curr_modifier & 0x80 != 0 {
-            curr_modifier = curr_modifier.wrapping_sub(1);
-            if curr_modifier & 0x7F != 0 { return; }
-            curr_modifier = 6;
+unsafe fn animate_spike_impl(state: &mut State) {
+    if state.trob().type_ >= 0 {
+        if *state.curr_modifier() == 0xFF { return; }
+        if *state.curr_modifier() & 0x80 != 0 {
+            *state.curr_modifier() = state.curr_modifier().wrapping_sub(1);
+            if *state.curr_modifier() & 0x7F != 0 { return; }
+            *state.curr_modifier() = 6;
         } else {
-            curr_modifier = curr_modifier.wrapping_add(1);
-            if curr_modifier == 5 {
-                curr_modifier = 0x8F;
-            } else if curr_modifier == 9 {
-                curr_modifier = 0;
-                trob.type_ = -1;
+            *state.curr_modifier() = state.curr_modifier().wrapping_add(1);
+            if *state.curr_modifier() == 5 {
+                *state.curr_modifier() = 0x8F;
+            } else if *state.curr_modifier() == 9 {
+                *state.curr_modifier() = 0;
+                state.trob().type_ = -1;
             }
         }
     }
-    redraw_21h();
+    redraw_21h_impl(state);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn animate_spike() {
+    animate_spike_impl(&mut State);
 }
 
 // seg007:0522
-#[no_mangle]
-pub unsafe extern "C" fn animate_door() {
-    let anim_type = trob.type_;
+unsafe fn animate_door_impl(state: &mut State) {
+    let anim_type = state.trob().type_;
     if anim_type >= 0 {
         if anim_type >= 3 {
             // closing fast
             if anim_type < 8 {
-                trob.type_ += 1;
+                state.trob().type_ += 1;
             }
-            let new_mod = curr_modifier as i16 - GATE_CLOSE_SPEEDS[trob.type_ as usize] as i16;
-            curr_modifier = new_mod as u8;
+            let t = state.trob().type_;
+            let new_mod = *state.curr_modifier() as i16 - GATE_CLOSE_SPEEDS[t as usize] as i16;
+            *state.curr_modifier() = new_mod as u8;
             if new_mod < 0 {
-                curr_modifier = 0;
-                trob.type_ = -1;
+                *state.curr_modifier() = 0;
+                state.trob().type_ = -1;
                 play_sound(soundids_sound_6_gate_closing_fast as c_int);
             }
-        } else if curr_modifier != 0xFF {
+        } else if *state.curr_modifier() != 0xFF {
             // 0xFF means permanently open
-            curr_modifier = curr_modifier.wrapping_add(DOOR_DELTA[anim_type as usize]);
+            *state.curr_modifier() = state.curr_modifier().wrapping_add(DOOR_DELTA[anim_type as usize]);
             if anim_type == 0 {
                 // closing
-                if curr_modifier != 0 {
-                    if curr_modifier < 188 && (curr_modifier & 3) == 3 {
-                        play_door_sound_if_visible(soundids_sound_4_gate_closing as c_int);
+                if *state.curr_modifier() != 0 {
+                    if *state.curr_modifier() < 188 && (*state.curr_modifier() & 3) == 3 {
+                        play_door_sound_if_visible_impl(state, soundids_sound_4_gate_closing as c_int);
                     }
                 } else {
-                    gate_stop();
+                    gate_stop_impl(state);
                 }
             } else {
                 // opening
-                if curr_modifier < 188 {
-                    if (curr_modifier & 7) == 0 {
+                if *state.curr_modifier() < 188 {
+                    if (*state.curr_modifier() & 7) == 0 {
                         play_sound(soundids_sound_5_gate_opening as c_int);
                     }
                 } else if anim_type < 2 {
                     // after regular open
-                    curr_modifier = 238;
-                    trob.type_ = 0; // closing
+                    *state.curr_modifier() = 238;
+                    state.trob().type_ = 0; // closing
                     play_sound(soundids_sound_7_gate_stop as c_int);
                 } else {
                     // after permanent open
-                    curr_modifier = 0xFF;
-                    gate_stop();
+                    *state.curr_modifier() = 0xFF;
+                    gate_stop_impl(state);
                 }
             }
         } else {
-            gate_stop();
+            gate_stop_impl(state);
         }
     }
-    draw_trob();
+    draw_trob_impl(state);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn animate_door() {
+    animate_door_impl(&mut State);
 }
 
 // seg007:05E3
+unsafe fn gate_stop_impl(state: &mut State) {
+    state.trob().type_ = -1;
+    play_door_sound_if_visible_impl(state, soundids_sound_7_gate_stop as c_int);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn gate_stop() {
-    trob.type_ = -1;
-    play_door_sound_if_visible(soundids_sound_7_gate_stop as c_int);
+    gate_stop_impl(&mut State);
 }
 
 // seg007:05F1
-#[no_mangle]
-pub unsafe extern "C" fn animate_leveldoor() {
-    let trob_type = trob.type_;
-    if trob.type_ >= 0 {
+unsafe fn animate_leveldoor_impl(state: &mut State) {
+    let trob_type = state.trob().type_;
+    if state.trob().type_ >= 0 {
         if trob_type >= 3 {
             // closing
-            trob.type_ += 1;
-            curr_modifier = curr_modifier.wrapping_sub(
-                LEVELDOOR_CLOSE_SPEEDS[(trob.type_ - 3) as usize],
+            state.trob().type_ += 1;
+            let t = state.trob().type_;
+            *state.curr_modifier() = state.curr_modifier().wrapping_sub(
+                LEVELDOOR_CLOSE_SPEEDS[(t - 3) as usize],
             );
-            if (curr_modifier as i8) < 0 {
-                curr_modifier = 0;
-                trob.type_ = -1;
+            if (*state.curr_modifier() as i8) < 0 {
+                *state.curr_modifier() = 0;
+                state.trob().type_ = -1;
                 play_sound(soundids_sound_14_leveldoor_closing as c_int);
-            } else if trob.type_ == 4
+            } else if state.trob().type_ == 4
                 && (sound_flags & soundflags_sfDigi as u8) != 0
             {
                 *core::ptr::addr_of_mut!(sound_interruptible)
@@ -405,16 +502,16 @@ pub unsafe extern "C" fn animate_leveldoor() {
             }
         } else {
             // opening
-            curr_modifier = curr_modifier.wrapping_add(1);
-            if curr_modifier >= 43 {
-                trob.type_ = -1;
+            *state.curr_modifier() = state.curr_modifier().wrapping_add(1);
+            if *state.curr_modifier() >= 43 {
+                state.trob().type_ = -1;
                 // FIX_FEATHER_INTERRUPTED_BY_LEVELDOOR is active
-                if !((*fixes).fix_feather_interrupted_by_leveldoor != 0 && is_feather_fall != 0) {
+                if !((*fixes).fix_feather_interrupted_by_leveldoor != 0 && *state.is_feather_fall() != 0) {
                     stop_sounds();
                 }
-                if leveldoor_open == 0 || leveldoor_open == 2 {
-                    leveldoor_open = 1;
-                    if current_level as u16 == (*custom).mirror_level as u16 {
+                if *state.leveldoor_open() == 0 || *state.leveldoor_open() == 2 {
+                    *state.leveldoor_open() = 1;
+                    if *state.current_level() as u16 == (*custom).mirror_level as u16 {
                         get_tile(
                             (*custom).mirror_room as c_int,
                             (*custom).mirror_column as c_int,
@@ -431,7 +528,12 @@ pub unsafe extern "C" fn animate_leveldoor() {
             }
         }
     }
-    set_redraw_anim_right();
+    set_redraw_anim_right_impl(state);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn animate_leveldoor() {
+    animate_leveldoor_impl(&mut State);
 }
 
 // seg007:06AD
@@ -459,124 +561,169 @@ pub unsafe extern "C" fn get_torch_frame(curr: c_short) -> c_short {
 }
 
 // seg007:070A
-#[no_mangle]
-pub unsafe extern "C" fn set_redraw_anim(tilepos: c_short, frames: u8) {
+unsafe fn set_redraw_anim_impl(state: &mut State, tilepos: c_short, frames: u8) {
     if tilepos < 30 {
         if tilepos < 0 {
             let tp = tilepos + 1;
-            redraw_frames_above[(-tp) as usize] = frames;
+            state.redraw_frames_above()[(-tp) as usize] = frames;
         } else {
-            redraw_frames_anim[tilepos as usize] = frames;
+            state.redraw_frames_anim()[tilepos as usize] = frames;
         }
     }
 }
 
-// seg007:0738
 #[no_mangle]
-pub unsafe extern "C" fn set_redraw2(tilepos: c_short, frames: u8) {
+pub unsafe extern "C" fn set_redraw_anim(tilepos: c_short, frames: u8) {
+    set_redraw_anim_impl(&mut State, tilepos, frames);
+}
+
+// seg007:0738
+unsafe fn set_redraw2_impl(state: &mut State, tilepos: c_short, frames: u8) {
     if tilepos < 30 {
         if tilepos < 0 {
             let mut idx = (-tilepos) as usize - 1;
             if idx > 9 { idx = 9; }
-            redraw_frames_above[idx] = frames;
+            state.redraw_frames_above()[idx] = frames;
         } else {
-            redraw_frames2[tilepos as usize] = frames;
+            state.redraw_frames2()[tilepos as usize] = frames;
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn set_redraw2(tilepos: c_short, frames: u8) {
+    set_redraw2_impl(&mut State, tilepos, frames);
 }
 
 // seg007:0766
-#[no_mangle]
-pub unsafe extern "C" fn set_redraw_floor_overlay(tilepos: c_short, frames: u8) {
+unsafe fn set_redraw_floor_overlay_impl(state: &mut State, tilepos: c_short, frames: u8) {
     if tilepos < 30 {
         if tilepos < 0 {
             let tp = tilepos + 1;
-            redraw_frames_above[(-tp) as usize] = frames;
+            state.redraw_frames_above()[(-tp) as usize] = frames;
         } else {
-            redraw_frames_floor_overlay[tilepos as usize] = frames;
+            state.redraw_frames_floor_overlay()[tilepos as usize] = frames;
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn set_redraw_floor_overlay(tilepos: c_short, frames: u8) {
+    set_redraw_floor_overlay_impl(&mut State, tilepos, frames);
 }
 
 // seg007:0794
-#[no_mangle]
-pub unsafe extern "C" fn set_redraw_full(tilepos: c_short, frames: u8) {
+unsafe fn set_redraw_full_impl(state: &mut State, tilepos: c_short, frames: u8) {
     if tilepos < 30 {
         if tilepos < 0 {
             let tp = tilepos + 1;
-            redraw_frames_above[(-tp) as usize] = frames;
+            state.redraw_frames_above()[(-tp) as usize] = frames;
         } else {
-            redraw_frames_full[tilepos as usize] = frames;
+            state.redraw_frames_full()[tilepos as usize] = frames;
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn set_redraw_full(tilepos: c_short, frames: u8) {
+    set_redraw_full_impl(&mut State, tilepos, frames);
 }
 
 // seg007:07C2
+unsafe fn set_redraw_fore_impl(state: &mut State, tilepos: c_short, frames: u8) {
+    if tilepos < 30 && tilepos >= 0 {
+        state.redraw_frames_fore()[tilepos as usize] = frames;
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn set_redraw_fore(tilepos: c_short, frames: u8) {
-    if tilepos < 30 && tilepos >= 0 {
-        redraw_frames_fore[tilepos as usize] = frames;
-    }
+    set_redraw_fore_impl(&mut State, tilepos, frames);
 }
 
 // seg007:07DF
-#[no_mangle]
-pub unsafe extern "C" fn set_wipe(tilepos: c_short, frames: u8) {
+unsafe fn set_wipe_impl(state: &mut State, tilepos: c_short, frames: u8) {
     if tilepos < 30 && tilepos >= 0 {
         let idx = tilepos as usize;
-        if wipe_frames[idx] != 0 {
-            redraw_height = (wipe_heights[idx] as i16).max(redraw_height);
+        if state.wipe_frames()[idx] != 0 {
+            *state.redraw_height() = (state.wipe_heights()[idx] as i16).max(*state.redraw_height());
         }
-        wipe_heights[idx] = redraw_height as i8;
-        wipe_frames[idx] = frames;
+        let rh = *state.redraw_height();
+        state.wipe_heights()[idx] = rh as i8;
+        state.wipe_frames()[idx] = frames;
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn set_wipe(tilepos: c_short, frames: u8) {
+    set_wipe_impl(&mut State, tilepos, frames);
 }
 
 // seg007:081E
+unsafe fn start_anim_torch_impl(state: &mut State, room: c_short, tilepos: c_short) {
+    *curr_room_modif.add(tilepos as usize) = prandom(8) as u8;
+    add_trob_impl(state, room as u8, tilepos as u8, 1);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn start_anim_torch(room: c_short, tilepos: c_short) {
-    *curr_room_modif.add(tilepos as usize) = prandom(8) as u8;
-    add_trob(room as u8, tilepos as u8, 1);
+    start_anim_torch_impl(&mut State, room, tilepos);
 }
 
 // seg007:0847
-#[no_mangle]
-pub unsafe extern "C" fn start_anim_potion(room: c_short, tilepos: c_short) {
+unsafe fn start_anim_potion_impl(state: &mut State, room: c_short, tilepos: c_short) {
     let m = *curr_room_modif.add(tilepos as usize);
     *curr_room_modif.add(tilepos as usize) = (m & 0xF8) | (prandom(6) as u8 + 1);
-    add_trob(room as u8, tilepos as u8, 1);
+    add_trob_impl(state, room as u8, tilepos as u8, 1);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn start_anim_potion(room: c_short, tilepos: c_short) {
+    start_anim_potion_impl(&mut State, room, tilepos);
 }
 
 // seg007:087C
+unsafe fn start_anim_sword_impl(state: &mut State, room: c_short, tilepos: c_short) {
+    *curr_room_modif.add(tilepos as usize) = prandom(0xFF) as u8 & 0x1F;
+    add_trob_impl(state, room as u8, tilepos as u8, 1);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn start_anim_sword(room: c_short, tilepos: c_short) {
-    *curr_room_modif.add(tilepos as usize) = prandom(0xFF) as u8 & 0x1F;
-    add_trob(room as u8, tilepos as u8, 1);
+    start_anim_sword_impl(&mut State, room, tilepos);
 }
 
 // seg007:08A7
-#[no_mangle]
-pub unsafe extern "C" fn start_anim_chomper(room: c_short, tilepos: c_short, modifier: u8) {
+unsafe fn start_anim_chomper_impl(state: &mut State, room: c_short, tilepos: c_short, modifier: u8) {
     let old_modifier = *curr_room_modif.add(tilepos as usize);
     if old_modifier == 0 || old_modifier >= 6 {
         *curr_room_modif.add(tilepos as usize) = modifier;
-        add_trob(room as u8, tilepos as u8, 1);
+        add_trob_impl(state, room as u8, tilepos as u8, 1);
     }
 }
 
-// seg007:08E3
 #[no_mangle]
-pub unsafe extern "C" fn start_anim_spike(room: c_short, tilepos: c_short) {
+pub unsafe extern "C" fn start_anim_chomper(room: c_short, tilepos: c_short, modifier: u8) {
+    start_anim_chomper_impl(&mut State, room, tilepos, modifier);
+}
+
+// seg007:08E3
+unsafe fn start_anim_spike_impl(state: &mut State, room: c_short, tilepos: c_short) {
     let old_modifier = *curr_room_modif.add(tilepos as usize) as i8;
     if old_modifier <= 0 {
         if old_modifier == 0 {
-            add_trob(room as u8, tilepos as u8, 1);
+            add_trob_impl(state, room as u8, tilepos as u8, 1);
             play_sound(soundids_sound_49_spikes as c_int);
         } else if old_modifier != -1i8 {
             // 0xFF (= -1 as i8) means disabled spike
             *curr_room_modif.add(tilepos as usize) = 0x8F;
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn start_anim_spike(room: c_short, tilepos: c_short) {
+    start_anim_spike_impl(&mut State, room, tilepos);
 }
 
 // seg007:092C
@@ -628,8 +775,7 @@ pub unsafe extern "C" fn trigger_1(
 }
 
 // seg007:09E5
-#[no_mangle]
-pub unsafe extern "C" fn do_trigger_list(mut index: c_short, button_type: c_short) {
+unsafe fn do_trigger_list_impl(state: &mut State, mut index: c_short, button_type: c_short) {
     loop {
         let room = get_doorlink_room(index) as u16;
         get_room_address(room as c_int);
@@ -637,40 +783,51 @@ pub unsafe extern "C" fn do_trigger_list(mut index: c_short, button_type: c_shor
         let target_type = (*curr_room_tiles.add(tilepos as usize) & 0x1F) as c_short;
         let trigger_result = trigger_1(target_type, room as c_short, tilepos, button_type);
         if trigger_result >= 0 {
-            add_trob(room as u8, tilepos as u8, trigger_result as i8);
+            add_trob_impl(state, room as u8, tilepos as u8, trigger_result as i8);
         }
         if get_doorlink_next(index) == 0 { break; }
         index += 1;
     }
 }
 
-// seg007:0A5A
 #[no_mangle]
-pub unsafe extern "C" fn add_trob(room: u8, tilepos: u8, type_: i8) {
-    if trobs_count as u32 >= TROBS_MAX {
+pub unsafe extern "C" fn do_trigger_list(index: c_short, button_type: c_short) {
+    do_trigger_list_impl(&mut State, index, button_type);
+}
+
+// seg007:0A5A
+unsafe fn add_trob_impl(state: &mut State, room: u8, tilepos: u8, type_: i8) {
+    if *state.trobs_count() as u32 >= TROBS_MAX {
         show_dialog(b"Trobs Overflow\0".as_ptr() as *const c_char);
         return;
     }
-    trob.room = room;
-    trob.tilepos = tilepos;
-    trob.type_ = type_;
-    let found = find_trob();
+    state.trob().room = room;
+    state.trob().tilepos = tilepos;
+    state.trob().type_ = type_;
+    let found = find_trob_impl(state);
     if found == -1 {
-        if trobs_count as u32 == TROBS_MAX { return; }
-        trobs[trobs_count as usize] = trob;
-        trobs_count += 1;
+        if *state.trobs_count() as u32 == TROBS_MAX { return; }
+        let t = *state.trob();
+        let tc = *state.trobs_count();
+        state.trobs()[tc as usize] = t;
+        *state.trobs_count() += 1;
     } else {
-        trobs[found as usize].type_ = trob.type_;
+        let t = state.trob().type_;
+        state.trobs()[found as usize].type_ = t;
     }
 }
 
-// seg007:0ACA
 #[no_mangle]
-pub unsafe extern "C" fn find_trob() -> c_short {
+pub unsafe extern "C" fn add_trob(room: u8, tilepos: u8, type_: i8) {
+    add_trob_impl(&mut State, room, tilepos, type_);
+}
+
+// seg007:0ACA
+unsafe fn find_trob_impl(state: &mut State) -> c_short {
     let mut index: c_short = 0;
-    while index < trobs_count {
-        if trobs[index as usize].tilepos == trob.tilepos
-            && trobs[index as usize].room == trob.room
+    while index < *state.trobs_count() {
+        if state.trobs()[index as usize].tilepos == state.trob().tilepos
+            && state.trobs()[index as usize].room == state.trob().room
         {
             return index;
         }
@@ -679,82 +836,114 @@ pub unsafe extern "C" fn find_trob() -> c_short {
     -1
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn find_trob() -> c_short {
+    find_trob_impl(&mut State)
+}
+
 // seg007:0B0A
+unsafe fn clear_tile_wipes_impl(state: &mut State) {
+    *state.redraw_frames_full() = [0u8; 30];
+    *state.wipe_frames() = [0u8; 30];
+    *state.wipe_heights() = [0i8; 30];
+    *state.redraw_frames_anim() = [0u8; 30];
+    *state.redraw_frames_fore() = [0u8; 30];
+    *state.redraw_frames2() = [0u8; 30];
+    *state.redraw_frames_floor_overlay() = [0u8; 30];
+    tile_object_redraw = [0u8; 30];
+    *state.redraw_frames_above() = [0u8; 10];
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn clear_tile_wipes() {
-    redraw_frames_full = [0u8; 30];
-    wipe_frames = [0u8; 30];
-    wipe_heights = [0i8; 30];
-    redraw_frames_anim = [0u8; 30];
-    redraw_frames_fore = [0u8; 30];
-    redraw_frames2 = [0u8; 30];
-    redraw_frames_floor_overlay = [0u8; 30];
-    tile_object_redraw = [0u8; 30];
-    redraw_frames_above = [0u8; 10];
+    clear_tile_wipes_impl(&mut State);
 }
 
 // seg007:0BB6
+unsafe fn get_doorlink_timer_impl(state: &mut State, index: c_short) -> c_short {
+    (*state.doorlink2_ad().add(index as usize) & 0x1F) as c_short
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn get_doorlink_timer(index: c_short) -> c_short {
-    (*doorlink2_ad.add(index as usize) & 0x1F) as c_short
+    get_doorlink_timer_impl(&mut State, index)
 }
 
 // seg007:0BCD
-#[no_mangle]
-pub unsafe extern "C" fn set_doorlink_timer(index: c_short, value: u8) -> c_short {
-    let p = doorlink2_ad.add(index as usize);
+unsafe fn set_doorlink_timer_impl(state: &mut State, index: c_short, value: u8) -> c_short {
+    let p = state.doorlink2_ad().add(index as usize);
     *p = (*p & 0xE0) | (value & 0x1F);
     *p as c_short
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn set_doorlink_timer(index: c_short, value: u8) -> c_short {
+    set_doorlink_timer_impl(&mut State, index, value)
+}
+
 // seg007:0BF2
+unsafe fn get_doorlink_tile_impl(state: &mut State, index: c_short) -> c_short {
+    (*state.doorlink1_ad().add(index as usize) & 0x1F) as c_short
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn get_doorlink_tile(index: c_short) -> c_short {
-    (*doorlink1_ad.add(index as usize) & 0x1F) as c_short
+    get_doorlink_tile_impl(&mut State, index)
 }
 
 // seg007:0C09
+unsafe fn get_doorlink_next_impl(state: &mut State, index: c_short) -> c_short {
+    ((*state.doorlink1_ad().add(index as usize) & 0x80) == 0) as c_short
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn get_doorlink_next(index: c_short) -> c_short {
-    ((*doorlink1_ad.add(index as usize) & 0x80) == 0) as c_short
+    get_doorlink_next_impl(&mut State, index)
 }
 
 // seg007:0C26
-#[no_mangle]
-pub unsafe extern "C" fn get_doorlink_room(index: c_short) -> c_short {
-    let b1 = *doorlink1_ad.add(index as usize);
-    let b2 = *doorlink2_ad.add(index as usize);
+unsafe fn get_doorlink_room_impl(state: &mut State, index: c_short) -> c_short {
+    let b1 = *state.doorlink1_ad().add(index as usize);
+    let b2 = *state.doorlink2_ad().add(index as usize);
     (((b1 & 0x60) >> 5) + ((b2 & 0xE0) >> 3)) as c_short
 }
 
-// seg007:0C53
 #[no_mangle]
-pub unsafe extern "C" fn trigger_button(playsound: c_int, mut button_type: c_int, modifier: c_int) {
-    get_curr_tile(curr_tilepos as c_short);
+pub unsafe extern "C" fn get_doorlink_room(index: c_short) -> c_short {
+    get_doorlink_room_impl(&mut State, index)
+}
+
+// seg007:0C53
+unsafe fn trigger_button_impl(state: &mut State, playsound: c_int, mut button_type: c_int, modifier: c_int) {
+    get_curr_tile_impl(state, curr_tilepos as c_short);
     if button_type == 0 {
         button_type = curr_tile as c_int;
     }
-    let modifier = if modifier == -1 { curr_modifier as c_int } else { modifier };
-    let link_timer = get_doorlink_timer(modifier as c_short) as i8;
+    let modifier = if modifier == -1 { *state.curr_modifier() as c_int } else { modifier };
+    let link_timer = get_doorlink_timer_impl(state, modifier as c_short) as i8;
     if link_timer != 0x1F {
-        set_doorlink_timer(modifier as c_short, 5);
+        set_doorlink_timer_impl(state, modifier as c_short, 5);
         if link_timer < 2 {
-            add_trob(curr_room as u8, curr_tilepos, 1);
-            redraw_11h();
-            is_guard_notice = 1;
+            add_trob_impl(state, curr_room as u8, curr_tilepos, 1);
+            redraw_11h_impl(state);
+            *state.is_guard_notice() = 1;
             if playsound != 0 {
                 play_sound(soundids_sound_3_button_pressed as c_int);
             }
         }
-        do_trigger_list(modifier as c_short, button_type as c_short);
+        do_trigger_list_impl(state, modifier as c_short, button_type as c_short);
     }
 }
 
-// seg007:0CD9
 #[no_mangle]
-pub unsafe extern "C" fn died_on_button() {
-    let mut button_type = get_curr_tile(curr_tilepos as c_short) as c_int;
-    let modifier = curr_modifier as c_int;
+pub unsafe extern "C" fn trigger_button(playsound: c_int, button_type: c_int, modifier: c_int) {
+    trigger_button_impl(&mut State, playsound, button_type, modifier);
+}
+
+// seg007:0CD9
+unsafe fn died_on_button_impl(state: &mut State) {
+    let mut button_type = get_curr_tile_impl(state, curr_tilepos as c_short) as c_int;
+    let modifier = *state.curr_modifier() as c_int;
     if curr_tile == tiles_tiles_15_opener as u8 {
         *curr_room_tiles.add(curr_tilepos as usize) = tiles_tiles_1_floor as u8;
         *curr_room_modif.add(curr_tilepos as usize) = 0;
@@ -762,103 +951,132 @@ pub unsafe extern "C" fn died_on_button() {
     } else {
         *curr_room_tiles.add(curr_tilepos as usize) = tiles_tiles_5_stuck as u8;
     }
-    trigger_button(1, button_type, modifier);
+    trigger_button_impl(state, 1, button_type, modifier);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn died_on_button() {
+    died_on_button_impl(&mut State);
 }
 
 // seg007:0D3A
-#[no_mangle]
-pub unsafe extern "C" fn animate_button() {
-    if trob.type_ >= 0 {
-        let timer = get_doorlink_timer(curr_modifier as c_short) as i16 - 1;
-        set_doorlink_timer(curr_modifier as c_short, timer as u8);
+unsafe fn animate_button_impl(state: &mut State) {
+    if state.trob().type_ >= 0 {
+        let cm = *state.curr_modifier();
+        let timer = get_doorlink_timer_impl(state, cm as c_short) as i16 - 1;
+        let cm = *state.curr_modifier();
+        set_doorlink_timer_impl(state, cm as c_short, timer as u8);
         if timer < 2 {
-            trob.type_ = -1;
-            redraw_11h();
+            state.trob().type_ = -1;
+            redraw_11h_impl(state);
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn animate_button() {
+    animate_button_impl(&mut State);
 }
 
 // seg007:0D72
+unsafe fn start_level_door_impl(state: &mut State, room: c_short, tilepos: c_short) {
+    *curr_room_modif.add(tilepos as usize) = 43; // start fully open
+    add_trob_impl(state, room as u8, tilepos as u8, 3);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn start_level_door(room: c_short, tilepos: c_short) {
-    *curr_room_modif.add(tilepos as usize) = 43; // start fully open
-    add_trob(room as u8, tilepos as u8, 3);
+    start_level_door_impl(&mut State, room, tilepos);
 }
 
 // seg007:0D93
+unsafe fn animate_empty_impl(state: &mut State) {
+    state.trob().type_ = -1;
+    redraw_20h_impl(state);
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn animate_empty() {
-    trob.type_ = -1;
-    redraw_20h();
+    animate_empty_impl(&mut State);
 }
 
 // seg007:0D9D
-#[no_mangle]
-pub unsafe extern "C" fn animate_loose() {
-    let anim_type = trob.type_;
+unsafe fn animate_loose_impl(state: &mut State) {
+    let anim_type = state.trob().type_;
     if anim_type >= 0 {
-        curr_modifier = curr_modifier.wrapping_add(1);
-        if curr_modifier & 0x80 != 0 {
+        *state.curr_modifier() = state.curr_modifier().wrapping_add(1);
+        if *state.curr_modifier() & 0x80 != 0 {
             // just shaking — don't stop on loose_tiles_level
-            if current_level as u16 == (*custom).loose_tiles_level as u16 { return; }
-            if curr_modifier >= 0x84 {
-                curr_modifier = 0;
-                trob.type_ = -1;
+            if *state.current_level() as u16 == (*custom).loose_tiles_level as u16 { return; }
+            if *state.curr_modifier() >= 0x84 {
+                *state.curr_modifier() = 0;
+                state.trob().type_ = -1;
             }
-            loose_shake((curr_modifier == 0) as c_int);
+            let cm = *state.curr_modifier();
+            loose_shake_impl(state, (cm == 0) as c_int);
         } else {
             // something is on the floor — should it fall?
-            if curr_modifier >= (*custom).loose_floor_delay {
-                let room = trob.room;
-                let tilepos = trob.tilepos;
+            if *state.curr_modifier() >= (*custom).loose_floor_delay {
+                let room = state.trob().room;
+                let tilepos = state.trob().tilepos;
                 // FIX_DROP_2_ROOMS_CLIMBING_LOOSE_TILE is active
+                let kid_room = state.Kid().room;
                 if (*fixes).fix_drop_2_rooms_climbing_loose_tile != 0
-                    && room as u16 == level.roomlinks[Kid.room as usize - 1].up as u16
+                    && room as u16 == state.level().roomlinks[kid_room as usize - 1].up as u16
                     && tilepos / 10 == 2
-                    && Kid.curr_row == 0
-                    && Kid.curr_col == (tilepos % 10) as i8
-                    && Kid.frame >= frameids_frame_135_climbing_1 as u8
-                    && Kid.frame < frameids_frame_141_climbing_7 as u8
+                    && state.Kid().curr_row == 0
+                    && state.Kid().curr_col == (tilepos % 10) as i8
+                    && state.Kid().frame >= frameids_frame_135_climbing_1 as u8
+                    && state.Kid().frame < frameids_frame_141_climbing_7 as u8
                 {
-                    loose_shake(0);
+                    loose_shake_impl(state, 0);
                 } else {
-                    curr_modifier = remove_loose(room as c_int, tilepos as c_int) as u8;
-                    trob.type_ = -1;
-                    curmob.xh = (tilepos % 10) << 2;
+                    *state.curr_modifier() = remove_loose(room as c_int, tilepos as c_int) as u8;
+                    state.trob().type_ = -1;
+                    state.curmob().xh = (tilepos % 10) << 2;
                     let row = tilepos / 10;
-                    curmob.y = Y_LOOSE_LAND[(row + 1) as usize] as u8;
-                    curmob.room = room;
-                    curmob.speed = 0;
-                    curmob.type_ = 0;
-                    curmob.row = row;
-                    add_mob();
+                    state.curmob().y = Y_LOOSE_LAND[(row + 1) as usize] as u8;
+                    state.curmob().room = room;
+                    state.curmob().speed = 0;
+                    state.curmob().type_ = 0;
+                    state.curmob().row = row;
+                    add_mob_impl(state);
                 }
             } else {
-                loose_shake(0);
+                loose_shake_impl(state, 0);
             }
         }
     }
-    redraw_20h();
+    redraw_20h_impl(state);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn animate_loose() {
+    animate_loose_impl(&mut State);
 }
 
 // seg007:0E55
-#[no_mangle]
-pub unsafe extern "C" fn loose_shake(arg_0: c_int) {
-    if arg_0 != 0 || LOOSE_SOUND[(curr_modifier & 0x7F) as usize] != 0 {
+unsafe fn loose_shake_impl(state: &mut State, arg_0: c_int) {
+    if arg_0 != 0 || LOOSE_SOUND[(*state.curr_modifier() & 0x7F) as usize] != 0 {
         let mut sound_id: u32;
         loop {
             sound_id = prandom(2) as u32 + soundids_sound_20_loose_shake_1;
-            if sound_id != last_loose_sound as u32 { break; }
+            if sound_id != *state.last_loose_sound() as u32 { break; }
         }
         // USE_REPLAY: skip prandom call if replaying with old version
-        if !(replaying != 0 && g_deprecation_number < 2) {
+        if !(replaying != 0 && *state.g_deprecation_number() < 2) {
             prandom(2);
         }
         if sound_flags & soundflags_sfDigi as u8 != 0 {
-            last_loose_sound = sound_id as u16;
+            *state.last_loose_sound() = sound_id as u16;
         }
         play_sound(sound_id as c_int);
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn loose_shake(arg_0: c_int) {
+    loose_shake_impl(&mut State, arg_0);
 }
 
 // seg007:0EB8
@@ -881,21 +1099,23 @@ pub unsafe extern "C" fn make_loose_fall(modifier: u8) {
 }
 
 // seg007:0F13
-#[no_mangle]
-pub unsafe extern "C" fn start_chompers() {
+unsafe fn start_chompers_impl(state: &mut State) {
     let mut timing: c_short = 15;
-    if (Char.curr_row as u8) < 3 {
-        get_room_address(Char.room as c_int);
+    if (state.Char().curr_row as u8) < 3 {
+        get_room_address(state.Char().room as c_int);
         let mut column: c_short = 0;
-        let mut tilepos = tbl_line_at(Char.curr_row as usize) as c_short;
+        let mut tilepos = tbl_line_at(state.Char().curr_row as usize) as c_short;
         while column < 10 {
-            if get_curr_tile(tilepos) == tiles_tiles_18_chomper as c_short {
-                let modifier = curr_modifier & 0x7F;
+            if get_curr_tile_impl(state, tilepos) == tiles_tiles_18_chomper as c_short {
+                let modifier = *state.curr_modifier() & 0x7F;
                 if modifier == 0 || modifier >= 6 {
-                    start_anim_chomper(
-                        Char.room as c_short,
+                    let char_room = state.Char().room;
+                    let cm = *state.curr_modifier();
+                    start_anim_chomper_impl(
+                        state,
+                        char_room as c_short,
                         tilepos,
-                        timing as u8 | (curr_modifier & 0x80),
+                        timing as u8 | (cm & 0x80),
                     );
                     timing = next_chomper_timing(timing as u8) as c_short;
                 }
@@ -904,6 +1124,11 @@ pub unsafe extern "C" fn start_chompers() {
             tilepos += 1;
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn start_chompers() {
+    start_chompers_impl(&mut State);
 }
 
 // seg007:0F9A
@@ -918,130 +1143,168 @@ pub unsafe extern "C" fn next_chomper_timing(mut timing: u8) -> c_int {
 }
 
 // seg007:0FB4
-#[no_mangle]
-pub unsafe extern "C" fn loose_make_shake() {
+unsafe fn loose_make_shake_impl(state: &mut State) {
     if *curr_room_modif.add(curr_tilepos as usize) == 0
-        && current_level as u16 != (*custom).loose_tiles_level as u16
+        && *state.current_level() as u16 != (*custom).loose_tiles_level as u16
     {
         *curr_room_modif.add(curr_tilepos as usize) = 0x80;
-        add_trob(curr_room as u8, curr_tilepos, 1);
+        add_trob_impl(state, curr_room as u8, curr_tilepos, 1);
     }
 }
 
-// seg007:0FE0
 #[no_mangle]
-pub unsafe extern "C" fn do_knock(room: c_int, knock_row: c_int) {
+pub unsafe extern "C" fn loose_make_shake() {
+    loose_make_shake_impl(&mut State);
+}
+
+// seg007:0FE0
+unsafe fn do_knock_impl(state: &mut State, room: c_int, knock_row: c_int) {
     let mut tcol: c_short = 0;
     while tcol < 10 {
         if get_tile(room, tcol as c_int, knock_row) == tiles_tiles_11_loose as c_int {
-            loose_make_shake();
+            loose_make_shake_impl(state);
         }
         tcol += 1;
     }
 }
 
-// seg007:1010
 #[no_mangle]
-pub unsafe extern "C" fn add_mob() {
-    if mobs_count >= 14 {
+pub unsafe extern "C" fn do_knock(room: c_int, knock_row: c_int) {
+    do_knock_impl(&mut State, room, knock_row);
+}
+
+// seg007:1010
+unsafe fn add_mob_impl(state: &mut State) {
+    if *state.mobs_count() >= 14 {
         show_dialog(b"Mobs Overflow\0".as_ptr() as *const c_char);
         return;
     }
-    mobs[mobs_count as usize] = curmob;
-    mobs_count += 1;
+    let cm = *state.curmob();
+    let mc = *state.mobs_count();
+    state.mobs()[mc as usize] = cm;
+    *state.mobs_count() += 1;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn add_mob() {
+    add_mob_impl(&mut State);
 }
 
 // seg007:1041
-#[no_mangle]
-pub unsafe extern "C" fn get_curr_tile(tilepos: c_short) -> c_short {
-    curr_modifier = *curr_room_modif.add(tilepos as usize);
+unsafe fn get_curr_tile_impl(state: &mut State, tilepos: c_short) -> c_short {
+    *state.curr_modifier() = *curr_room_modif.add(tilepos as usize);
     curr_tile = *curr_room_tiles.add(tilepos as usize) & 0x1F;
     curr_tile as c_short
 }
 
-// seg007:1063
 #[no_mangle]
-pub unsafe extern "C" fn do_mobs() {
-    let n_mobs = mobs_count;
+pub unsafe extern "C" fn get_curr_tile(tilepos: c_short) -> c_short {
+    get_curr_tile_impl(&mut State, tilepos)
+}
+
+// seg007:1063
+unsafe fn do_mobs_impl(state: &mut State) {
+    let n_mobs = *state.mobs_count();
     curmob_index = 0;
     while n_mobs > curmob_index as c_short {
-        curmob = mobs[curmob_index as usize];
-        move_mob();
-        check_loose_fall_on_kid();
-        mobs[curmob_index as usize] = curmob;
+        *state.curmob() = state.mobs()[curmob_index as usize];
+        move_mob_impl(state);
+        check_loose_fall_on_kid_impl(state);
+        let cm = *state.curmob();
+        state.mobs()[curmob_index as usize] = cm;
         curmob_index += 1;
     }
     let mut new_index: c_short = 0;
     let mut index: c_short = 0;
-    while index < mobs_count {
-        if mobs[index as usize].speed != -1 {
-            mobs[new_index as usize] = mobs[index as usize];
+    while index < *state.mobs_count() {
+        if state.mobs()[index as usize].speed != -1 {
+            state.mobs()[new_index as usize] = state.mobs()[index as usize];
             new_index += 1;
         }
         index += 1;
     }
-    mobs_count = new_index;
+    *state.mobs_count() = new_index;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn do_mobs() {
+    do_mobs_impl(&mut State);
 }
 
 // seg007:110F
-#[no_mangle]
-pub unsafe extern "C" fn move_mob() {
-    if curmob.type_ == 0 {
-        move_loose();
+unsafe fn move_mob_impl(state: &mut State) {
+    if state.curmob().type_ == 0 {
+        move_loose_impl(state);
     }
-    if curmob.speed <= 0 {
-        curmob.speed = curmob.speed.wrapping_add(1);
+    if state.curmob().speed <= 0 {
+        state.curmob().speed = state.curmob().speed.wrapping_add(1);
     }
 }
 
-// seg007:1126
 #[no_mangle]
-pub unsafe extern "C" fn move_loose() {
-    if curmob.speed < 0 { return; }
-    if curmob.speed < 29 {
-        curmob.speed = curmob.speed.wrapping_add(3);
+pub unsafe extern "C" fn move_mob() {
+    move_mob_impl(&mut State);
+}
+
+// seg007:1126
+unsafe fn move_loose_impl(state: &mut State) {
+    if state.curmob().speed < 0 { return; }
+    if state.curmob().speed < 29 {
+        state.curmob().speed = state.curmob().speed.wrapping_add(3);
     }
-    curmob.y = curmob.y.wrapping_add(curmob.speed as u8);
-    if curmob.room == 0 {
-        if (curmob.y as u16) < 210 {
+    let speed = state.curmob().speed;
+    state.curmob().y = state.curmob().y.wrapping_add(speed as u8);
+    if state.curmob().room == 0 {
+        if (state.curmob().y as u16) < 210 {
             return;
         } else {
-            curmob.speed = -2;
+            state.curmob().speed = -2;
             return;
         }
     }
-    if (curmob.y as u16) < 226 && Y_SOMETHING[(curmob.row + 1) as usize] <= curmob.y as i16 {
+    let row = state.curmob().row;
+    if (state.curmob().y as u16) < 226 && Y_SOMETHING[(row + 1) as usize] <= state.curmob().y as i16 {
         // fell into a different row
+        let cm_room = state.curmob().room;
+        let cm_xh = state.curmob().xh;
         curr_tile_temp = get_tile(
-            curmob.room as c_int,
-            (curmob.xh >> 2) as c_int,
-            curmob.row as c_int,
+            cm_room as c_int,
+            (cm_xh >> 2) as c_int,
+            row as c_int,
         ) as u16;
         if curr_tile_temp == tiles_tiles_11_loose as u16 {
-            loose_fall();
+            loose_fall_impl(state);
         }
         if curr_tile_temp == tiles_tiles_0_empty as u16
             || curr_tile_temp == tiles_tiles_11_loose as u16
         {
-            mob_down_a_row();
+            mob_down_a_row_impl(state);
             return;
         }
         play_sound(soundids_sound_2_tile_crashing as c_int);
-        do_knock(curmob.room as c_int, curmob.row as c_int);
-        curmob.y = Y_SOMETHING[(curmob.row + 1) as usize] as u8;
-        curmob.speed = -2;
-        loose_land();
+        let cm_room = state.curmob().room;
+        do_knock_impl(state, cm_room as c_int, row as c_int);
+        state.curmob().y = Y_SOMETHING[(row + 1) as usize] as u8;
+        state.curmob().speed = -2;
+        loose_land_impl(state);
     }
 }
 
-// seg007:11E8
 #[no_mangle]
-pub unsafe extern "C" fn loose_land() {
+pub unsafe extern "C" fn move_loose() {
+    move_loose_impl(&mut State);
+}
+
+// seg007:11E8
+unsafe fn loose_land_impl(state: &mut State) {
     let mut button_type: c_short = 0;
+    let cm_room = state.curmob().room;
+    let cm_xh = state.curmob().xh;
+    let cm_row = state.curmob().row;
     let mut tiletype = get_tile(
-        curmob.room as c_int,
-        (curmob.xh >> 2) as c_int,
-        curmob.row as c_int,
+        cm_room as c_int,
+        (cm_xh >> 2) as c_int,
+        cm_row as c_int,
     ) as c_short;
 
     let mut needs_floor = false;
@@ -1049,19 +1312,25 @@ pub unsafe extern "C" fn loose_land() {
     if tiletype == tiles_tiles_15_opener as c_short {
         *curr_room_tiles.add(curr_tilepos as usize) = tiles_tiles_14_debris as u8;
         button_type = tiles_tiles_14_debris as c_short;
-        trigger_button(1, button_type as c_int, -1);
+        trigger_button_impl(state, 1, button_type as c_int, -1);
+        let cm_room = state.curmob().room;
+        let cm_xh = state.curmob().xh;
+        let cm_row = state.curmob().row;
         tiletype = get_tile(
-            curmob.room as c_int,
-            (curmob.xh >> 2) as c_int,
-            curmob.row as c_int,
+            cm_room as c_int,
+            (cm_xh >> 2) as c_int,
+            cm_row as c_int,
         ) as c_short;
         needs_floor = true;
     } else if tiletype == tiles_tiles_6_closer as c_short {
-        trigger_button(1, button_type as c_int, -1);
+        trigger_button_impl(state, 1, button_type as c_int, -1);
+        let cm_room = state.curmob().room;
+        let cm_xh = state.curmob().xh;
+        let cm_row = state.curmob().row;
         tiletype = get_tile(
-            curmob.room as c_int,
-            (curmob.xh >> 2) as c_int,
-            curmob.row as c_int,
+            cm_room as c_int,
+            (cm_xh >> 2) as c_int,
+            cm_row as c_int,
         ) as c_short;
         needs_floor = true;
     } else if tiletype == tiles_tiles_1_floor as c_short
@@ -1081,103 +1350,130 @@ pub unsafe extern "C" fn loose_land() {
         } else {
             *curr_room_tiles.add(curr_tilepos as usize) = tiles_tiles_14_debris as u8;
         }
-        redraw_at_cur_mob();
+        redraw_at_cur_mob_impl(state);
         if tile_col != 0 {
-            set_redraw_full(curr_tilepos as c_short - 1, 1);
+            set_redraw_full_impl(state, curr_tilepos as c_short - 1, 1);
         }
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn loose_land() {
+    loose_land_impl(&mut State);
 }
 
 // seg007:12CB
-#[no_mangle]
-pub unsafe extern "C" fn loose_fall() {
+unsafe fn loose_fall_impl(state: &mut State) {
     curr_room_modif.add(curr_tilepos as usize)
         .write(remove_loose(curr_room as c_int, curr_tilepos as c_int) as u8);
-    curmob.speed >>= 1;
-    mobs[curmob_index as usize] = curmob;
-    curmob.y = curmob.y.wrapping_add(6);
-    mob_down_a_row();
-    add_mob();
-    curmob = mobs[curmob_index as usize];
-    redraw_at_cur_mob();
+    state.curmob().speed >>= 1;
+    let cm = *state.curmob();
+    state.mobs()[curmob_index as usize] = cm;
+    state.curmob().y = state.curmob().y.wrapping_add(6);
+    mob_down_a_row_impl(state);
+    add_mob_impl(state);
+    *state.curmob() = state.mobs()[curmob_index as usize];
+    redraw_at_cur_mob_impl(state);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn loose_fall() {
+    loose_fall_impl(&mut State);
 }
 
 // seg007:132C
-#[no_mangle]
-pub unsafe extern "C" fn redraw_at_cur_mob() {
-    if curmob.room as u16 == drawn_room {
-        redraw_height = 0x20;
-        set_redraw_full(curr_tilepos as c_short, 1);
-        set_wipe(curr_tilepos as c_short, 1);
+unsafe fn redraw_at_cur_mob_impl(state: &mut State) {
+    if state.curmob().room as u16 == *state.drawn_room() {
+        *state.redraw_height() = 0x20;
+        set_redraw_full_impl(state, curr_tilepos as c_short, 1);
+        set_wipe_impl(state, curr_tilepos as c_short, 1);
         if (curr_tilepos % 10) + 1 < 10 {
-            set_redraw_full(curr_tilepos as c_short + 1, 1);
-            set_wipe(curr_tilepos as c_short + 1, 1);
+            set_redraw_full_impl(state, curr_tilepos as c_short + 1, 1);
+            set_wipe_impl(state, curr_tilepos as c_short + 1, 1);
         }
     }
 }
 
-// seg007:1387
 #[no_mangle]
-pub unsafe extern "C" fn mob_down_a_row() {
-    curmob.row = curmob.row.wrapping_add(1);
-    if curmob.row >= 3 {
-        curmob.y = curmob.y.wrapping_sub(192);
-        curmob.row = 0;
-        curmob.room = level.roomlinks[curmob.room as usize - 1].down;
+pub unsafe extern "C" fn redraw_at_cur_mob() {
+    redraw_at_cur_mob_impl(&mut State);
+}
+
+// seg007:1387
+unsafe fn mob_down_a_row_impl(state: &mut State) {
+    state.curmob().row = state.curmob().row.wrapping_add(1);
+    if state.curmob().row >= 3 {
+        state.curmob().y = state.curmob().y.wrapping_sub(192);
+        state.curmob().row = 0;
+        let cm_room = state.curmob().room;
+        state.curmob().room = state.level().roomlinks[cm_room as usize - 1].down;
     }
 }
 
-// seg007:13AE
 #[no_mangle]
-pub unsafe extern "C" fn draw_mobs() {
+pub unsafe extern "C" fn mob_down_a_row() {
+    mob_down_a_row_impl(&mut State);
+}
+
+// seg007:13AE
+unsafe fn draw_mobs_impl(state: &mut State) {
     let mut index: c_short = 0;
-    while index < mobs_count {
-        curmob = mobs[index as usize];
-        draw_mob();
+    while index < *state.mobs_count() {
+        *state.curmob() = state.mobs()[index as usize];
+        draw_mob_impl(state);
         index += 1;
     }
 }
 
-// seg007:13E5
 #[no_mangle]
-pub unsafe extern "C" fn draw_mob() {
-    let mut ypos = curmob.y as c_short;
-    if curmob.room as u16 == drawn_room {
-        if curmob.y as u16 >= 210 { return; }
-    } else if curmob.room as u16 == room_B {
+pub unsafe extern "C" fn draw_mobs() {
+    draw_mobs_impl(&mut State);
+}
+
+// seg007:13E5
+unsafe fn draw_mob_impl(state: &mut State) {
+    let mut ypos = state.curmob().y as c_short;
+    if state.curmob().room as u16 == *state.drawn_room() {
+        if state.curmob().y as u16 >= 210 { return; }
+    } else if state.curmob().room as u16 == *state.room_B() {
         if (ypos as i8 as i32).abs() >= 18 { return; }
-        curmob.y = curmob.y.wrapping_add(192);
-        ypos = curmob.y as c_short;
-    } else if curmob.room as u16 == room_A {
-        if (curmob.y as u16) < 174 { return; }
-        ypos = curmob.y as c_short - 189;
+        state.curmob().y = state.curmob().y.wrapping_add(192);
+        ypos = state.curmob().y as c_short;
+    } else if state.curmob().room as u16 == *state.room_A() {
+        if (state.curmob().y as u16) < 174 { return; }
+        ypos = state.curmob().y as c_short - 189;
     } else {
         return;
     }
-    let tile_col_local = (curmob.xh >> 2) as c_short;
+    let tile_col_local = (state.curmob().xh >> 2) as c_short;
     let trow = y_to_row_mod4(ypos as c_int);
-    obj_tilepos = get_tilepos_nominus(tile_col_local as c_int, trow) as u8;
+    *state.obj_tilepos() = get_tilepos_nominus(tile_col_local as c_int, trow) as u8;
     let tile_col2 = tile_col_local + 1;
     let tilepos = get_tilepos(tile_col2 as c_int, trow);
-    set_redraw2(tilepos as c_short, 1);
-    set_redraw_fore(tilepos as c_short, 1);
+    set_redraw2_impl(state, tilepos as c_short, 1);
+    set_redraw_fore_impl(state, tilepos as c_short, 1);
     let top_row = y_to_row_mod4(ypos as c_int - 18);
     if top_row != trow {
         let tilepos2 = get_tilepos(tile_col2 as c_int, top_row);
-        set_redraw2(tilepos2 as c_short, 1);
-        set_redraw_fore(tilepos2 as c_short, 1);
+        set_redraw2_impl(state, tilepos2 as c_short, 1);
+        set_redraw_fore_impl(state, tilepos2 as c_short, 1);
     }
-    add_mob_to_objtable(ypos as c_int);
+    add_mob_to_objtable_impl(state, ypos as c_int);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn draw_mob() {
+    draw_mob_impl(&mut State);
 }
 
 // seg007:14DE
-#[no_mangle]
-pub unsafe extern "C" fn add_mob_to_objtable(ypos: c_int) {
-    let index = table_counts[4];
-    table_counts[4] += 1;
-    let curr_obj = &mut objtable[index as usize];
-    curr_obj.obj_type = curmob.type_ | 0x80;
-    curr_obj.xh = curmob.xh as i8;
+unsafe fn add_mob_to_objtable_impl(state: &mut State, ypos: c_int) {
+    let index = state.table_counts()[4];
+    state.table_counts()[4] += 1;
+    let cm = *state.curmob();
+    let curr_obj = &mut state.objtable()[index as usize];
+    curr_obj.obj_type = cm.type_ | 0x80;
+    curr_obj.xh = cm.xh as i8;
     curr_obj.xl = 0;
     curr_obj.y = ypos as c_short;
     curr_obj.chtab_id = chtabs_id_chtab_6_environment as u8;
@@ -1186,6 +1482,11 @@ pub unsafe extern "C" fn add_mob_to_objtable(ypos: c_int) {
     curr_obj.clip.left = 0;
     curr_obj.clip.right = 40;
     mark_obj_tile_redraw(index as c_int);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn add_mob_to_objtable(ypos: c_int) {
+    add_mob_to_objtable_impl(&mut State, ypos);
 }
 
 // seg007:153E — not used
@@ -1216,60 +1517,68 @@ pub unsafe extern "C" fn is_spike_harmful() -> c_int {
 }
 
 // seg007:1591
-#[no_mangle]
-pub unsafe extern "C" fn check_loose_fall_on_kid() {
+unsafe fn check_loose_fall_on_kid_impl(state: &mut State) {
     loadkid();
-    if Char.room == curmob.room
-        && Char.curr_col == (curmob.xh >> 2) as i8
-        && (curmob.y as u16) < Char.y as u16
-        && Char.y as u16 - 30 < curmob.y as u16
+    if state.Char().room == state.curmob().room
+        && state.Char().curr_col == (state.curmob().xh >> 2) as i8
+        && (state.curmob().y as u16) < state.Char().y as u16
+        && state.Char().y as u16 - 30 < state.curmob().y as u16
     {
-        fell_on_your_head();
+        fell_on_your_head_impl(state);
         savekid();
     }
 }
 
-// seg007:15D3
 #[no_mangle]
-pub unsafe extern "C" fn fell_on_your_head() {
-    let frame = Char.frame as c_short;
-    let action = Char.action as c_short;
-    if (current_level as u16 == (*custom).loose_tiles_level as u16
+pub unsafe extern "C" fn check_loose_fall_on_kid() {
+    check_loose_fall_on_kid_impl(&mut State);
+}
+
+// seg007:15D3
+unsafe fn fell_on_your_head_impl(state: &mut State) {
+    let frame = state.Char().frame as c_short;
+    let action = state.Char().action as c_short;
+    if (*state.current_level() as u16 == (*custom).loose_tiles_level as u16
         || frame < frameids_frame_5_start_run as c_short
         || frame >= 15)
         && (action < actions_actions_2_hang_climb as c_short
             || action == actions_actions_7_turn as c_short)
     {
-        Char.y = y_land_at(Char.curr_row as usize + 1) as u8;
+        let curr_row = state.Char().curr_row;
+        state.Char().y = y_land_at(curr_row as usize + 1) as u8;
         if take_hp(1) != 0 {
             seqtbl_offset_char(seqids_seq_22_crushed as c_short);
             if frame == frameids_frame_177_spiked as c_short {
-                Char.x = char_dx_forward(-12) as u8;
+                state.Char().x = char_dx_forward(-12) as u8;
             }
         } else if frame != frameids_frame_109_crouch as c_short {
             if get_tile_behind_char() == 0 {
-                Char.x = char_dx_forward(-2) as u8;
+                state.Char().x = char_dx_forward(-2) as u8;
             }
             seqtbl_offset_char(seqids_seq_52_loose_floor_fell_on_kid as c_short);
         }
     }
 }
 
-// seg007:1669
 #[no_mangle]
-pub unsafe extern "C" fn play_door_sound_if_visible(sound_id: c_int) {
-    let tilepos = trob.tilepos as u16;
-    let gate_room = trob.room as u16;
+pub unsafe extern "C" fn fell_on_your_head() {
+    fell_on_your_head_impl(&mut State);
+}
+
+// seg007:1669
+unsafe fn play_door_sound_if_visible_impl(state: &mut State, sound_id: c_int) {
+    let tilepos = state.trob().tilepos as u16;
+    let gate_room = state.trob().room as u16;
 
     // FIX_GATE_SOUNDS is active
     let has_sound_condition = if (*fixes).fix_gate_sounds != 0 {
-        (gate_room == room_L && tilepos % 10 == 9)
-            || (gate_room == drawn_room && tilepos % 10 != 9)
+        (gate_room == *state.room_L() && tilepos % 10 == 9)
+            || (gate_room == *state.drawn_room() && tilepos % 10 != 9)
     } else {
-        if gate_room == room_L {
+        if gate_room == *state.room_L() {
             tilepos % 10 == 9
         } else {
-            gate_room == drawn_room && tilepos % 10 != 9
+            gate_room == *state.drawn_room() && tilepos % 10 != 9
         }
     };
 
@@ -1277,6 +1586,11 @@ pub unsafe extern "C" fn play_door_sound_if_visible(sound_id: c_int) {
     if has_sound {
         play_sound(sound_id);
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn play_door_sound_if_visible(sound_id: c_int) {
+    play_door_sound_if_visible_impl(&mut State, sound_id);
 }
 
 #[cfg(test)]

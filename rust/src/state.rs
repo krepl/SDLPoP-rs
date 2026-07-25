@@ -163,4 +163,28 @@ impl State {
     pub unsafe fn redraw_height(&mut self) -> &mut c_short { &mut redraw_height }
     pub unsafe fn roomleave_result(&mut self) -> &mut c_short { &mut roomleave_result }
     pub unsafe fn shadow_initialized(&mut self) -> &mut word { &mut shadow_initialized }
+
+    // -- seg007 animated tiles / mob physics ----------------------------------
+    pub unsafe fn trob(&mut self) -> &mut trob_type { &mut trob }
+    pub unsafe fn trobs(&mut self) -> &mut [trob_type; 30] { &mut trobs }
+    pub unsafe fn curmob(&mut self) -> &mut mob_type { &mut curmob }
+    pub unsafe fn mobs(&mut self) -> &mut [mob_type; 14] { &mut mobs }
+    pub unsafe fn curr_tile(&mut self) -> &mut byte { &mut curr_tile }
+    pub unsafe fn g_deprecation_number(&mut self) -> &mut c_int { &mut g_deprecation_number }
+    pub unsafe fn last_loose_sound(&mut self) -> &mut word { &mut last_loose_sound }
+    pub unsafe fn obj_tilepos(&mut self) -> &mut byte { &mut obj_tilepos }
+    pub unsafe fn objtable(&mut self) -> &mut [objtable_type; 50] { &mut objtable }
+    pub unsafe fn redraw_frames2(&mut self) -> &mut [byte; 30] { &mut redraw_frames2 }
+    pub unsafe fn redraw_frames_above(&mut self) -> &mut [byte; 10] { &mut redraw_frames_above }
+    pub unsafe fn redraw_frames_anim(&mut self) -> &mut [byte; 30] { &mut redraw_frames_anim }
+    pub unsafe fn redraw_frames_floor_overlay(&mut self) -> &mut [byte; 30] { &mut redraw_frames_floor_overlay }
+    pub unsafe fn redraw_frames_fore(&mut self) -> &mut [byte; 30] { &mut redraw_frames_fore }
+    pub unsafe fn redraw_frames_full(&mut self) -> &mut [byte; 30] { &mut redraw_frames_full }
+    pub unsafe fn room_A(&mut self) -> &mut word { &mut room_A }
+    pub unsafe fn room_AL(&mut self) -> &mut word { &mut room_AL }
+    pub unsafe fn room_B(&mut self) -> &mut word { &mut room_B }
+    pub unsafe fn wipe_frames(&mut self) -> &mut [byte; 30] { &mut wipe_frames }
+    pub unsafe fn wipe_heights(&mut self) -> &mut [sbyte; 30] { &mut wipe_heights }
+    pub unsafe fn doorlink1_ad(&mut self) -> &mut *mut byte { &mut doorlink1_ad }
+    pub unsafe fn doorlink2_ad(&mut self) -> &mut *mut byte { &mut doorlink2_ad }
 }
