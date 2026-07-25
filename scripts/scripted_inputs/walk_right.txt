@@ -1,0 +1,3 @@
+# Hold Right from the start of level 3. Used by gameplay_smoke_test.sh to
+# confirm scripted input actually drives the Kid, not just the event queue.
+0 right down

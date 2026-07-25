@@ -159,6 +159,12 @@ case "${1:-}" in
     "$ROOT/scripts/smoke_test.sh" || exit 1
     echo ""
 
+    # Same coverage-gap rationale as smoke_test.sh, one step further: proves
+    # the live input path doesn't just avoid crashing, it actually drives the
+    # Kid the way a real keyboard would. See gameplay_smoke_test.sh's header.
+    "$ROOT/scripts/gameplay_smoke_test.sh" || exit 1
+    echo ""
+
     failures=0
     for pair in "${PAIRS[@]}"; do
       replay="${pair%%|*}"

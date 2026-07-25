@@ -167,6 +167,13 @@ struct field_desc_t {
 static mut trace_fp: *mut FILE = core::ptr::null_mut();
 static mut initialized: c_int = 0;
 static mut tick_counter: u32 = 0;
+
+// Exposes the tick about to be simulated (the value dump_frame_state will next
+// write) so seg009.rs's scripted-input injection can schedule key events against
+// the same clock the trace uses, instead of maintaining a second, drifting one.
+pub(crate) unsafe fn next_tick() -> u32 {
+    tick_counter
+}
 static mut frame_size: u32 = 0;
 static mut num_fields: u32 = 0;
 static mut field_table: [field_desc_t; 256] = [field_desc_t {

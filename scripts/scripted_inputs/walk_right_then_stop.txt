@@ -1,0 +1,5 @@
+# Hold Right for 15 ticks then release, from the start of level 3. Used by
+# gameplay_smoke_test.sh to confirm SDL_KEYUP injection actually stops the
+# Kid, not just that SDL_KEYDOWN starts it.
+0 right down
+15 right up

@@ -3597,15 +3597,17 @@ unsafe fn toggle_fullscreen() {
 // Script format (path from the POPTRACE_INPUT env var, one event per line):
 //     <tick> <key> <down|up>
 //     # blank lines and lines starting with '#' are ignored
-// <tick> counts calls to process_events() from process start -- its own free-
-// running clock, independent of curr_tick (which only advances while replay
-// recording is active, see replay.rs's add_replay_move).
+// <tick> is the same per-simulation-tick clock the POPTRACE_OUT trace uses
+// (state_dump.rs's tick_counter, exposed via next_tick()) -- NOT a count of
+// process_events() calls, which fire a variable number of times per tick
+// while do_simple_wait spins on real wall-clock time. Keying off next_tick()
+// instead keeps a script's behavior identical regardless of how fast the
+// machine running it is.
 // <key> is one of: left right up down shift lshift rshift space return escape
 // ============================================================================
 static mut SCRIPT_EVENTS: Vec<(u32, c_int, bool)> = Vec::new();
 static mut SCRIPT_LOADED: bool = false;
 static mut SCRIPT_INDEX: usize = 0;
-static mut SCRIPT_TICK: u32 = 0;
 
 fn scancode_from_key_name(name: &str) -> Option<c_int> {
     Some(match name.to_ascii_lowercase().as_str() {
@@ -3661,7 +3663,11 @@ unsafe fn inject_scripted_input() {
     if !SCRIPT_LOADED {
         load_scripted_input();
     }
-    while SCRIPT_INDEX < SCRIPT_EVENTS.len() && SCRIPT_EVENTS[SCRIPT_INDEX].0 <= SCRIPT_TICK {
+    if SCRIPT_EVENTS.is_empty() {
+        return;
+    }
+    let tick = crate::state_dump::next_tick();
+    while SCRIPT_INDEX < SCRIPT_EVENTS.len() && SCRIPT_EVENTS[SCRIPT_INDEX].0 <= tick {
         let (_, scancode, down) = SCRIPT_EVENTS[SCRIPT_INDEX];
         let mut event: SDL_Event = core::mem::zeroed();
         event.key = SDL_KeyboardEvent {
@@ -3677,7 +3683,6 @@ unsafe fn inject_scripted_input() {
         crate::platform::sdl::shared_renderer().push_event(&mut event as *mut SDL_Event as *mut c_void);
         SCRIPT_INDEX += 1;
     }
-    SCRIPT_TICK += 1;
 }
 
 // seg009 process_events
