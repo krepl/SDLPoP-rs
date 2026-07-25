@@ -3324,6 +3324,10 @@ pub unsafe extern "C" fn set_gr_mode(_grmode: byte) {
         sdlperror(cs!("set_gr_mode: SDL_Init"));
         quit(1);
     }
+    if let Err(e) = crate::platform::sdl::shared_input().init() {
+        eprintln!("set_gr_mode: failed to initialize input (event pump): {e}");
+        quit(1);
+    }
     if enable_controller_rumble != 0 {
         if crate::platform::sdl::shared_renderer().sdl_init_subsystem(SDL_INIT_HAPTIC) != 0 {
             printf(cs!("Warning: Haptic subsystem unavailable, ignoring enable_controller_rumble = true\n"));

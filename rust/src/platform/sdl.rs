@@ -4,9 +4,10 @@
 //! `IMG_Load_RW`, notably, since the crate's `LoadSurface` trait only offers
 //! `from_file`/`from_xpm_array`, not a load-from-memory-buffer path).
 //!
-//! Not yet wired into game logic -- this module stands alone, proving the trait shapes
-//! in `platform::mod` against the real `sdl2` crate API before the call-site migration
-//! (moving seg009.rs/seg008.rs/menu.rs/etc.'s direct SDL calls to go through it) happens.
+//! Game logic reaches this backend through the `shared_renderer()`/`shared_audio()`/
+//! `shared_input()` singletons, not through `SdlPlatform::new()` -- the real startup
+//! path (seg009.rs's `set_gr_mode`) drives SDL init via raw FFI calls on those
+//! singletons directly. `SdlPlatform` itself is currently only exercised by tests.
 
 use std::os::raw::c_int;
 
@@ -471,6 +472,23 @@ static mut SHARED_INPUT: SdlInput =
 #[allow(static_mut_refs)]
 pub fn shared_input() -> &'static mut SdlInput {
     unsafe { &mut SHARED_INPUT }
+}
+
+impl SdlInput {
+    // Populates event_pump/video/timer so key_state()/mouse_state()/text-input/timer
+    // calls work. The real startup path (seg009.rs's set_gr_mode) initializes SDL via
+    // raw SDL_Init/SDL_CreateWindow FFI calls on `shared_renderer()`, never through
+    // `SdlPlatform::new()` -- so nothing populated these fields before this method was
+    // added. `sdl2::init()` is safe to call here too: SDL ref-counts each subsystem's
+    // init count internally, so this doesn't double-initialize anything the raw
+    // SDL_Init call above already brought up.
+    pub fn init(&mut self) -> Result<(), String> {
+        let sdl = sdl2::init()?;
+        self.event_pump = Some(sdl.event_pump()?);
+        self.video = Some(sdl.video()?);
+        self.timer = Some(sdl.timer()?);
+        Ok(())
+    }
 }
 
 impl InputSource for SdlInput {
