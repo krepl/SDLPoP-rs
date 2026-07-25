@@ -138,4 +138,19 @@ impl State {
     pub unsafe fn trobs_count(&mut self) -> &mut c_short { &mut trobs_count }
     pub unsafe fn united_with_shadow(&mut self) -> &mut c_short { &mut united_with_shadow }
     pub unsafe fn upside_down(&mut self) -> &mut word { &mut upside_down }
+
+    // -- seg005 character movement / input decode state ----------------------
+    pub unsafe fn control_backward(&mut self) -> &mut sbyte { &mut control_backward }
+    pub unsafe fn control_down(&mut self) -> &mut sbyte { &mut control_down }
+    pub unsafe fn control_forward(&mut self) -> &mut sbyte { &mut control_forward }
+    pub unsafe fn control_shift2(&mut self) -> &mut sbyte { &mut control_shift2 }
+    pub unsafe fn control_up(&mut self) -> &mut sbyte { &mut control_up }
+    pub unsafe fn control_x(&mut self) -> &mut sbyte { &mut control_x }
+    pub unsafe fn control_y(&mut self) -> &mut sbyte { &mut control_y }
+    pub unsafe fn ctrl1_shift2(&mut self) -> &mut sbyte { &mut ctrl1_shift2 }
+    pub unsafe fn curr_modifier(&mut self) -> &mut byte { &mut curr_modifier }
+    pub unsafe fn guard_refrac(&mut self) -> &mut word { &mut guard_refrac }
+    pub unsafe fn kid_sword_strike(&mut self) -> &mut word { &mut kid_sword_strike }
+    pub unsafe fn pickup_obj_type(&mut self) -> &mut c_short { &mut pickup_obj_type }
+    pub unsafe fn through_tile(&mut self) -> &mut byte { &mut through_tile }
 }
