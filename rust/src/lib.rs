@@ -29,6 +29,47 @@ extern "C" {
     pub fn getenv(name: *const c_char) -> *mut c_char;
 }
 
+// Shared replacements for the C variadic print/format family (printf/fprintf/snprintf).
+// These are call sites we own (ported C source, not a real external API), and stable Rust
+// can't *define* a variadic extern "C" function at all (that needs the nightly-only
+// `c_variadic` feature) -- so rather than shim C's variadic ABI, each call site is
+// rewritten to build a Rust `String` via `format!`/`write!` and go through one of these.
+// Used on every target, not just wasm32: it's simpler and more idiomatic than the libc
+// calls it replaces, and shrinks the crate's `unsafe extern "C"` footprint everywhere.
+
+/// Diagnostic/warning output (`printf(...)`/`puts(...)` in the C source). Native: stdout.
+/// wasm32: browser devtools console.
+pub(crate) fn c_log(s: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    print!("{s}");
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::log_1(&s.into());
+}
+
+/// Error output (`fprintf(stderr, ...)` in the C source). Native: stderr. wasm32: browser
+/// devtools console (as an error-level entry).
+pub(crate) fn c_log_err(s: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    eprint!("{s}");
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::error_1(&s.into());
+}
+
+/// Replaces `snprintf(buf, size, fmt, ...)`: writes `s` (already formatted by the caller,
+/// typically via `format!`) into a raw C buffer of `size` bytes, NUL-terminated,
+/// truncating safely if it doesn't fit. Returns the *full* formatted length (not the
+/// truncated copy length) -- matching real `snprintf`'s return value, since
+/// `snprintf_check`-style callers compare it against `size` to detect truncation.
+pub(crate) unsafe fn write_c_str_truncating(buf: *mut c_char, size: usize, s: &str) -> c_int {
+    let bytes = s.as_bytes();
+    if size > 0 {
+        let copy_len = bytes.len().min(size - 1);
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, copy_len);
+        *buf.add(copy_len) = 0;
+    }
+    bytes.len() as c_int
+}
+
 // x_bump and y_land are extern const incomplete arrays; bindgen emits [T; 0].
 // Index via raw pointer to avoid the zero-length slice panic.
 pub(crate) unsafe fn x_bump_at(idx: usize) -> u8 {
