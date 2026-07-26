@@ -1,4 +1,39 @@
-// Level loop, room redraw, initialization — ported from seg003.c.
+//! Level lifecycle: starting a level, running its per-frame loop, and repainting
+//! the screen.
+//!
+//! This module owns the outermost gameplay control flow. [`play_level`] is an
+//! infinite loop over levels: it plays the intro cutscene, loads the level data
+//! and sprites, resets all per-level state (guards, moving objects, timers,
+//! sword status), places the Kid at the level's start position, then hands
+//! control to [`play_level_2`] — the per-frame loop that ticks timers, advances
+//! one animation frame, and paints the result. When that loop returns, its
+//! return value is the next level number and the outer loop starts over. The
+//! only way out is a `longjmp` back into `start_game` (see `seg000`).
+//!
+//! The rest of the module falls into three groups:
+//!
+//! * **Level entry** — [`init_game`], [`do_startpos`], [`set_start_pos`] and
+//!   [`find_start_level_door`] put the Kid on the level's starting tile facing
+//!   the right way, with the correct HP and entry animation (falling in,
+//!   running in, or turning around), and open the level door he came through.
+//!
+//! * **Redrawing** — [`redraw_screen`] repaints the whole room from scratch:
+//!   room tiles, lighting, then the object tables that hold moving characters.
+//!   [`redraw_at_char`] and [`redraw_at_char2`] are the cheap incremental
+//!   versions used every frame — they mark only the tiles a character currently
+//!   overlaps (plus the tiles he overlapped last frame, for the Kid) as dirty.
+//!
+//! * **Per-frame checks** — [`timers`] runs every countdown in the game
+//!   (shadow union, guard alertness, resurrection, feather fall, the mouse's
+//!   entrance, the super-jump landing). [`check_can_guard_see_kid`] walks the
+//!   tiles between guard and Kid to decide whether the guard notices him.
+//!   [`check_mirror`] handles the level-4 mirror: drawing the Kid's reflection
+//!   while he runs past it, and spawning the shadow when he jumps through it.
+//!
+//! Screen coordinates here are in the original DOS units: a room is 10 columns
+//! by 3 rows of tiles, `TILE_SIZEX` pixels wide each, and the `x_bump` /
+//! `y_land` tables map tile columns and rows to pixel positions.
+
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 #![allow(static_mut_refs)]
@@ -10,21 +45,33 @@ use crate::state::State;
 
 extern "C" { fn dump_frame_state(); }
 
-// File-local global (declared in seg003.c, not exported via data.c).
+/// How far the Kid is from the mirror's collision line, in pixels, minus two.
+///
+/// Written by [`check_mirror_image`] and read back by [`check_mirror`]: a
+/// negative value means the Kid has not reached the mirror yet, so no
+/// reflection is drawn. File-local in `seg003.c`, so it is not a shared global.
 static mut distance_mirror: i8 = 0;
 
+/// Top clipping y-coordinate for tile row `idx`, from the `y_clip` table.
+///
+/// The table is an incomplete `extern` array in C, so bindgen gives it length
+/// zero and it has to be read through a raw pointer.
 unsafe fn y_clip_at(idx: usize) -> i16 {
     *core::ptr::addr_of!(y_clip).cast::<i16>().add(idx)
 }
 
+/// Room number holding the `idx`-th copy-protection potion (level 15 only).
 unsafe fn copyprot_room_at(idx: usize) -> u16 {
     *core::ptr::addr_of!(copyprot_room).cast::<u16>().add(idx)
 }
 
+/// Tile position of the `idx`-th copy-protection potion (level 15 only).
 unsafe fn copyprot_tile_at(idx: usize) -> u16 {
     *core::ptr::addr_of!(copyprot_tile).cast::<u16>().add(idx)
 }
 
+/// Sets up the offscreen buffer and the run-wide counters, then never returns:
+/// falls through into the endless level loop.
 // seg003:0000
 unsafe fn init_game_impl(state: &mut State, lev: c_int) {
     if !offscreen_surface.is_null() {
@@ -48,11 +95,17 @@ unsafe fn init_game_impl(state: &mut State, lev: c_int) {
     play_level_impl(state, lev);
 }
 
+/// Starts a fresh game at level `lev`.
+///
+/// Allocates the offscreen drawing buffer, loads the Kid's sprites, resets the
+/// clock and starting HP (unless a quickload asked to keep them), and enters
+/// the level loop. Does not return.
 #[no_mangle]
 pub unsafe extern "C" fn init_game(lev: c_int) {
     init_game_impl(&mut State, lev);
 }
 
+/// The level loop: play level, take the next level number it returns, repeat.
 // seg003:005C
 unsafe fn play_level_impl(state: &mut State, mut level_number: c_int) {
     if enable_copyprot != 0 && level_number as u16 == (*custom).copyprot_level {
@@ -136,14 +189,25 @@ unsafe fn play_level_impl(state: &mut State, mut level_number: c_int) {
     }
 }
 
+/// Plays `level_number`, then whatever level it leads to, forever.
+///
+/// Each iteration shows the level's cutscene (skipped while recording or
+/// replaying), loads level data and sprites, wipes every piece of per-level
+/// state, positions the Kid and the guards, draws the first frame, and runs
+/// [`play_level_2`] until the level ends. Level 15 is the copy-protection
+/// level, which is substituted for the configured `copyprot_level` on the way
+/// in and swapped back on the way out.
+///
+/// Never returns — leaving a game happens via `longjmp` in `start_game`.
 #[no_mangle]
 pub unsafe extern "C" fn play_level(level_number: c_int) {
     play_level_impl(&mut State, level_number);
 }
 
+/// Places the Kid at the level's start (or checkpoint) position and picks his
+/// entry animation.
 // seg003:01A3
 unsafe fn do_startpos_impl(state: &mut State) {
-    let mut x: u16;
     if *state.current_level() == (*custom).checkpoint_level && *state.checkpoint() != 0 {
         state.level().start_dir = (*custom).checkpoint_respawn_dir;
         state.level().start_room = (*custom).checkpoint_respawn_room;
@@ -157,40 +221,51 @@ unsafe fn do_startpos_impl(state: &mut State) {
     }
     *state.next_room() = state.level().start_room as u16;
     state.Char().room = state.level().start_room;
-    x = state.level().start_pos as u16;
-    state.Char().curr_col = (x % SCREEN_TILECOUNTX as u16) as i8;
-    state.Char().curr_row = (x / SCREEN_TILECOUNTX as u16) as i8;
+    let start_pos = state.level().start_pos as u16;
+    state.Char().curr_col = (start_pos % SCREEN_TILECOUNTX as u16) as i8;
+    state.Char().curr_row = (start_pos / SCREEN_TILECOUNTX as u16) as i8;
     let curr_col = state.Char().curr_col;
     state.Char().x = x_bump_at((curr_col as i32 + FIRST_ONSCREEN_COLUMN as i32) as usize)
         .wrapping_add(TILE_SIZEX as u8);
     state.Char().direction = !state.level().start_dir;
+    // A seamless transition keeps the HP the Kid arrived with.
     if *state.seamless() == 0 {
-        x = if *state.current_level() != 0 {
+        let hitp = if *state.current_level() != 0 {
             *state.hitp_beg_lev()
         } else {
             (*custom).demo_hitp
         };
-        *state.hitp_max() = x;
-        *state.hitp_curr() = x;
+        *state.hitp_max() = hitp;
+        *state.hitp_curr() = hitp;
     }
     let cl = *state.current_level() as usize;
-    if (*custom).tbl_entry_pose[cl] == 1 {
-        get_tile(5, 2, 0);
-        trigger_button(0, 0, -1);
-        seqtbl_offset_char(seqids_seq_7_fall as c_short);
-    } else if (*custom).tbl_entry_pose[cl] == 2 {
-        seqtbl_offset_char(seqids_seq_84_run as c_short);
-    } else {
-        seqtbl_offset_char(seqids_seq_5_turn as c_short);
+    match (*custom).tbl_entry_pose[cl] {
+        // Falls in through the ceiling, and triggers the tile he lands on.
+        1 => {
+            get_tile(5, 2, 0);
+            trigger_button(0, 0, -1);
+            seqtbl_offset_char(seqids_seq_7_fall as c_short);
+        }
+        // Runs in from the level door.
+        2 => seqtbl_offset_char(seqids_seq_84_run as c_short),
+        // Default: stands still and turns to face into the room.
+        _ => seqtbl_offset_char(seqids_seq_5_turn as c_short),
     }
     set_start_pos_impl(state);
 }
 
+/// Puts the Kid at the level's start position with the matching entry pose.
+///
+/// Honours the checkpoint if one is set for this level (level 7's crushed-by-
+/// its-own-loose-floor checkpoint), in which case the respawn room, tile and
+/// direction come from the custom options and the offending tile is cleared.
 #[no_mangle]
 pub unsafe extern "C" fn do_startpos() {
     do_startpos_impl(&mut State);
 }
 
+/// Finishes character setup once the position and entry sequence are chosen:
+/// clears status effects, plays the first frame, saves the Kid's state.
 // seg003:028A
 unsafe fn set_start_pos_impl(state: &mut State) {
     let curr_row = state.Char().curr_row;
@@ -215,11 +290,23 @@ unsafe fn set_start_pos_impl(state: &mut State) {
     savekid();
 }
 
+/// Resets the Kid to a clean, alive, unarmed state at his current tile and
+/// starts his entry animation.
+///
+/// Also handles the one level where the Kid enters by falling out of the room
+/// above (`falling_entry_level` / `falling_entry_room`), by immediately moving
+/// him into the room below.
 #[no_mangle]
 pub unsafe extern "C" fn set_start_pos() {
     set_start_pos_impl(&mut State);
 }
 
+/// Opens the level door the Kid entered through, in whichever tile of his
+/// starting room holds one.
+///
+/// The low five bits of a tile byte are the tile id; the upper bits are flags,
+/// hence the `& 0x1F`. All 30 tiles of the room are scanned, so a room with two
+/// level doors would open both.
 // seg003:02E6
 #[no_mangle]
 pub unsafe extern "C" fn find_start_level_door() {
@@ -233,6 +320,7 @@ pub unsafe extern "C" fn find_start_level_door() {
     }
 }
 
+/// Paints the very first frame of a level and waits one tick before play starts.
 // seg003:0326
 unsafe fn draw_level_first_impl(state: &mut State) {
     *state.next_room() = state.Kid().room as u16;
@@ -251,11 +339,14 @@ unsafe fn draw_level_first_impl(state: &mut State) {
     do_simple_wait(1);
 }
 
+/// Draws the opening screen of a level: black background, the level's rooms,
+/// the Kid's HP, and (on palace levels) freshly generated wall colours.
 #[no_mangle]
 pub unsafe extern "C" fn draw_level_first() {
     draw_level_first_impl(&mut State);
 }
 
+/// Repaints the current room from scratch into the offscreen buffer and blits it.
 // seg003:037B
 unsafe fn redraw_screen_impl(state: &mut State, drawing_different_room: c_int) {
     if drawing_different_room != 0 {
@@ -285,16 +376,18 @@ unsafe fn redraw_screen_impl(state: &mut State, drawing_different_room: c_int) {
         if is_keyboard_mode != 0 {
             clear_kbd_buf();
         }
+        // Level 15 is the copy-protection level: each potion is labelled with a
+        // letter naming the manual page the player has to look the symbol up on.
         if *state.current_level() == 15 {
             current_target_surface = offscreen_surface;
-            for i in 0i16..14 {
-                if copyprot_room_at(i as usize) == *state.drawn_room() {
-                    let ct = copyprot_tile_at(i as usize);
+            for i in 0..14usize {
+                if copyprot_room_at(i) == *state.drawn_room() {
+                    let tilepos = copyprot_tile_at(i);
                     set_curr_pos(
-                        ((ct % 10) << 5) as c_int + 24,
-                        (ct / 10 * 63 + 38) as c_int,
+                        ((tilepos % 10) << 5) as c_int + 24,
+                        (tilepos / 10 * 63 + 38) as c_int,
                     );
-                    let letter_idx = cplevel_entr[i as usize] as usize;
+                    let letter_idx = cplevel_entr[i] as usize;
                     let letter =
                         *core::ptr::addr_of!(copyprot_letter).cast::<u8>().add(letter_idx);
                     draw_text_character(letter);
@@ -324,11 +417,19 @@ unsafe fn redraw_screen_impl(state: &mut State, drawing_different_room: c_int) {
     *state.exit_room_timer() = 2;
 }
 
+/// Repaints the whole visible room: tiles, lighting, then every moving object.
+///
+/// Pass a non-zero `drawing_different_room` when the room being shown has just
+/// changed; that blanks the screen and pauses briefly first, so the switch does
+/// not look like a glitch. Blind mode (a debug cheat) short-circuits to a black
+/// screen. Leaves `exit_room_timer` at 2 so the room-switch logic knows a full
+/// repaint just happened.
 #[no_mangle]
 pub unsafe extern "C" fn redraw_screen(drawing_different_room: c_int) {
     redraw_screen_impl(&mut State, drawing_different_room);
 }
 
+/// The per-frame loop of a single level; returns the level number to play next.
 // seg003:04F8
 unsafe fn play_level_2_impl(state: &mut State) -> c_int {
     reset_timer(timerids_timer_1 as c_int);
@@ -372,16 +473,21 @@ unsafe fn play_level_2_impl(state: &mut State) -> c_int {
     }
 }
 
+/// Runs one level to completion and returns the number of the next level.
+///
+/// Each iteration sets the frame length (fights run at `fight_speed`, everything
+/// else at `base_speed`), ticks the timers, advances every character by one
+/// animation frame, then either draws that frame and waits out the tick, or —
+/// if the level number changed and no sound is still playing — tears the level
+/// down and returns. A pending restart returns the current level instead.
 #[no_mangle]
 pub unsafe extern "C" fn play_level_2() -> c_int {
     play_level_2_impl(&mut State)
 }
 
+/// Marks the foreground of every tile the current character overlaps as dirty.
 // seg003:0576
 unsafe fn redraw_at_char_impl(state: &mut State) {
-    let x_top_row: c_short;
-    let x_col_left: c_short;
-    let x_col_right: c_short;
     if state.Char().sword >= sword_status_sword_2_drawn as u8 {
         if state.Char().direction >= directions_dir_0_right as i8 {
             *state.char_col_right() += 1;
@@ -395,15 +501,22 @@ unsafe fn redraw_at_char_impl(state: &mut State) {
             }
         }
     }
-    if state.Char().charid == charids_charid_0_kid as u8 {
-        x_top_row = (*state.char_top_row()).min(*state.prev_char_top_row());
-        x_col_right = (*state.char_col_right()).max(*state.prev_char_col_right());
-        x_col_left = (*state.char_col_left()).min(*state.prev_char_col_left());
+    // For the Kid, widen the dirty rectangle to also cover where he was last
+    // frame, so his old sprite gets painted over.
+    let (x_top_row, x_col_right, x_col_left) = if state.Char().charid == charids_charid_0_kid as u8
+    {
+        (
+            (*state.char_top_row()).min(*state.prev_char_top_row()),
+            (*state.char_col_right()).max(*state.prev_char_col_right()),
+            (*state.char_col_left()).min(*state.prev_char_col_left()),
+        )
     } else {
-        x_top_row = *state.char_top_row();
-        x_col_right = *state.char_col_right();
-        x_col_left = *state.char_col_left();
-    }
+        (
+            *state.char_top_row(),
+            *state.char_col_right(),
+            *state.char_col_left(),
+        )
+    };
     let bottom_row = *state.char_bottom_row();
     for trow in x_top_row..=bottom_row {
         for tcol in x_col_left..=x_col_right {
@@ -417,23 +530,35 @@ unsafe fn redraw_at_char_impl(state: &mut State) {
     }
 }
 
+/// Marks the tiles the current character overlaps as dirty in the foreground
+/// layer, including the tiles he occupied on the previous frame if he is the Kid.
+///
+/// Called once per character per frame. Also nudges the dirty rectangle one
+/// column outwards in the direction a drawn sword points, since the blade
+/// sticks out past the character's own tile.
 #[no_mangle]
 pub unsafe extern "C" fn redraw_at_char() {
     redraw_at_char_impl(&mut State);
 }
 
+/// Marks the tiles a character overlaps as dirty in the *overlay* layer — the
+/// pass that draws things in front of the character.
 // seg003:0645
 unsafe fn redraw_at_char2_impl(state: &mut State) {
     let char_action = state.Char().action;
     let char_frame = state.Char().frame;
-    let redraw_func: unsafe extern "C" fn(c_short, byte);
+    let mut redraw_func: unsafe extern "C" fn(c_short, byte) = set_redraw2;
+    // Frames 78..80 are the grab frames, which always use the default.
     if char_frame < frameids_frame_78_jumphang as u8
         || char_frame >= frameids_frame_80_jumphang as u8
     {
-        if char_frame >= frameids_frame_137_climbing_3 as u8
-            && char_frame < frameids_frame_145_climbing_11 as u8
+        // Frames 137..145: climbing up, which redraws the floor above him.
+        if (frameids_frame_137_climbing_3 as u8..frameids_frame_145_climbing_11 as u8)
+            .contains(&char_frame)
         {
             redraw_func = set_redraw_floor_overlay;
+        // Otherwise only airborne and hanging characters need an overlay pass;
+        // frames 102..106 are the start of a fall after being bumped.
         } else if char_action != actions_actions_2_hang_climb as u8
             && char_action != actions_actions_3_in_midair as u8
             && char_action != actions_actions_4_in_freefall as u8
@@ -443,15 +568,16 @@ unsafe fn redraw_at_char2_impl(state: &mut State) {
                 || char_frame > frameids_frame_106_fall as u8)
         {
             return;
-        } else {
-            redraw_func = set_redraw2;
         }
-    } else {
-        redraw_func = set_redraw2;
     }
     let cbr = *state.char_bottom_row();
     let ctr = *state.char_top_row();
     let ccl = *state.char_col_left();
+    // `tile_col` is a shared global that other code reads after this function
+    // returns, and the C original leaves it at one past the end of the sweep
+    // (or untouched at char_col_right if the sweep never runs). Kept as an
+    // explicit walk over the global rather than a `for` over a range so that
+    // trailing value stays exactly what it was in C.
     *state.tile_col() = *state.char_col_right();
     while *state.tile_col() >= ccl {
         let tc = *state.tile_col();
@@ -471,11 +597,20 @@ unsafe fn redraw_at_char2_impl(state: &mut State) {
     }
 }
 
+/// Marks the tiles the current character overlaps as needing an overlay redraw
+/// — the layer drawn in front of characters.
+///
+/// Which redraw routine is used depends on what the character is doing:
+/// climbing up marks the floor overlay above him, while hanging, falling and
+/// being bumped mark the general overlay. Characters doing anything else are
+/// fully behind the scenery and need no overlay pass, so the call is a no-op.
 #[no_mangle]
 pub unsafe extern "C" fn redraw_at_char2() {
     redraw_at_char2_impl(&mut State);
 }
 
+/// Shakes loose floors in the row above (or at) the character, if something
+/// knocked this frame.
 // seg003:0706
 unsafe fn check_knock_impl(state: &mut State) {
     if *state.knock() != 0 {
@@ -485,13 +620,21 @@ unsafe fn check_knock_impl(state: &mut State) {
     }
 }
 
+/// Applies a pending knock: makes the loose floors in the affected room row
+/// wobble and consumes the `knock` flag.
+///
+/// A positive `knock` (a landing) shakes the row above the character; a
+/// negative one (a hit from below) shakes his own row.
 #[no_mangle]
 pub unsafe extern "C" fn check_knock() {
     check_knock_impl(&mut State);
 }
 
+/// Advances every per-frame countdown in the game by one tick.
 // seg003:0735
 unsafe fn timers_impl(state: &mut State) {
+    // Counts down to zero, then skips straight past it to -1: zero is the
+    // "not united" value, so it must never be observed on the way down.
     if *state.united_with_shadow() > 0 {
         *state.united_with_shadow() -= 1;
         if *state.united_with_shadow() == 0 {
@@ -578,11 +721,21 @@ unsafe fn timers_impl(state: &mut State) {
     }
 }
 
+/// Ticks all the per-frame countdowns: the shadow union, the guard's alertness
+/// delay, the resurrection timer, feather fall, the mouse's entrance on the
+/// mouse level, and the super-jump landing check.
+///
+/// The feather-fall branch has two implementations — the buggy original, which
+/// counts *up* and ends the effect when the sound stops, and the fixed one
+/// behind `fix_quicksave_during_feather`, which counts down so a quicksave
+/// cannot leave the Kid floating forever.
 #[no_mangle]
 pub unsafe extern "C" fn timers() {
     timers_impl(&mut State);
 }
 
+/// Handles the mirror on the mirror level: reflection while running past it,
+/// shadow creation on jumping through it.
 // seg003:0798
 unsafe fn check_mirror_impl(state: &mut State) {
     if *state.jumped_through_mirror() == -1 {
@@ -608,11 +761,19 @@ unsafe fn check_mirror_impl(state: &mut State) {
     }
 }
 
+/// Runs the mirror logic for the current frame.
+///
+/// If the Kid has just jumped through the mirror, spawns the shadow. Otherwise,
+/// while he stands on the mirror tile, computes his mirrored pose and adds it to
+/// the object table so the reflection is drawn — clipped to the part of him that
+/// is actually level with the glass.
 #[no_mangle]
 pub unsafe extern "C" fn check_mirror() {
     check_mirror_impl(&mut State);
 }
 
+/// Turns the Kid's mirror image into the shadow character and splits his HP
+/// bar in two.
 // seg003:080A
 unsafe fn jump_through_mirror_impl(state: &mut State) {
     loadkid();
@@ -629,11 +790,18 @@ unsafe fn jump_through_mirror_impl(state: &mut State) {
     draw_guard_hp(*state.guardhp_curr() as c_short, *state.guardhp_max() as c_short);
 }
 
+/// Creates the shadow at the moment the Kid jumps through the mirror.
+///
+/// The reflection stops being a drawing and becomes a real character: it is
+/// saved into the shadow's slot, given all of the Kid's HP as guard HP, and the
+/// Kid himself is left on one unit — which is why the shadow chase on that level
+/// starts with the player nearly dead.
 #[no_mangle]
 pub unsafe extern "C" fn jump_through_mirror() {
     jump_through_mirror_impl(&mut State);
 }
 
+/// Mirrors the current character's x-position and facing about the mirror line.
 // seg003:085B
 unsafe fn check_mirror_image_impl(state: &mut State) {
     let curr_col = state.Char().curr_col;
@@ -648,11 +816,17 @@ unsafe fn check_mirror_image_impl(state: &mut State) {
     state.Char().direction = !state.Char().direction;
 }
 
+/// Reflects the current character about the mirror: flips his facing and
+/// mirrors his x-position around the glass, which sits 10 pixels into the tile.
+///
+/// Also records how far past the glass he is in [`distance_mirror`], which the
+/// caller uses to decide whether a reflection should be drawn at all.
 #[no_mangle]
 pub unsafe extern "C" fn check_mirror_image() {
     check_mirror_image_impl(&mut State);
 }
 
+/// Bounces the Kid off a guard he ran into instead of letting him walk through.
 // seg003:08AA
 unsafe fn bump_into_opponent_impl(state: &mut State) {
     if *state.can_guard_see_kid() >= 2
@@ -688,11 +862,20 @@ unsafe fn bump_into_opponent_impl(state: &mut State) {
     }
 }
 
+/// Makes an unarmed Kid bump off a guard standing within 15 pixels, rather than
+/// walking through him.
+///
+/// Called from the Kid's frame handler, so "opponent" is always the guard. Two
+/// optional fixes ride along: `fix_painless_fall_on_guard` charges the Kid for
+/// landing on a guard from a height instead of cancelling the fall damage, and
+/// `fix_jumping_over_guard` snaps him back to the guard's x-position so he
+/// cannot end up on the far side.
 #[no_mangle]
 pub unsafe extern "C" fn bump_into_opponent() {
     bump_into_opponent_impl(&mut State);
 }
 
+/// Converts each room's stored guard tile into a pixel x-position.
 // seg003:0913
 unsafe fn pos_guards_impl(state: &mut State) {
     for room1 in 0..ROOMCOUNT as usize {
@@ -707,11 +890,19 @@ unsafe fn pos_guards_impl(state: &mut State) {
     }
 }
 
+/// Prepares every room's guard for play: turns the tile the guard was authored
+/// on into a pixel x-position and clears the high byte of his animation
+/// sequence pointer. Slots with a tile of 30 or more hold no guard and are left
+/// untouched.
 #[no_mangle]
 pub unsafe extern "C" fn pos_guards() {
     pos_guards_impl(&mut State);
 }
 
+/// Decides whether the guard can see the Kid, and whether he will act on it.
+///
+/// Result in `can_guard_see_kid`: 0 = cannot see him, 1 = can see him but will
+/// not come, 2 = can see him and will come.
 // seg003:0959
 unsafe fn check_can_guard_see_kid_impl(state: &mut State) {
     let kid_frame = state.Kid().frame;
@@ -758,25 +949,25 @@ unsafe fn check_can_guard_see_kid_impl(state: &mut State) {
         {
             right_pos -= TILE_SIZEX as i16;
         }
-        if right_pos >= left_pos {
-            while left_pos <= right_pos {
-                let t = get_tile_at_kid_impl(state, left_pos as c_int);
-                if t == tiles_tiles_20_wall as u8
-                    || curr_tile2 == tiles_tiles_7_doortop_with_floor as u8
-                    || curr_tile2 == tiles_tiles_12_doortop as u8
-                {
-                    *state.can_guard_see_kid() = 0;
-                    return;
-                }
-                if curr_tile2 == tiles_tiles_11_loose as u8
-                    || curr_tile2 == tiles_tiles_18_chomper as u8
-                    || (curr_tile2 == tiles_tiles_4_gate as u8
-                        && *curr_room_modif.add(curr_tilepos as usize) < 112)
-                    || tile_is_floor(curr_tile2 as c_int) == 0
-                {
-                    *state.can_guard_see_kid() = 1;
-                }
-                left_pos += TILE_SIZEX as i16;
+        // Walk the line of sight one tile at a time, from whichever of the two
+        // is further left. An opaque tile ends the search outright; a tile that
+        // can be seen through but not walked through downgrades to "won't come".
+        for xpos in (left_pos..=right_pos).step_by(TILE_SIZEX as usize) {
+            let tile = get_tile_at_kid_impl(state, xpos as c_int);
+            if tile == tiles_tiles_20_wall as u8
+                || curr_tile2 == tiles_tiles_7_doortop_with_floor as u8
+                || curr_tile2 == tiles_tiles_12_doortop as u8
+            {
+                *state.can_guard_see_kid() = 0;
+                return;
+            }
+            if curr_tile2 == tiles_tiles_11_loose as u8
+                || curr_tile2 == tiles_tiles_18_chomper as u8
+                || (curr_tile2 == tiles_tiles_4_gate as u8
+                    && *curr_room_modif.add(curr_tilepos as usize) < 112)
+                || tile_is_floor(curr_tile2 as c_int) == 0
+            {
+                *state.can_guard_see_kid() = 1;
             }
         }
     } else {
@@ -784,21 +975,38 @@ unsafe fn check_can_guard_see_kid_impl(state: &mut State) {
     }
 }
 
+/// Works out whether the guard can see the Kid, storing the answer in
+/// `can_guard_see_kid`: 0 = no, 1 = yes but he will stay put, 2 = yes and he
+/// will come over.
+///
+/// The two must be alive, in the same room, on the same row, and the guard must
+/// have a real facing. If so, the tiles between them are scanned: walls and
+/// doortops block sight entirely, while loose floors, chompers, closed gates and
+/// gaps in the floor are see-through but impassable, so the guard notices the
+/// Kid without approaching. The mouse never "sees" anything — it has its own
+/// behaviour.
 #[no_mangle]
 pub unsafe extern "C" fn check_can_guard_see_kid() {
     check_can_guard_see_kid_impl(&mut State);
 }
 
+/// Looks up the tile at pixel column `xpos` on the Kid's own row and room.
 // seg003:0A99
 unsafe fn get_tile_at_kid_impl(state: &mut State, xpos: c_int) -> byte {
     get_tile(state.Kid().room as c_int, get_tile_div_mod_m7(xpos), state.Kid().curr_row as c_int) as byte
 }
 
+/// Returns the tile id at pixel x-coordinate `xpos`, on the Kid's current row
+/// and in the Kid's current room.
+///
+/// Like every `get_tile` call this also leaves `curr_tile2`, `curr_tilepos` and
+/// the current room pointers set for the tile it found, which callers rely on.
 #[no_mangle]
 pub unsafe extern "C" fn get_tile_at_kid(xpos: c_int) -> byte {
     get_tile_at_kid_impl(&mut State, xpos)
 }
 
+/// Spawns the mouse that opens the level door on the mouse level.
 // seg003:0ABA
 unsafe fn do_mouse_impl(state: &mut State) {
     loadkid();
@@ -815,11 +1023,18 @@ unsafe fn do_mouse_impl(state: &mut State) {
     saveshad();
 }
 
+/// Sends the mouse running in from the right of the room.
+///
+/// The mouse reuses the guard character slot: it is given the mouse's sprite id
+/// and running sequence, one point of "guard" HP, and is saved into the shadow
+/// slot like any other opponent. Triggered by [`timers`] once the level door has
+/// been open for `mouse_delay` frames.
 #[no_mangle]
 pub unsafe extern "C" fn do_mouse() {
     do_mouse_impl(&mut State);
 }
 
+/// Flashes the screen if there is a pending flash or the Kid just lost HP.
 // seg003:0AFC
 unsafe fn flash_if_hurt_impl(state: &mut State) -> c_int {
     if *state.flash_time() != 0 {
@@ -835,11 +1050,18 @@ unsafe fn flash_if_hurt_impl(state: &mut State) -> c_int {
     0
 }
 
+/// Tints the whole screen for one frame when something dramatic happens, and
+/// returns 1 if it did.
+///
+/// An explicitly requested flash (`flash_time`) uses `flash_color`; otherwise a
+/// drop in the Kid's HP this frame flashes bright red and, on a controller,
+/// fires a short rumble.
 #[no_mangle]
 pub unsafe extern "C" fn flash_if_hurt() -> c_int {
     flash_if_hurt_impl(&mut State)
 }
 
+/// Undoes the tint applied by [`flash_if_hurt`].
 // seg003:0B1A
 unsafe fn remove_flash_if_hurt_impl(state: &mut State) {
     if *state.flash_time() != 0 {
@@ -850,6 +1072,8 @@ unsafe fn remove_flash_if_hurt_impl(state: &mut State) {
     remove_flash();
 }
 
+/// Restores the normal palette after a flash, counting down `flash_time` so a
+/// multi-frame flash keeps its colour until it expires.
 #[no_mangle]
 pub unsafe extern "C" fn remove_flash_if_hurt() {
     remove_flash_if_hurt_impl(&mut State);
