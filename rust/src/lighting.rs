@@ -1,3 +1,34 @@
+//! Torchlight — the optional effect that darkens a room and puts a pool of
+//! light around each burning torch.
+//!
+//! The dungeon is normally drawn at full brightness. With lighting enabled
+//! (`enable_lighting`, off by default and settable from `SDLPoP.ini`) the game
+//! keeps a second 320×192 surface, the *screen overlay*, which is multiplied
+//! over the finished frame. Where the overlay is dark grey the room is dimmed;
+//! where it is white the room shows through unchanged.
+//!
+//! The overlay is built from two pieces:
+//!
+//! * a flat [`ambient_level`] grey fill, which is how bright an unlit part of
+//!   the room ends up, and
+//! * one copy of `data/light.png` — the *lighting mask*, a soft white blob —
+//!   additively blended over the fill at the centre of every torch flame in the
+//!   room. Overlapping torches therefore brighten each other, and enough of
+//!   them saturate back to plain white.
+//!
+//! The two SDL blend modes carry all of that: the mask is `SDL_BLENDMODE_ADD`
+//! so torches accumulate into the overlay, and the overlay itself is
+//! `SDL_BLENDMODE_MOD` ("color modulate", i.e. multiply) so it dims the screen
+//! rather than painting over it.
+//!
+//! Because the overlay only depends on where the torches are, it is rebuilt
+//! just once per room change ([`redraw_lighting`]) and then merely blitted onto
+//! whatever rectangle of the screen is being refreshed ([`update_lighting`]).
+//! Cutscenes are excluded: they are not rooms, so `curr_room_tiles` does not
+//! describe what is on screen.
+//!
+//! Ported from `lighting.c` (`USE_LIGHTING`).
+
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 #![allow(static_mut_refs)]
@@ -22,17 +53,39 @@ unsafe fn SDL_BlitSurface(
     crate::platform::sdl::shared_renderer().blit(src, srcrect, dst, dstrect)
 }
 
+/// Source and destination are added: torches accumulate into the overlay.
 const SDL_BLENDMODE_ADD: c_int = 2;
+/// Source and destination are multiplied: the overlay dims the screen.
 const SDL_BLENDMODE_MOD: c_int = 4;
 const SDL_ALPHA_OPAQUE: u8 = 255;
 
+/// The 320×192 multiply overlay composited over the finished frame. Rebuilt by
+/// [`redraw_lighting`] on every room change.
 static mut screen_overlay: *mut image_type = core::ptr::null_mut();
+/// Packed pixel value of the ambient fill, in `screen_overlay`'s pixel format.
 static mut bgcolor: u32 = 0;
 
+/// The soft white blob blitted at each torch flame.
 const mask_filename: *const c_char = cs!("data/light.png");
+/// Brightness of a part of the room no torch reaches, out of 255.
 const ambient_level: u8 = 128;
 
-// Called once at startup.
+/// Whether the overlay currently describes what is on screen.
+///
+/// Lighting has to be switched on, both surfaces have to exist, and there has
+/// to be a room to light — during a cutscene `curr_room_tiles` does not
+/// describe the visible screen, so the overlay would be stale.
+unsafe fn lighting_applies() -> bool {
+    enable_lighting != 0
+        && !lighting_mask.is_null()
+        && !curr_room_tiles.is_null()
+        && is_cutscene == 0
+}
+
+/// Load the lighting mask and build the overlay surface. Called once at startup.
+///
+/// Any failure here switches `enable_lighting` back off, so the rest of the
+/// module simply never runs; the game then renders undimmed.
 #[no_mangle]
 pub unsafe extern "C" fn init_lighting() {
     if enable_lighting == 0 {
@@ -76,20 +129,15 @@ pub unsafe extern "C" fn init_lighting() {
     );
 }
 
-// Recreate the lighting overlay based on the torches in the current room.
-// Called when the current room changes.
+/// Recreate the lighting overlay based on the torches in the current room.
+/// Called when the current room changes.
+///
+/// The overlay is filled with the ambient grey, then one copy of the lighting
+/// mask is added at the flame of each of the room's torches. `flip_screen` is
+/// applied last so the overlay matches an upside-down (level 12) screen.
 #[no_mangle]
 pub unsafe extern "C" fn redraw_lighting() {
-    if enable_lighting == 0 {
-        return;
-    }
-    if lighting_mask.is_null() {
-        return;
-    }
-    if curr_room_tiles.is_null() {
-        return;
-    }
-    if is_cutscene != 0 {
+    if !lighting_applies() {
         return;
     }
 
@@ -99,31 +147,36 @@ pub unsafe extern "C" fn redraw_lighting() {
     }
 
     // TODO: Also process nearby offscreen torches?
-    for tile_pos in 0..30 {
-        let tile_type = (*curr_room_tiles.add(tile_pos as usize) & 0x1F) as c_int;
-        if tile_type == tiles_tiles_19_torch as c_int
-            || tile_type == tiles_tiles_30_torch_with_debris as c_int
-        {
-            // Center of the flame.
-            let x = (tile_pos % 10) * 32 + 48;
-            let y = (tile_pos / 10) * 63 + 22;
+    for tile_pos in 0..30usize {
+        // The high three bits of a tile byte are flags, not part of the id.
+        let tile_type = (*curr_room_tiles.add(tile_pos) & 0x1F) as tiles;
+        if !matches!(
+            tile_type,
+            tiles_tiles_19_torch | tiles_tiles_30_torch_with_debris
+        ) {
+            continue;
+        }
 
-            // Align the center of lighting mask to the center of the flame.
-            let mut dest_rect: SDL_Rect = core::mem::zeroed();
-            dest_rect.x = x - (*lighting_mask).w / 2;
-            dest_rect.y = y - (*lighting_mask).h / 2;
-            dest_rect.w = (*lighting_mask).w;
-            dest_rect.h = (*lighting_mask).h;
+        // Center of the flame, in the room's 10-column by 3-row tile grid.
+        let x = (tile_pos % 10) as c_int * 32 + 48;
+        let y = (tile_pos / 10) as c_int * 63 + 22;
 
-            let result = SDL_BlitSurface(
-                lighting_mask,
-                core::ptr::null(),
-                screen_overlay,
-                &mut dest_rect,
-            );
-            if result != 0 {
-                sdlperror(cs!("SDL_BlitSurface (lighting_mask)"));
-            }
+        // Align the center of lighting mask to the center of the flame.
+        let mut dest_rect = SDL_Rect {
+            x: x - (*lighting_mask).w / 2,
+            y: y - (*lighting_mask).h / 2,
+            w: (*lighting_mask).w,
+            h: (*lighting_mask).h,
+        };
+
+        let result = SDL_BlitSurface(
+            lighting_mask,
+            core::ptr::null(),
+            screen_overlay,
+            &mut dest_rect,
+        );
+        if result != 0 {
+            sdlperror(cs!("SDL_BlitSurface (lighting_mask)"));
         }
     }
     if upside_down != 0 {
@@ -131,27 +184,23 @@ pub unsafe extern "C" fn redraw_lighting() {
     }
 }
 
-// Copy a part of the lighting overlay onto the screen.
-// Called when the screen is updated.
+/// Copy a part of the lighting overlay onto the screen.
+/// Called when the screen is updated.
+///
+/// The overlay's `SDL_BLENDMODE_MOD` makes this a multiply, dimming the given
+/// rectangle by however much light reaches it. Source and destination
+/// rectangles are the same object, exactly as in the C: overlay and screen
+/// share coordinates, and SDL clips the blit through that one rect.
 #[no_mangle]
 pub unsafe extern "C" fn update_lighting(target_rect_ptr: *const rect_type) {
-    if enable_lighting == 0 {
-        return;
-    }
-    if lighting_mask.is_null() {
-        return;
-    }
-    if curr_room_tiles.is_null() {
-        return;
-    }
-    if is_cutscene != 0 {
+    if !lighting_applies() {
         return;
     }
 
     let mut sdlrect: SDL_Rect = core::mem::zeroed();
     rect_to_sdlrect(target_rect_ptr, &mut sdlrect);
-    let p = &mut sdlrect as *mut SDL_Rect;
-    let result = SDL_BlitSurface(screen_overlay, p, onscreen_surface_, p);
+    let rect = &mut sdlrect as *mut SDL_Rect;
+    let result = SDL_BlitSurface(screen_overlay, rect, onscreen_surface_, rect);
     if result != 0 {
         sdlperror(cs!("SDL_BlitSurface (screen_overlay)"));
     }
