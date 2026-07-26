@@ -1,4 +1,81 @@
-// Platform layer — ported from seg009.c.
+//! Platform layer — everything the game needs from the machine it runs on.
+//!
+//! Ported from `src/seg009.c`. Unlike the other `seg*` modules this one is *not*
+//! a translation of original DOS code: the disassembly offsets in the comments
+//! name the routine each function replaces, but the bodies are SDLPoP's own
+//! reimplementations on top of SDL2. That is why the shapes here are C-shaped
+//! rather than 8086-shaped, and why so few functions have a `word`-arithmetic
+//! quirk to preserve.
+//!
+//! Everything below the game logic lives here, in roughly this order:
+//!
+//! * **Path resolution** — the game looks for a file in three places, in a
+//!   fixed order: `$HOME/.SDLPoP`, `/usr/share/SDLPoP`, and the directory the
+//!   executable was launched from. [`locate_file_`] walks that list for reads;
+//!   [`locate_save_file_`] walks it for writes, taking the first entry that is
+//!   a directory the user can write to.
+//!
+//! * **DAT archives** — a `.DAT` is the original DOS archive format: a 6-byte
+//!   header, a table of `(id, offset, size)` records, and the payloads. Every
+//!   open DAT is threaded onto the `dat_chain_ptr` singly-linked list, most
+//!   recently opened first, and a resource lookup walks that list until it
+//!   hits. A DAT entry can also be shadowed by a loose file on disk
+//!   (`data/<dat>/res<id>.<ext>`), which is how mods override individual
+//!   resources without shipping a whole DAT; `load_from_opendats_metadata` is
+//!   the single place that decides which of the two a resource came from, and
+//!   reports it back as a [`data_location`].
+//!
+//! * **Image decoding** — sprites in a DAT are stored 1..8 bits per pixel and
+//!   optionally compressed by one of four schemes (RLE or LZ-with-a-1KB-window,
+//!   each in left-to-right or up-to-down pixel order). `decode_image` runs the
+//!   pipeline: decompress into a packed buffer, expand to one byte per pixel,
+//!   hand the result to SDL as an 8-bit paletted surface with colour 0 made
+//!   transparent.
+//!
+//! * **Text** — a font is a `chtab` (an array of one small surface per glyph)
+//!   plus baseline metrics. `draw_text` breaks a string into lines that fit a
+//!   rect, then aligns and blits them glyph by glyph. Two fonts are always
+//!   available even with no data files present, because both are also embedded
+//!   in the binary (`hc_font_data` here, `hc_small_font_data` in `menu.c`).
+//!
+//! * **Audio** — one SDL audio device, one callback, and four mutually
+//!   overlapping sources: PC-speaker square waves synthesised from note lists,
+//!   digitised samples resampled to the device rate, MIDI through the OPL3
+//!   emulator in `midi.rs`, and Ogg Vorbis music. `audio_callback` mixes at
+//!   most one of {digi, speaker} with at most one of {midi, ogg}, and posts an
+//!   `SDL_USEREVENT` when a sound finishes so the game loop can notice.
+//!
+//! * **Screen** — the game draws into a 320x200 24-bit `onscreen_surface_`,
+//!   never to the window. `update_screen` uploads that surface to a texture and
+//!   lets SDL scale it, optionally through a 2x intermediate to imitate DOSBox's
+//!   "fuzzy pixels". Overlays (the level timer, the pause menu) are composited
+//!   into a separate `merged_surface` so they never touch the game's own
+//!   framebuffer.
+//!
+//! * **Timers** — three independent tick counters driven by SDL's performance
+//!   counter rather than by wall-clock milliseconds, so the game's notion of a
+//!   tick stays exact under fast-forward and under the feather-fall rescaling
+//!   in [`set_timer_length`].
+//!
+//! * **Events** — [`process_events`] is the single point where the outside
+//!   world reaches the game: keyboard, game controller, legacy joystick, mouse,
+//!   window and quit events all land in globals (`last_key_scancode`,
+//!   `key_states`, `joy_axis`, ...) that the gameplay code polls.
+//!
+//! ## Notes for readers coming from the other `seg*` modules
+//!
+//! This module was deliberately left out of the `&mut State` migration. It is
+//! platform-init-heavy, most of its state is genuinely process-global (SDL
+//! handles, the open-DAT chain, the audio mixer's cursor), and threading a
+//! `State` through it would buy no testability.
+//!
+//! It *is* fully migrated to the [`crate::platform`] traits: no `SDL_*` symbol
+//! is called directly. Everything goes through
+//! `crate::platform::sdl::shared_renderer()` / `shared_audio()` /
+//! `shared_input()`, which is what lets the headless backend exist. The handful
+//! of `SDL_`-named `#[inline]` functions below are C *macros* being
+//! reimplemented, not FFI declarations.
+
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 #![allow(static_mut_refs)]
@@ -529,11 +606,15 @@ static mut found_home_dir: bool = false;
 static mut share_dir: [c_char; POP_MAX_PATH] = [0; POP_MAX_PATH];
 static mut found_share_dir: bool = false;
 
+/// Head of the open-DAT chain, most recently opened first. See [`open_dat`].
 static mut dat_chain_ptr: *mut dat_type = null_mut();
+/// Last printable character typed, from SDL_TEXTINPUT. See [`input_str`].
 static mut last_text_input: c_char = 0;
 
+/// Bitmask of palette rows currently claimed by loaded sprite sheets.
 static mut chtab_palette_bits: word = 1;
 
+/// The game's own 256-entry palette, in 6-bit VGA components.
 static mut palette: [rgb_type; 256] = [rgb_type { r: 0, g: 0, b: 0 }; 256];
 
 static mut speaker_playing: c_short = 0;
@@ -542,51 +623,80 @@ static mut digi_playing: c_short = 0;
 pub static mut midi_playing: c_short = 0;
 static mut ogg_playing: c_short = 0;
 
+/// The currently playing sound buffer for the PC speaker.
 static mut current_speaker_sound: *mut speaker_type = null_mut();
+/// Index for which note is currently playing.
 static mut speaker_note_index: c_int = 0;
+/// How long the last (partially played) speaker note has been playing.
 static mut current_speaker_note_samples_already_emitted: c_int = 0;
 
+/// The current buffer, holds the resampled sound data.
 static mut digi_buffer: *mut byte = null_mut();
+/// The current position in digi_buffer.
 static mut digi_remaining_pos: *mut byte = null_mut();
+/// The remaining length.
 static mut digi_remaining_length: c_int = 0;
 
+/// The properties of the audio device. Null until [`init_digi`] succeeds.
 #[no_mangle]
 pub static mut digi_audiospec: *mut SDL_AudioSpec = null_mut();
+/// The desired samplerate. Everything will be resampled to this.
 const digi_samplerate: c_int = 44100;
 
+/// Decoder for the currently playing OGG sound (also holds the playback
+/// position).
 static mut ogg_decoder: *mut crate::ogg_decode::OggDecoder = null_mut();
 
+/// Current PC-speaker output level. If the amplitude is too high, the speaker
+/// sounds will be really loud!
 static mut square_wave_state: c_short = 4000;
+/// Fractional phase carried between audio callbacks.
 static mut square_wave_samples_since_last_flip: f32 = 0.0;
 
+/// Fast-forward multiplier applied to the audio clock. See [`audio_callback`].
 #[no_mangle]
 pub static mut audio_speed: c_int = 1;
 
+/// Latches once the audio device fails to open, disabling all audio.
 #[no_mangle]
 pub static mut digi_unavailable: c_int = 0;
 
 const sound_channel: c_int = 0;
 const max_sound_id: c_int = 58;
 
+/// Cached digi layout version; -1 until determined. See
+/// [`determine_wave_version`].
 static mut wave_version: c_int = -1;
 
 static mut RGB24_bug_checked: bool = false;
 static mut RGB24_bug_affected: bool = false;
 
+/// Game ticks per second. Multiplied by FAST_FORWARD_RATIO while
+/// fast-forwarding.
 static mut fps: c_int = BASE_FPS;
 static mut milliseconds_per_tick: f32 = 1000.0 / (BASE_FPS as f32);
+/// Per-timer start point, in performance-counter units.
 static mut timer_last_counter: [u64; NUM_TIMERS] = [0; NUM_TIMERS];
+/// Per-timer length, in game ticks.
 static mut wait_time: [c_int; NUM_TIMERS] = [0; NUM_TIMERS];
 
+/// Set when Tab is already held on window focus (from Alt+Tab), so the
+/// keystroke is swallowed rather than reaching the game.
 static mut ignore_tab: bool = false;
+/// Whether any key interrupts [`do_wait`], or only Escape.
 static mut word_1D63A: word = 1;
 
+/// 2x intermediate surface for CPU-side "fuzzy" scaling, when the renderer
+/// cannot do it on a render target. See [`init_scaling`].
 static mut onscreen_surface_2x: *mut SDL_Surface = null_mut();
 
 // init_overlay / init_scaling "static bool initialized"
 static mut overlay_initialized: bool = false;
 
-// directory listing (dirent.h-based) — opaque to other modules via cast.
+/// The `directory_listing_type` other modules see only as an opaque pointer.
+///
+/// `found_filename` borrows the `DIR`'s own dirent buffer, so it is invalidated
+/// by the next [`find_next_file`] -- callers must copy it before advancing.
 #[repr(C)]
 struct DirectoryListing {
     dp: *mut c_void,
@@ -596,6 +706,10 @@ struct DirectoryListing {
 
 include!("seg009_hc_font_data.rs");
 
+/// Prints the last SDL error, prefixed with `header`, in the style of `perror`.
+///
+/// Unlike `perror` this never exits: SDLPoP calls it from paths that go on to
+/// `quit(1)` themselves and from paths that shrug the failure off.
 // seg009: sdlperror
 #[no_mangle]
 pub unsafe extern "C" fn sdlperror(header: *const c_char) {
@@ -603,6 +717,10 @@ pub unsafe extern "C" fn sdlperror(header: *const c_char) {
     printf(cs!("%s: %s\n"), header, error);
 }
 
+/// Fills `exe_dir` with the directory part of `argv[0]`; idempotent.
+///
+/// Truncating at the last `/` or `\` leaves `.` (the static's initialiser) when
+/// the program was found on `$PATH` and `argv[0]` has no separator at all.
 unsafe fn find_exe_dir() {
     if found_exe_dir {
         return;
@@ -629,6 +747,11 @@ unsafe fn find_exe_dir() {
     found_exe_dir = true;
 }
 
+/// Fills `home_dir` with `$HOME/.SDLPoP`, and records whether it exists.
+///
+/// `found_home_dir` stays false if the directory is absent, but `home_dir` is
+/// written either way -- so the search order in [`find_first_file_match`] still
+/// probes the path, it just re-derives it on every call.
 unsafe fn find_home_dir() {
     if found_home_dir {
         return;
@@ -640,6 +763,7 @@ unsafe fn find_home_dir() {
     }
 }
 
+/// Fills `share_dir` with `/usr/share/SDLPoP`; see [`find_home_dir`].
 unsafe fn find_share_dir() {
     if found_share_dir {
         return;
@@ -650,19 +774,34 @@ unsafe fn find_share_dir() {
     }
 }
 
+/// True if `filename` names something reachable -- file, directory or otherwise.
 // seg009: file_exists
 #[no_mangle]
 pub unsafe extern "C" fn file_exists(filename: *const c_char) -> bool {
     access(filename, F_OK) != -1
 }
 
-unsafe fn find_first_file_match(dst: *mut c_char, size: c_int, format: *const c_char, filename: *const c_char) -> *const c_char {
+/// The ordered list of directories the game searches for its data.
+///
+/// User overrides first, then the system-wide install, then wherever the
+/// executable lives. Recomputed on each call because [`find_home_dir`] and
+/// friends only cache the *result of the existence check*, not the path.
+unsafe fn search_dirs() -> [*mut c_char; 3] {
     find_exe_dir();
     find_home_dir();
     find_share_dir();
-    let dirs: [*mut c_char; 3] = [home_dir.as_mut_ptr(), share_dir.as_mut_ptr(), exe_dir.as_mut_ptr()];
-    for i in 0..3 {
-        snprintf_check!(dst, size, format, dirs[i], filename);
+    [home_dir.as_mut_ptr(), share_dir.as_mut_ptr(), exe_dir.as_mut_ptr()]
+}
+
+/// Formats `format` against each search directory in turn and stops at the
+/// first combination that exists.
+///
+/// If nothing matches, `dst` is left holding the *last* candidate tried
+/// (`exe_dir`), which is what makes the caller's subsequent `fopen` fail with a
+/// useful path in the error message rather than with an empty string.
+unsafe fn find_first_file_match(dst: *mut c_char, size: c_int, format: *const c_char, filename: *const c_char) -> *const c_char {
+    for dir in search_dirs() {
+        snprintf_check!(dst, size, format, dir, filename);
         if file_exists(dst) {
             break;
         }
@@ -670,24 +809,31 @@ unsafe fn find_first_file_match(dst: *mut c_char, size: c_int, format: *const c_
     dst as *const c_char
 }
 
+/// Builds a path for a file the game intends to *write* (saves, config,
+/// screenshots).
+///
+/// Takes the first search directory that both exists and is writable, rather
+/// than the first that contains the file -- the file typically does not exist
+/// yet. Falls through to leaving `dst` untouched if none qualifies.
 // seg009: locate_save_file_
 #[no_mangle]
 pub unsafe extern "C" fn locate_save_file_(filename: *const c_char, dst: *mut c_char, size: c_int) -> *const c_char {
-    find_exe_dir();
-    find_home_dir();
-    find_share_dir();
-    let dirs: [*mut c_char; 3] = [home_dir.as_mut_ptr(), share_dir.as_mut_ptr(), exe_dir.as_mut_ptr()];
-    for i in 0..3 {
+    for dir in search_dirs() {
         let mut path_stat: stat_t = core::mem::zeroed();
-        let result = stat(dirs[i], &mut path_stat);
-        if result == 0 && S_ISDIR(path_stat.st_mode) && access(dirs[i], W_OK) == 0 {
-            snprintf_check!(dst, size, cs!("%s/%s"), dirs[i], filename);
+        let result = stat(dir, &mut path_stat);
+        if result == 0 && S_ISDIR(path_stat.st_mode) && access(dir, W_OK) == 0 {
+            snprintf_check!(dst, size, cs!("%s/%s"), dir, filename);
             break;
         }
     }
     dst as *const c_char
 }
 
+/// Resolves a path for reading: `filename` as given if it already resolves,
+/// otherwise the first search-directory hit.
+///
+/// Note the return value aliases *either* the caller's `filename` or the
+/// caller's `path_buffer`, so `path_buffer` must outlive the result.
 // seg009: locate_file_
 #[no_mangle]
 pub unsafe extern "C" fn locate_file_(filename: *const c_char, path_buffer: *mut c_char, buffer_size: c_int) -> *const c_char {
@@ -698,28 +844,41 @@ pub unsafe extern "C" fn locate_file_(filename: *const c_char, path_buffer: *mut
     }
 }
 
+/// Advances `data`'s `readdir` cursor to the next entry whose extension matches,
+/// and returns whether one was found.
+///
+/// Shared by [`create_directory_listing_and_find_first_file`] and
+/// [`find_next_file`]; the only difference between them is that the former also
+/// opens the directory first.
+unsafe fn advance_to_next_matching_file(data: *mut DirectoryListing) -> bool {
+    loop {
+        let ep = readdir((*data).dp);
+        if ep.is_null() {
+            return false;
+        }
+        // d_name is an inline array in the dirent, so this borrows the DIR's
+        // buffer -- it stays valid only until the next readdir on this handle.
+        let dname = core::ptr::addr_of_mut!((*ep).d_name) as *mut c_char;
+        let ext = strrchr(dname, '.' as c_int);
+        if !ext.is_null() && strcasecmp(ext.add(1), (*data).extension) == 0 {
+            (*data).found_filename = dname;
+            return true;
+        }
+    }
+}
+
+/// Opens `directory` and positions the cursor on the first `*.extension` entry.
+///
+/// Returns null (having freed everything) if the directory cannot be opened or
+/// holds no matching file, so callers can treat "no listing" and "empty
+/// listing" identically. Used to enumerate mods and replay files.
 // seg009: create_directory_listing_and_find_first_file
 #[no_mangle]
 pub unsafe extern "C" fn create_directory_listing_and_find_first_file(directory: *const c_char, extension: *const c_char) -> *mut directory_listing_type {
     let data = calloc(1, core::mem::size_of::<DirectoryListing>()) as *mut DirectoryListing;
-    let mut ok = false;
     (*data).dp = opendir(directory);
-    if !(*data).dp.is_null() {
-        loop {
-            let ep = readdir((*data).dp);
-            if ep.is_null() {
-                break;
-            }
-            let dname = core::ptr::addr_of_mut!((*ep).d_name) as *mut c_char;
-            let ext = strrchr(dname, '.' as c_int);
-            if !ext.is_null() && strcasecmp(ext.add(1), extension) == 0 {
-                (*data).found_filename = dname;
-                (*data).extension = extension;
-                ok = true;
-                break;
-            }
-        }
-    }
+    (*data).extension = extension;
+    let ok = !(*data).dp.is_null() && advance_to_next_matching_file(data);
     if ok {
         data as *mut directory_listing_type
     } else {
@@ -728,6 +887,7 @@ pub unsafe extern "C" fn create_directory_listing_and_find_first_file(directory:
     }
 }
 
+/// The filename the listing's cursor currently sits on.
 // seg009: get_current_filename_from_directory_listing
 #[no_mangle]
 pub unsafe extern "C" fn get_current_filename_from_directory_listing(data: *mut directory_listing_type) -> *mut c_char {
@@ -735,27 +895,14 @@ pub unsafe extern "C" fn get_current_filename_from_directory_listing(data: *mut 
     (*data).found_filename
 }
 
+/// Advances the listing to the next matching file; false once exhausted.
 // seg009: find_next_file
 #[no_mangle]
 pub unsafe extern "C" fn find_next_file(data: *mut directory_listing_type) -> bool {
-    let data = data as *mut DirectoryListing;
-    let mut ok = false;
-    loop {
-        let ep = readdir((*data).dp);
-        if ep.is_null() {
-            break;
-        }
-        let dname = core::ptr::addr_of_mut!((*ep).d_name) as *mut c_char;
-        let ext = strrchr(dname, '.' as c_int);
-        if !ext.is_null() && strcasecmp(ext.add(1), (*data).extension) == 0 {
-            (*data).found_filename = dname;
-            ok = true;
-            break;
-        }
-    }
-    ok
+    advance_to_next_matching_file(data as *mut DirectoryListing)
 }
 
+/// Closes the directory handle and frees the listing.
 // seg009: close_directory_listing
 #[no_mangle]
 pub unsafe extern "C" fn close_directory_listing(data: *mut directory_listing_type) {
@@ -764,6 +911,11 @@ pub unsafe extern "C" fn close_directory_listing(data: *mut directory_listing_ty
     free(data as *mut c_void);
 }
 
+/// Consumes and returns the pending keystroke, or 0 if there is none.
+///
+/// The scancode carries modifier bits in its high bits (see
+/// `key_modifiers_WITH_*`), which is why the game compares against composite
+/// values like `SDL_SCANCODE_Q | WITH_CTRL`.
 // seg009:000D read_key
 #[no_mangle]
 pub unsafe extern "C" fn read_key() -> c_int {
@@ -772,6 +924,7 @@ pub unsafe extern "C" fn read_key() -> c_int {
     key
 }
 
+/// Drops any pending keystroke and typed character.
 // seg009:019A clear_kbd_buf
 #[no_mangle]
 pub unsafe extern "C" fn clear_kbd_buf() {
@@ -779,6 +932,12 @@ pub unsafe extern "C" fn clear_kbd_buf() {
     last_text_input = 0;
 }
 
+/// Returns a pseudo-random value in `0..=max`.
+///
+/// The original MSVC LCG, kept bit-exact because replays depend on it: every
+/// guard's decision and every random level detail comes out of this sequence,
+/// so any change here desynchronises every recorded replay. The seed is taken
+/// from the clock on first use unless a replay (or `seed=`) has already set it.
 // seg009:040A prandom
 #[no_mangle]
 pub unsafe extern "C" fn prandom(max: word) -> word {
@@ -790,12 +949,15 @@ pub unsafe extern "C" fn prandom(max: word) -> word {
     ((random_seed >> 16) % ((max as dword) + 1)) as word
 }
 
+/// Identity: rounding x to a byte boundary was an EGA-era concern with no
+/// meaning for the SDL renderer.
 // seg009:0467 round_xpos_to_byte
 #[no_mangle]
 pub unsafe extern "C" fn round_xpos_to_byte(xpos: c_int, _round_direction: c_int) -> c_int {
     xpos
 }
 
+/// Tears SDL down and exits the process. Never returns.
 // seg009:0C7A quit
 #[no_mangle]
 pub unsafe extern "C" fn quit(exit_code: c_int) {
@@ -803,12 +965,19 @@ pub unsafe extern "C" fn quit(exit_code: c_int) {
     exit(exit_code);
 }
 
+/// Shuts SDL down. Named for the DOS routine that restored the text-mode video
+/// state.
 // seg009:0C90 restore_stuff
 #[no_mangle]
 pub unsafe extern "C" fn restore_stuff() {
     crate::platform::sdl::shared_renderer().sdl_quit();
 }
 
+/// [`read_key`] plus the global Ctrl+Q quit handler.
+///
+/// Called from every modal loop in the game (dialogs, fades, `input_str`), which
+/// is what makes Ctrl+Q work everywhere rather than only in gameplay. Saving the
+/// replay and closing the menu happen first so neither is lost on the way out.
 // seg009:0E33 key_test_quit
 #[no_mangle]
 pub unsafe extern "C" fn key_test_quit() -> c_int {
@@ -825,10 +994,22 @@ pub unsafe extern "C" fn key_test_quit() -> c_int {
     key as c_int
 }
 
+/// Finds `param` on the command line and returns the argument that follows it.
+///
+/// The command line is positional and untyped: `prince megahit 3` means "cheats
+/// on, start at level 3", so an option's *value* is simply the next argv entry.
+/// Two options (`mod`, `validate`) always consume a following argument, so they
+/// are skipped past before the name comparison -- otherwise
+/// `prince mod full validate` would see `full` as a candidate option name.
+/// Arguments containing a `.` are skipped entirely: they are filenames.
+///
+/// Matching is a case-insensitive *prefix* test, so `check_param("full")` also
+/// answers for `fullscreen`.
 // seg009:0E54 check_param
 #[no_mangle]
 pub unsafe extern "C" fn check_param(param: *const c_char) -> *const c_char {
-    static PARAMS: [&[u8]; 2] = [b"mod\0", b"validate\0"];
+    /// The options that take a following argument.
+    static PARAMS_WITH_ONE_SUBPARAM: [&[u8]; 2] = [b"mod\0", b"validate\0"];
     let mut arg_index: c_short = 1;
     while (arg_index as c_int) < g_argc {
         let curr_arg = *g_argv.offset(arg_index as isize);
@@ -836,17 +1017,13 @@ pub unsafe extern "C" fn check_param(param: *const c_char) -> *const c_char {
             arg_index += 1;
             continue;
         }
-        let mut curr_arg_has_one_subparam = false;
-        for i in 0..PARAMS.len() {
-            let p = PARAMS[i].as_ptr() as *const c_char;
-            if strncasecmp(curr_arg, p, strlen(p)) == 0 {
-                curr_arg_has_one_subparam = true;
-                break;
-            }
-        }
+        let curr_arg_has_one_subparam = PARAMS_WITH_ONE_SUBPARAM.iter().any(|p| {
+            let p = p.as_ptr() as *const c_char;
+            strncasecmp(curr_arg, p, strlen(p)) == 0
+        });
         if curr_arg_has_one_subparam {
             arg_index += 1;
-            if !((arg_index as c_int) < g_argc) {
+            if (arg_index as c_int) >= g_argc {
                 return null_mut();
             }
         }
@@ -858,6 +1035,7 @@ pub unsafe extern "C" fn check_param(param: *const c_char) -> *const c_char {
     null_mut()
 }
 
+/// Starts timer `timer_index` for `time` ticks and blocks until it expires.
 // seg009:0EDF pop_wait
 #[no_mangle]
 pub unsafe extern "C" fn pop_wait(timer_index: c_int, time: c_int) -> c_int {
@@ -865,15 +1043,23 @@ pub unsafe extern "C" fn pop_wait(timer_index: c_int, time: c_int) -> c_int {
     do_wait(timer_index)
 }
 
+/// Opens a `.DAT` from the working directory, else from `data/`, else from a
+/// `data/` under any search directory.
+///
+/// The `S_ISREG` guard matters because the fallback layout for a *missing* DAT
+/// is a *directory* of the same name (see [`open_dat`]); without it, `fopen`
+/// would be handed a directory path.
 unsafe fn open_dat_from_root_or_data_dir(filename: *const c_char) -> *mut FILE {
     let mut fp: *mut FILE = fopen(filename, cs!("rb"));
-    // if failed, try if the DAT file can be opened in the data/ directory
+
+    // if failed, try if the DAT file can be opened in the data/ directory, instead of the main folder
     if fp.is_null() {
         let mut data_path = [0 as c_char; POP_MAX_PATH];
         snprintf_check!(data_path.as_mut_ptr(), POP_MAX_PATH, cs!("data/%s"), filename);
         if !file_exists(data_path.as_ptr()) {
             find_first_file_match(data_path.as_mut_ptr(), POP_MAX_PATH as c_int, cs!("%s/data/%s"), filename);
         }
+        // verify that this is a regular file and not a directory (otherwise, don't open)
         let mut path_stat: stat_t = core::mem::zeroed();
         stat(data_path.as_ptr(), &mut path_stat);
         if S_ISREG(path_stat.st_mode) {
@@ -883,6 +1069,19 @@ unsafe fn open_dat_from_root_or_data_dir(filename: *const c_char) -> *mut FILE {
     fp
 }
 
+/// Opens a `.DAT` archive and pushes it onto the front of the open-DAT chain.
+///
+/// A `dat_type` node is always allocated and always linked, even when the file
+/// could not be opened or is corrupt -- a node with a null `handle` still
+/// participates in resource lookup, because
+/// [`load_from_opendats_metadata`] will then look for loose `data/<name>/res*`
+/// files under that name instead. Being at the *front* of the chain is what
+/// gives later-opened DATs priority over earlier ones.
+///
+/// `optional` is tri-state despite its `int` type: 0 means "required, complain
+/// loudly if absent", nonzero means "quietly tolerate absence", and the
+/// specific value `'G'` marks a graphics DAT, which the
+/// `always_use_original_graphics` option uses to skip the mod folder.
 // seg009:0F58 open_dat
 #[no_mangle]
 pub unsafe extern "C" fn open_dat(filename: *const c_char, mut optional: c_int) -> *mut dat_type {
@@ -890,10 +1089,14 @@ pub unsafe extern "C" fn open_dat(filename: *const c_char, mut optional: c_int) 
     if use_custom_levelset == 0 {
         fp = open_dat_from_root_or_data_dir(filename);
     } else {
+        // Don't complain about missing data files if we are only looking in the mod folder, because
+        // they might exist in the data folder. (Possible only if open_dat() was called by
+        // load_all_sounds().)
         if !skip_mod_data_files && skip_normal_data_files {
             optional = 1;
         }
         if !skip_mod_data_files && !(always_use_original_graphics != 0 && optional == 'G' as c_int) {
+            // before checking the root directory, first try mods/MODNAME/
             let mut filename_mod = [0 as c_char; POP_MAX_PATH];
             snprintf_check!(filename_mod.as_mut_ptr(), POP_MAX_PATH, cs!("%s/%s"), mod_data_path.as_ptr(), filename);
             fp = fopen(filename_mod.as_ptr(), cs!("rb"));
@@ -902,8 +1105,6 @@ pub unsafe extern "C" fn open_dat(filename: *const c_char, mut optional: c_int) 
             fp = open_dat_from_root_or_data_dir(filename);
         }
     }
-    let mut dat_header: dat_header_type = core::mem::zeroed();
-    let mut dat_table: *mut dat_table_type = null_mut();
 
     let pointer = calloc(1, core::mem::size_of::<dat_type>()) as *mut dat_type;
     snprintf_check!(core::ptr::addr_of_mut!((*pointer).filename) as *mut c_char, 256, cs!("%s"), filename);
@@ -911,72 +1112,102 @@ pub unsafe extern "C" fn open_dat(filename: *const c_char, mut optional: c_int) 
     dat_chain_ptr = pointer;
 
     if !fp.is_null() {
-        let mut failed = false;
-        'f: {
-            if fread(core::ptr::addr_of_mut!(dat_header) as *mut c_void, 6, 1, fp) != 1 {
-                failed = true;
-                break 'f;
-            }
-            dat_table = malloc(swaple16(dat_header.table_size) as usize) as *mut dat_table_type;
-            if dat_table.is_null()
-                || fseek(fp, swaple32(dat_header.table_offset) as c_long, SEEK_SET) != 0
-                || fread(dat_table as *mut c_void, swaple16(dat_header.table_size) as usize, 1, fp) != 1
-            {
-                failed = true;
-                break 'f;
-            }
-            (*pointer).handle = fp;
-            (*pointer).dat_table = dat_table;
-        }
-        if failed {
-            perror(filename);
-            if !fp.is_null() {
-                fclose(fp);
-            }
-            if !dat_table.is_null() {
-                free(dat_table as *mut c_void);
-            }
-        }
+        read_dat_table_into(pointer, fp, filename);
     } else if optional == 0 {
-        let mut filename_no_ext = [0 as c_char; POP_MAX_PATH];
-        strncpy(filename_no_ext.as_mut_ptr(), core::ptr::addr_of!((*pointer).filename) as *const c_char, POP_MAX_PATH);
-        let len = strlen(filename_no_ext.as_ptr());
-        if len >= 5 && filename_no_ext[len - 4] == '.' as c_char {
-            filename_no_ext[len - 4] = 0;
-        }
-        let mut foldername = [0 as c_char; POP_MAX_PATH];
-        snprintf_check!(foldername.as_mut_ptr(), POP_MAX_PATH, cs!("data/%s"), filename_no_ext.as_ptr());
-        let mut __lf = [0 as c_char; POP_MAX_PATH];
-        let data_path = locate_file_(foldername.as_ptr(), __lf.as_mut_ptr(), POP_MAX_PATH as c_int);
-        let mut path_stat: stat_t = core::mem::zeroed();
-        let result = stat(data_path, &mut path_stat);
-        if result != 0 || !S_ISDIR(path_stat.st_mode) {
-            let mut error_message = [0 as c_char; 256];
-            snprintf_check!(error_message.as_mut_ptr(), 256, cs!("Cannot find a required data file: %s or folder: %s\nPress any key to quit."), filename, foldername.as_ptr());
-            if !onscreen_surface_.is_null() && !copyprot_dialog.is_null() {
-                showmessage(error_message.as_mut_ptr(), 1, key_test_quit as *mut c_void);
-                quit(1);
-            }
-        }
+        complain_if_no_fallback_folder(pointer, filename);
     }
     pointer
 }
 
+/// Reads a DAT's 6-byte header and its resource table, attaching both to
+/// `pointer` on success.
+///
+/// C's `goto failed` tail: on any of the three failure points the handle and
+/// the partially-read table are released and `pointer` is left with its
+/// calloc'd null `handle`, which downgrades it to a directory-only entry rather
+/// than removing it from the chain.
+unsafe fn read_dat_table_into(pointer: *mut dat_type, fp: *mut FILE, filename: *const c_char) {
+    let mut dat_header: dat_header_type = core::mem::zeroed();
+    let mut dat_table: *mut dat_table_type = null_mut();
+    let ok = 'read: {
+        if fread(core::ptr::addr_of_mut!(dat_header) as *mut c_void, 6, 1, fp) != 1 {
+            break 'read false;
+        }
+        dat_table = malloc(swaple16(dat_header.table_size) as usize) as *mut dat_table_type;
+        !dat_table.is_null()
+            && fseek(fp, swaple32(dat_header.table_offset) as c_long, SEEK_SET) == 0
+            && fread(dat_table as *mut c_void, swaple16(dat_header.table_size) as usize, 1, fp) == 1
+    };
+    if ok {
+        (*pointer).handle = fp;
+        (*pointer).dat_table = dat_table;
+    } else {
+        perror(filename);
+        fclose(fp);
+        if !dat_table.is_null() {
+            free(dat_table as *mut c_void);
+        }
+    }
+}
+
+/// A required DAT is missing: check whether the directory that may stand in for
+/// it exists, and if not, tell the player and quit.
+///
+/// The fallback for `TITLE.DAT` is a folder simply named `data/TITLE`, holding
+/// one file per resource. Showing the message needs a screen and a dialog
+/// template, so if either is still uninitialised the game carries on and fails
+/// later, more obscurely -- which is why `pop_main` moves the first `open_dat`
+/// call after `init_copyprot_dialog`.
+unsafe fn complain_if_no_fallback_folder(pointer: *mut dat_type, filename: *const c_char) {
+    // strip the .DAT file extension from the filename (use folders simply named TITLE, KID, ...)
+    let mut filename_no_ext = [0 as c_char; POP_MAX_PATH];
+    strncpy(filename_no_ext.as_mut_ptr(), core::ptr::addr_of!((*pointer).filename) as *const c_char, POP_MAX_PATH);
+    let len = strlen(filename_no_ext.as_ptr());
+    if len >= 5 && filename_no_ext[len - 4] == '.' as c_char {
+        filename_no_ext[len - 4] = 0;
+    }
+    let mut foldername = [0 as c_char; POP_MAX_PATH];
+    snprintf_check!(foldername.as_mut_ptr(), POP_MAX_PATH, cs!("data/%s"), filename_no_ext.as_ptr());
+    let mut located = [0 as c_char; POP_MAX_PATH];
+    let data_path = locate_file_(foldername.as_ptr(), located.as_mut_ptr(), POP_MAX_PATH as c_int);
+    let mut path_stat: stat_t = core::mem::zeroed();
+    let result = stat(data_path, &mut path_stat);
+    if result != 0 || !S_ISDIR(path_stat.st_mode) {
+        let mut error_message = [0 as c_char; 256];
+        snprintf_check!(error_message.as_mut_ptr(), 256, cs!("Cannot find a required data file: %s or folder: %s\nPress any key to quit."), filename, foldername.as_ptr());
+        // otherwise showmessage will crash
+        if !onscreen_surface_.is_null() && !copyprot_dialog.is_null() {
+            showmessage(error_message.as_mut_ptr(), 1, key_test_quit as *mut c_void);
+            quit(1);
+        }
+    }
+}
+
+/// Installs a sprite sheet's palette into the 16 VGA palette rows it claims.
+///
+/// `row_bits` is a bitmask over the 16 rows of 16 colours each; the source rows
+/// are packed consecutively, so `source_row` advances only on a set bit while
+/// `dest_index` advances every iteration.
 // seg009:9CAC set_loaded_palette
 #[no_mangle]
 pub unsafe extern "C" fn set_loaded_palette(palette_ptr: *mut dat_pal_type) {
-    let mut dest_index: c_int = 0;
     let mut source_row: c_int = 0;
     let vga_base = core::ptr::addr_of!((*palette_ptr).vga) as *const rgb_type;
     for dest_row in 0..16 {
         if ((*palette_ptr).row_bits as c_int) & (1 << dest_row) != 0 {
-            set_pal_arr(dest_index, 16, vga_base.add((source_row * 0x10) as usize));
+            set_pal_arr(dest_row * 0x10, 16, vga_base.add((source_row * 0x10) as usize));
             source_row += 1;
         }
-        dest_index += 0x10;
     }
 }
 
+/// Loads a whole sprite sheet: the palette at `resource`, then the `n_images`
+/// sprites at `resource + 1 ..= resource + n_images`.
+///
+/// The returned `chtab_type` is a header followed by a flexible array of image
+/// pointers, so it is allocated as one block and the pointers are reached
+/// through `addr_of_mut!`. Individual images may be null (missing resources are
+/// tolerated); `n_images` counts slots, not successes.
 // seg009:104E load_sprites_from_file
 #[no_mangle]
 pub unsafe extern "C" fn load_sprites_from_file(resource: c_int, palette_bits: c_int, quit_on_error: c_int) -> *mut chtab_type {
@@ -984,6 +1215,9 @@ pub unsafe extern "C" fn load_sprites_from_file(resource: c_int, palette_bits: c
     if shpl.is_null() {
         printf(cs!("Can't load sprites from resource %d.\n"), resource);
         if quit_on_error != 0 {
+            // Unfortunately we don't know at this point which data file is missing, so we use the
+            // name of the last opened DAT file. It's also possible that the DAT file exists and it
+            // just doesn't contain the needed resource.
             let mut error_message = [0 as c_char; 256];
             snprintf_check!(error_message.as_mut_ptr(), 256, cs!("Can't load sprites from resource %d.\nThe last opened data file is: %s\nPress any key to quit."), resource, core::ptr::addr_of!((*dat_chain_ptr).filename) as *const c_char);
             showmessage(error_message.as_mut_ptr(), 1, key_test_quit as *mut c_void);
@@ -993,9 +1227,9 @@ pub unsafe extern "C" fn load_sprites_from_file(resource: c_int, palette_bits: c
     }
     let pal_ptr = core::ptr::addr_of_mut!((*shpl).palette);
     if graphics_mode as c_int == grmodes_gmMcgaVga as c_int {
-        if palette_bits == 0 {
-            // (original body commented out)
-        } else {
+        // The palette_bits == 0 branch (auto-allocating rows via add_palette_bits) is commented out
+        // in the C source; add_palette_bits is a stub returning 0, so it would have quit(1).
+        if palette_bits != 0 {
             chtab_palette_bits |= palette_bits as word;
         }
         (*pal_ptr).row_bits = palette_bits as word;
@@ -1007,32 +1241,37 @@ pub unsafe extern "C" fn load_sprites_from_file(resource: c_int, palette_bits: c
     (*chtab).n_images = n_images as word;
     let images = core::ptr::addr_of_mut!((*chtab).images) as *mut *mut image_type;
     for i in 1..=n_images {
-        let image = load_image(resource + i, pal_ptr);
-        *images.add((i - 1) as usize) = image;
+        *images.add((i - 1) as usize) = load_image(resource + i, pal_ptr);
     }
     set_loaded_palette(pal_ptr);
     chtab
 }
 
+/// Frees a sprite sheet and every surface in it, releasing its palette rows.
 // seg009:11A8 free_chtab
 #[no_mangle]
 pub unsafe extern "C" fn free_chtab(chtab_ptr: *mut chtab_type) {
     if graphics_mode as c_int == grmodes_gmMcgaVga as c_int && (*chtab_ptr).has_palette_bits != 0 {
         chtab_palette_bits &= !(*chtab_ptr).chtab_palette_bits;
     }
-    let n_images = (*chtab_ptr).n_images;
     let images = core::ptr::addr_of_mut!((*chtab_ptr).images) as *mut *mut image_type;
-    let mut id: word = 0;
-    while id < n_images {
-        let curr_image = *images.add(id as usize);
+    for id in 0..(*chtab_ptr).n_images as usize {
+        let curr_image = *images.add(id);
         if !curr_image.is_null() {
             crate::platform::sdl::shared_renderer().free_surface(curr_image);
         }
-        id += 1;
     }
     free(chtab_ptr as *mut c_void);
 }
 
+/// RLE, left-to-right: a run header byte, then either literal bytes or one byte
+/// to repeat.
+///
+/// A non-negative header `n` means "copy the next `n + 1` literal bytes"; a
+/// negative header means "repeat the next byte `-n` times". Both `count`
+/// updates deliberately wrap in an `i8`, exactly as the C `sbyte` does: `++count`
+/// on 127 lands on -128, and `-count` on -128 stays -128. Neither is reachable
+/// from well-formed data, but the wrap is what the C source does, so it is kept.
 // seg009:8CE6 decompress_rle_lr
 unsafe fn decompress_rle_lr(destination: *mut byte, source: *const byte, dest_length: c_int) {
     let mut src_pos = source;
@@ -1070,6 +1309,12 @@ unsafe fn decompress_rle_lr(destination: *mut byte, source: *const byte, dest_le
     }
 }
 
+/// RLE, up-to-down: same run encoding as [`decompress_rle_lr`], but the output
+/// cursor walks down a column and wraps to the top of the next one.
+///
+/// `dest_pos` advances by `width` (pre-decremented, so `+1 + width` = one full
+/// row) after each byte; when `rem_height` hits zero it jumps back by
+/// `dest_length - 1` to the top of the following column.
 // seg009:8D1C decompress_rle_ud
 unsafe fn decompress_rle_ud(destination: *mut byte, source: *const byte, mut dest_length: c_int, mut width: c_int, height: c_int) {
     let mut rem_height: c_short = height as c_short;
@@ -1122,6 +1367,21 @@ unsafe fn decompress_rle_ud(destination: *mut byte, source: *const byte, mut des
     }
 }
 
+/// LZ77-style, left-to-right, over a 1 KB circular window.
+///
+/// The stream is a sequence of *groups*: one flag byte, then up to eight items,
+/// one per bit, low bit first. A 1 bit is a literal byte; a 0 bit is a two-byte
+/// back-reference, big-endian, packing a 10-bit window offset in the low bits
+/// and a length-minus-3 in the high six.
+///
+/// The `mask` register does double duty as both the flag bits and the counter
+/// for how many are left: refilling it as `byte | 0xFF00` seeds the high byte
+/// with ones, and `(mask & 0xFF00) == 0` becomes true exactly when all eight
+/// original bits have been shifted out. That is the 8086 idiom, kept verbatim.
+///
+/// The window starts zeroed with the cursor at `0x400 - 0x42`, so early
+/// back-references can legitimately point at never-written bytes and read
+/// zeroes -- that is by design, not a bug.
 // seg009:90FA decompress_lzg_lr
 unsafe fn decompress_lzg_lr(dest: *mut byte, source: *const byte, dest_length: c_int) -> *mut byte {
     let window = malloc(0x400) as *mut byte;
@@ -1187,6 +1447,11 @@ unsafe fn decompress_lzg_lr(dest: *mut byte, source: *const byte, dest_length: c
     dest
 }
 
+/// LZ77 as in [`decompress_lzg_lr`], but writing down columns.
+///
+/// Note the two counters are *not* the same quantity here: `remaining` counts
+/// down the current column (reloaded from `height` at each wrap) while
+/// `dest_length` counts total bytes left and is what terminates the loop.
 // seg009:91AD decompress_lzg_ud
 unsafe fn decompress_lzg_ud(dest: *mut byte, source: *const byte, mut dest_length: c_int, stride: c_int, height: c_int) -> *mut byte {
     let window = malloc(0x400) as *mut byte;
@@ -1263,29 +1528,27 @@ unsafe fn decompress_lzg_ud(dest: *mut byte, source: *const byte, mut dest_lengt
     dest
 }
 
+/// Dispatches to the decompressor named by the image's compression-method field.
+///
+/// Method 0 is stored raw. An unrecognised method leaves `dest` as the caller
+/// zeroed it, producing a blank sprite rather than a crash.
 // seg009:938E decompr_img
 unsafe fn decompr_img(dest: *mut byte, source: *const image_data_type, decomp_size: c_int, cmeth: c_int, stride: c_int) {
     let data_ptr = core::ptr::addr_of!((*source).data) as *const byte;
+    let height = swaple16((*source).height) as c_int;
     match cmeth {
-        0 => {
-            memcpy(dest as *mut c_void, data_ptr as *const c_void, decomp_size as usize);
-        }
-        1 => {
-            decompress_rle_lr(dest, data_ptr, decomp_size);
-        }
-        2 => {
-            decompress_rle_ud(dest, data_ptr, decomp_size, stride, swaple16((*source).height) as c_int);
-        }
-        3 => {
-            decompress_lzg_lr(dest, data_ptr, decomp_size);
-        }
-        4 => {
-            decompress_lzg_ud(dest, data_ptr, decomp_size, stride, swaple16((*source).height) as c_int);
-        }
+        0 => { memcpy(dest as *mut c_void, data_ptr as *const c_void, decomp_size as usize); } // RAW left-to-right
+        1 => { decompress_rle_lr(dest, data_ptr, decomp_size); }                               // RLE left-to-right
+        2 => { decompress_rle_ud(dest, data_ptr, decomp_size, stride, height); }               // RLE up-to-down
+        3 => { decompress_lzg_lr(dest, data_ptr, decomp_size); }                               // LZG left-to-right
+        4 => { decompress_lzg_ud(dest, data_ptr, decomp_size, stride, height); }               // LZG up-to-down
         _ => {}
     }
 }
 
+/// Bytes per packed row: `width` pixels at 1..8 bits each, rounded up.
+///
+/// Bit depth lives in bits 12..14 of the image flags, stored biased by one.
 unsafe fn calc_stride(image_data: *mut image_data_type) -> c_int {
     let width = swaple16((*image_data).width) as c_int;
     let flags = swaple16((*image_data).flags) as c_int;
@@ -1293,33 +1556,44 @@ unsafe fn calc_stride(image_data: *mut image_data_type) -> c_int {
     (depth * width + 7) / 8
 }
 
+/// Expands a packed `depth`-bits-per-pixel bitmap to one byte per pixel.
+///
+/// Pixels are unpacked most-significant-bits first within each byte, and the
+/// row ends at `width` pixels even when the last byte holds more -- which is why
+/// the inner loop is bounded by both `pixels_per_byte` and `x_pixel < width`.
 unsafe fn conv_to_8bpp(in_data: *mut byte, width: c_int, height: c_int, stride: c_int, depth: c_int) -> *mut byte {
     let out_data = malloc((width * height) as usize) as *mut byte;
     let pixels_per_byte = 8 / depth;
     let mask = (1 << depth) - 1;
     for y in 0..height {
-        let mut in_pos = in_data.offset((y * stride) as isize);
         let mut out_pos = out_data.offset((y * width) as isize);
         let mut x_pixel: c_int = 0;
-        let mut x_byte: c_int = 0;
-        while x_byte < stride {
-            let v = *in_pos;
+        for x_byte in 0..stride {
+            let packed = *in_data.offset((y * stride + x_byte) as isize) as c_int;
             let mut shift = 8;
             let mut pixel_in_byte = 0;
             while pixel_in_byte < pixels_per_byte && x_pixel < width {
                 shift -= depth;
-                *out_pos = (((v as c_int) >> shift) & mask) as byte;
+                *out_pos = ((packed >> shift) & mask) as byte;
                 out_pos = out_pos.add(1);
                 pixel_in_byte += 1;
                 x_pixel += 1;
             }
-            in_pos = in_pos.add(1);
-            x_byte += 1;
         }
     }
     out_data
 }
 
+/// Turns a DAT image resource into an 8-bit paletted SDL surface.
+///
+/// Decompress into a packed buffer, expand to 8bpp, copy row by row into the
+/// surface (`pitch` is not necessarily `width`), then attach the 16-colour
+/// palette. VGA components are 6-bit, hence the `<< 2` to reach 8-bit; colour 0
+/// is forced to transparent black because that is the game's universal
+/// "background" index.
+///
+/// A zero-height image is a legitimate encoding of "nothing here" and yields a
+/// null surface, which callers treat as an absent sprite.
 // seg009 decode_image
 #[no_mangle]
 pub unsafe extern "C" fn decode_image(image_data: *mut image_data_type, pal: *mut dat_pal_type) -> *mut image_type {
@@ -1333,13 +1607,11 @@ pub unsafe extern "C" fn decode_image(image_data: *mut image_data_type, pal: *mu
     let cmeth = (flags >> 8) & 0x0F;
     let stride = calc_stride(image_data);
     let dest_size = stride * height;
-    let mut dest = malloc(dest_size as usize) as *mut byte;
+    let dest = malloc(dest_size as usize) as *mut byte;
     memset(dest as *mut c_void, 0, dest_size as usize);
     decompr_img(dest, image_data, dest_size, cmeth, stride);
-    let mut image_8bpp = conv_to_8bpp(dest, width, height, stride, depth);
+    let image_8bpp = conv_to_8bpp(dest, width, height, stride, depth);
     free(dest as *mut c_void);
-    dest = null_mut();
-    let _ = dest;
     let image = crate::platform::sdl::shared_renderer().create_surface(width, height, 8, 0, 0, 0, 0);
     if image.is_null() {
         sdlperror(cs!("decode_image: SDL_CreateRGBSurface"));
@@ -1357,67 +1629,71 @@ pub unsafe extern "C" fn decode_image(image_data: *mut image_data_type, pal: *mu
     }
     crate::platform::sdl::shared_renderer().unlock_surface(image);
     free(image_8bpp as *mut c_void);
-    image_8bpp = null_mut();
-    let _ = image_8bpp;
+
     let mut colors: [SDL_Color; 16] = core::mem::zeroed();
     let vga = core::ptr::addr_of!((*pal).vga) as *const rgb_type;
-    for i in 0..16usize {
+    for (i, color) in colors.iter_mut().enumerate() {
         let p = vga.add(i);
-        colors[i].r = (((*p).r as c_int) << 2) as u8;
-        colors[i].g = (((*p).g as c_int) << 2) as u8;
-        colors[i].b = (((*p).b as c_int) << 2) as u8;
-        colors[i].a = SDL_ALPHA_OPAQUE;
+        // VGA palette components are 6-bit; scale them into SDL's 8-bit range.
+        color.r = (((*p).r as c_int) << 2) as u8;
+        color.g = (((*p).g as c_int) << 2) as u8;
+        color.b = (((*p).b as c_int) << 2) as u8;
+        color.a = SDL_ALPHA_OPAQUE;
     }
-    colors[0].r = 0;
-    colors[0].g = 0;
-    colors[0].b = 0;
-    colors[0].a = SDL_ALPHA_TRANSPARENT;
+    // Colour 0 is the transparent background everywhere in the game's art.
+    colors[0] = SDL_Color { r: 0, g: 0, b: 0, a: SDL_ALPHA_TRANSPARENT };
     crate::platform::sdl::shared_renderer().set_palette_colors((*(*image).format).palette, colors.as_ptr(), 0, 16);
     image
 }
 
+/// Loads one image resource, from whichever source
+/// [`load_from_opendats_metadata`] found it in.
+///
+/// A resource in a DAT is the game's own format and goes through
+/// [`decode_image`]; a resource found as a loose file is handed to SDL_image
+/// as a PNG. Either way colour 0 ends up transparent, so callers do not need to
+/// know which path was taken.
 // seg009:121A load_image
 #[no_mangle]
 pub unsafe extern "C" fn load_image(resource_id: c_int, pal: *mut dat_pal_type) -> *mut image_type {
     let mut result: data_location = 0;
     let mut size: c_int = 0;
     let image_data = load_from_opendats_alloc(resource_id, cs!("png"), &mut result, &mut size);
-    let mut image: *mut image_type = null_mut();
-    match result {
-        data_location_data_none => {
-            return null_mut();
-        }
-        data_location_data_DAT => {
-            image = decode_image(image_data as *mut image_data_type, pal);
-        }
+    let image = match result {
+        data_location_data_none => return null_mut(),
+        data_location_data_DAT => decode_image(image_data as *mut image_data_type, pal),
         data_location_data_directory => {
             let rw = crate::platform::sdl::shared_renderer().rw_from_const_mem(image_data, size);
             if rw.is_null() {
+                // Note: this leaks image_data, matching the C source.
                 sdlperror(cs!("load_image: SDL_RWFromConstMem"));
                 return null_mut();
             }
-            image = crate::platform::sdl::shared_renderer().img_load_rw(rw, 0);
+            let image = crate::platform::sdl::shared_renderer().img_load_rw(rw, 0);
             if image.is_null() {
                 printf(cs!("load_image: IMG_Load_RW: %s\n"), IMG_GetError());
             }
             if crate::platform::sdl::shared_renderer().rw_close(rw) != 0 {
                 sdlperror(cs!("load_image: SDL_RWclose"));
             }
+            image
         }
-        _ => {}
-    }
+        _ => null_mut(),
+    };
     if !image_data.is_null() {
         free(image_data);
     }
-    if !image.is_null() {
-        if crate::platform::sdl::shared_renderer().set_color_key(image, true, 0) != 0 {
-            sdlperror(cs!("load_image: SDL_SetColorKey"));
-            quit(1);
-        }
+    if !image.is_null() && crate::platform::sdl::shared_renderer().set_color_key(image, true, 0) != 0 {
+        sdlperror(cs!("load_image: SDL_SetColorKey"));
+        quit(1);
     }
     image
 }
 
+/// Blits an image with colour 0 treated as transparent.
+///
+/// The `mask` parameter is vestigial: the CGA/EGA modes that needed a separate
+/// mask bitmap are not implemented, so only the VGA path survives.
 // seg009:13C4 draw_image_transp
 #[no_mangle]
 pub unsafe extern "C" fn draw_image_transp(image: *mut image_type, _mask: *mut image_type, xpos: c_int, ypos: c_int) {
@@ -1426,6 +1702,13 @@ pub unsafe extern "C" fn draw_image_transp(image: *mut image_type, _mask: *mut i
     }
 }
 
+/// Opens the first joystick or game controller, and picks the input mode.
+///
+/// A device SDL has a mapping for is opened through the GameController API;
+/// anything else falls back to the raw joystick API, flagged by
+/// `using_sdl_joystick_interface` so [`process_events`] knows which family of
+/// events to listen for. Keyboard and joystick modes are mutually exclusive and
+/// each is re-selected automatically on the next input of that kind.
 // seg009:157E set_joy_mode
 #[no_mangle]
 pub unsafe extern "C" fn set_joy_mode() -> c_int {
@@ -1458,18 +1741,27 @@ pub unsafe extern "C" fn set_joy_mode() -> c_int {
     is_joyst_mode as c_int
 }
 
+/// Allocates a 24-bit drawing surface `rect.right` by `rect.bottom`.
+///
+/// The rect's `left`/`top` are ignored -- the game only ever asks for buffers
+/// anchored at the origin.
 // seg009:178B make_offscreen_buffer
 #[no_mangle]
 pub unsafe extern "C" fn make_offscreen_buffer(rect: *const rect_type) -> *mut surface_type {
     crate::platform::sdl::shared_renderer().create_surface((*rect).right as c_int, (*rect).bottom as c_int, 24, Rmsk, Gmsk, Bmsk, 0)
 }
 
+/// Frees a drawing surface.
 // seg009:17BD free_surface
 #[no_mangle]
 pub unsafe extern "C" fn free_surface(surface: *mut surface_type) {
     crate::platform::sdl::shared_renderer().free_surface(surface);
 }
 
+/// Frees a "peel" -- a saved rectangle of screen content plus its surface.
+///
+/// Peels are how the game restores what a dialog covered up: read the region
+/// before drawing, blit it back afterwards. See [`read_peel_from_screen`].
 // seg009:17EA free_peel
 #[no_mangle]
 pub unsafe extern "C" fn free_peel(peel_ptr: *mut peel_type) {
@@ -1477,6 +1769,7 @@ pub unsafe extern "C" fn free_peel(peel_ptr: *mut peel_type) {
     free(peel_ptr as *mut c_void);
 }
 
+/// Loads the 16-colour "high contrast" palette used by menus and dialogs.
 // seg009:182F set_hc_pal
 #[no_mangle]
 pub unsafe extern "C" fn set_hc_pal() {
@@ -1485,13 +1778,22 @@ pub unsafe extern "C" fn set_hc_pal() {
     }
 }
 
+/// Flips a raw pixel buffer vertically, in place, by swapping row pairs.
+///
+/// Used for the upside-down rooms. Only `height / 2` swaps are needed; an odd
+/// middle row is already in place.
+///
+/// Kept as a do-while rather than a `for` range: C runs the body once *before*
+/// testing, so a `height` below 2 would swap row 0 against row -1 and then spin
+/// `rem_rows` down through the whole `short` range. Only ever called on the
+/// 200-row screen surface, so that path is unreachable -- but it is not our
+/// business to fix it here.
 // seg009:2446 flip_not_ega
 #[no_mangle]
 pub unsafe extern "C" fn flip_not_ega(memory: *mut byte, height: c_int, stride: c_int) {
     let row_buffer = malloc(stride as usize) as *mut byte;
     let mut top_ptr = memory;
-    let mut bottom_ptr = memory;
-    bottom_ptr = bottom_ptr.offset(((height - 1) * stride) as isize);
+    let mut bottom_ptr = memory.offset(((height - 1) * stride) as isize);
     let mut rem_rows: c_short = (height >> 1) as c_short;
     loop {
         memcpy(row_buffer as *mut c_void, top_ptr as *const c_void, stride as usize);
@@ -1499,7 +1801,7 @@ pub unsafe extern "C" fn flip_not_ega(memory: *mut byte, height: c_int, stride: 
         memcpy(bottom_ptr as *mut c_void, row_buffer as *const c_void, stride as usize);
         top_ptr = top_ptr.offset(stride as isize);
         bottom_ptr = bottom_ptr.offset(-(stride as isize));
-        rem_rows -= 1;
+        rem_rows = rem_rows.wrapping_sub(1);
         if rem_rows == 0 {
             break;
         }
@@ -1507,6 +1809,7 @@ pub unsafe extern "C" fn flip_not_ega(memory: *mut byte, height: c_int, stride: 
     free(row_buffer as *mut c_void);
 }
 
+/// Flips a whole surface vertically. See [`flip_not_ega`].
 // seg009:19B1 flip_screen
 #[no_mangle]
 pub unsafe extern "C" fn flip_screen(surface: *mut surface_type) {
@@ -1520,14 +1823,28 @@ pub unsafe extern "C" fn flip_screen(surface: *mut surface_type) {
     }
 }
 
+/// Blits an image to the current target with colour-key transparency.
 // seg009:2288 draw_image_transp_vga
 #[no_mangle]
 pub unsafe extern "C" fn draw_image_transp_vga(image: *mut image_type, xpos: c_int, ypos: c_int) {
     method_6_blit_img_to_scr(image, xpos, ypos, blitters_blitters_10h_transp as c_int);
 }
 
-// ===================== USE_TEXT block =====================
+// ============================================================================
+// Text (USE_TEXT)
+//
+// A `rawfont_type` is the on-disk shape: metrics, then an offset table with one
+// entry per character, then the glyph bitmaps packed end to end. A `font_type`
+// is the in-memory shape: the same metrics plus a chtab of decoded surfaces.
+// ============================================================================
 
+/// Rebuilds a raw font's per-character offset table by walking the glyph
+/// bitmaps.
+///
+/// Some fonts (notably the two embedded in the binary) ship with the table
+/// zeroed, because the offsets are derivable: each glyph is an `image_data_type`
+/// header followed by `height * stride` bytes, so the next glyph starts
+/// immediately after. Offsets are stored relative to the start of `data`.
 unsafe fn load_font_character_offsets(data: *mut rawfont_type) {
     let n_chars = ((*data).last_char as c_int) - ((*data).first_char as c_int) + 1;
     let offsets = core::ptr::addr_of_mut!((*data).offsets) as *mut word;
@@ -1543,6 +1860,11 @@ unsafe fn load_font_character_offsets(data: *mut rawfont_type) {
     }
 }
 
+/// Decodes every glyph of a raw font into a `chtab` and returns the usable
+/// `font_type`.
+///
+/// A one-colour palette (index 1 = white) is enough, because glyphs are
+/// monochrome and are recoloured at blit time by [`method_3_blit_mono`].
 unsafe fn load_font_from_data(data: *mut rawfont_type) -> font_type {
     let mut font: font_type = core::mem::zeroed();
     font.first_char = (*data).first_char;
@@ -1559,43 +1881,51 @@ unsafe fn load_font_from_data(data: *mut rawfont_type) -> font_type {
         load_font_character_offsets(data);
     }
     let chtab = malloc(core::mem::size_of::<chtab_type>() + core::mem::size_of::<*mut image_type>() * (n_chars as usize)) as *mut chtab_type;
+    // Make a dummy palette for decode_image().
     let mut dat_pal: dat_pal_type = core::mem::zeroed();
     let dpvga = core::ptr::addr_of_mut!(dat_pal.vga) as *mut rgb_type;
-    (*dpvga.add(1)).r = 0x3F;
-    (*dpvga.add(1)).g = 0x3F;
-    (*dpvga.add(1)).b = 0x3F;
+    (*dpvga.add(1)) = rgb_type { r: 0x3F, g: 0x3F, b: 0x3F }; // white
     let images = core::ptr::addr_of_mut!((*chtab).images) as *mut *mut image_type;
-    let mut index: c_int = 0;
-    let mut chr: c_int = (*data).first_char as c_int;
-    while chr <= (*data).last_char as c_int {
-        let image_data = (data as *mut byte).offset(swaple16(offsets.add(index as usize).read_unaligned()) as isize) as *mut image_data_type;
+    for index in 0..n_chars as usize {
+        let image_data = (data as *mut byte).offset(swaple16(offsets.add(index).read_unaligned()) as isize) as *mut image_data_type;
+        // HACK: decode_image() returns NULL if height==0.
         if (*image_data).height == swaple16(0) {
             (*image_data).height = swaple16(1);
         }
         let image = decode_image(image_data, &mut dat_pal);
-        *images.add(index as usize) = image;
+        *images.add(index) = image;
         if crate::platform::sdl::shared_renderer().set_color_key(image, true, 0) != 0 {
             sdlperror(cs!("load_font_from_data: SDL_SetColorKey"));
             quit(1);
         }
-        index += 1;
-        chr += 1;
     }
     font.chtab = chtab;
     font
 }
 
+/// Loads the two fonts the game uses, at `set_gr_mode` time.
+///
+/// The main font is preferred from `font.dat`/`data/font/`; if that is absent
+/// the copy embedded in this binary is used instead, so the game can always
+/// display its "cannot find a required data file" message. The small menu font
+/// only ever comes from the embedded copy in `menu.c`.
 unsafe fn load_font() {
     // Try to load font from a file.
     let dathandle = open_dat(cs!("font"), 1);
     hc_font.chtab = load_sprites_from_file(1000, 1 << 1, 0);
     close_dat(dathandle);
     if hc_font.chtab.is_null() {
+        // Use built-in font.
         hc_font = load_font_from_data(core::ptr::addr_of_mut!(hc_font_data) as *mut rawfont_type);
     }
     hc_small_font = load_font_from_data(core::ptr::addr_of_mut!(hc_small_font_data) as *mut rawfont_type);
 }
 
+/// Advance width of one character in the current font, inter-character spacing
+/// included; 0 for a character the font does not cover.
+///
+/// The `width != 0` guard means a zero-width glyph (the space character in some
+/// fonts) contributes nothing at all, not even the spacing.
 // seg009:35C5 get_char_width
 unsafe fn get_char_width(character: byte) -> c_int {
     let font = textstate.ptr_font;
@@ -1613,6 +1943,15 @@ unsafe fn get_char_width(character: byte) -> c_int {
     width
 }
 
+/// Returns how many characters of `text` belong on the next line.
+///
+/// Accumulates glyph widths until the line would exceed `break_width`, then
+/// backs up to the last remembered break opportunity: after a hyphen, or (when
+/// the text is left- or centre-aligned) around a space. If the very first word
+/// is itself wider than `break_width` there is no break opportunity to fall back
+/// to, and the word is broken mid-way instead.
+///
+/// A `\n` ends the line immediately and is counted as part of it.
 // seg009:3E99 find_linebreak
 unsafe fn find_linebreak(text: *const c_char, length: c_int, break_width: c_int, x_align: c_int) -> c_int {
     let mut curr_char_pos: c_int = 0;
@@ -1632,35 +1971,36 @@ unsafe fn find_linebreak(text: *const c_char, length: c_int, break_width: c_int,
                 || (x_align <= 0 && (curr_char == ' ' as c_char || *text_pos == ' ' as c_char))
                 || (*text_pos == ' ' as c_char && curr_char == ' ' as c_char)
             {
+                // May break here.
                 last_break_pos = curr_char_pos as c_short;
             }
+        } else if last_break_pos == 0 {
+            // If the first word is wider than break_width then break it.
+            return curr_char_pos;
         } else {
-            if last_break_pos == 0 {
-                return curr_char_pos;
-            } else {
-                return last_break_pos as c_int;
-            }
+            // Otherwise break at the last space.
+            return last_break_pos as c_int;
         }
     }
     curr_char_pos
 }
 
+/// Total advance width of `length` characters of `text`, in pixels.
 // seg009:403F get_line_width
 #[no_mangle]
-pub unsafe extern "C" fn get_line_width(text: *const c_char, mut length: c_int) -> c_int {
+pub unsafe extern "C" fn get_line_width(text: *const c_char, length: c_int) -> c_int {
     let mut width: c_int = 0;
-    let mut text_pos = text;
-    loop {
-        length -= 1;
-        if length < 0 {
-            break;
-        }
-        width += get_char_width(*text_pos as byte);
-        text_pos = text_pos.add(1);
+    for i in 0..length {
+        width += get_char_width(*text.offset(i as isize) as byte);
     }
     width
 }
 
+/// Blits one character at the text cursor and advances the cursor.
+///
+/// `current_y` is the *baseline*, so the glyph is drawn `height_above_baseline`
+/// pixels higher. Characters outside the font's range draw nothing and advance
+/// by zero.
 // seg009:3706 draw_text_character
 #[no_mangle]
 pub unsafe extern "C" fn draw_text_character(character: byte) -> c_int {
@@ -1684,21 +2024,18 @@ pub unsafe extern "C" fn draw_text_character(character: byte) -> c_int {
     width
 }
 
+/// Draws `length` characters starting at the text cursor; returns the width
+/// drawn.
 // seg009:377F draw_text_line
-unsafe fn draw_text_line(text: *const c_char, mut length: c_int) -> c_int {
+unsafe fn draw_text_line(text: *const c_char, length: c_int) -> c_int {
     let mut width: c_int = 0;
-    let mut text_pos = text;
-    loop {
-        length -= 1;
-        if length < 0 {
-            break;
-        }
-        width += draw_text_character(*text_pos as byte);
-        text_pos = text_pos.add(1);
+    for i in 0..length {
+        width += draw_text_character(*text.offset(i as isize) as byte);
     }
     width
 }
 
+/// Draws a NUL-terminated string at the text cursor; returns the width drawn.
 // seg009:3755 draw_cstring
 unsafe fn draw_cstring(string: *const c_char) -> c_int {
     let mut width: c_int = 0;
@@ -1710,18 +2047,23 @@ unsafe fn draw_cstring(string: *const c_char) -> c_int {
     width
 }
 
+/// Lays out and draws a block of text inside `rect_ptr`.
+///
+/// Both alignment arguments use the same three-way sign convention: negative
+/// means left/top, zero means centre/middle, positive means right/bottom. The
+/// text is first broken into lines that fit the rect's width (see
+/// [`find_linebreak`]), then the block as a whole is positioned vertically and
+/// each line positioned horizontally.
+///
+/// Drawing is clipped to the rect, so overflowing text is cut off rather than
+/// spilling; more than `MAX_LINES` lines is a fatal error.
 // seg009:3F01 draw_text
 unsafe fn draw_text(rect_ptr: *const rect_type, x_align: c_int, y_align: c_int, text: *const c_char, length: c_int) -> *const rect_type {
-    let l_rect_top: c_short;
-    let rect_height: c_short;
-    let rect_width: c_short;
-    let mut num_lines: c_short;
-    let font_line_distance: c_short;
     set_clip_rect(rect_ptr);
-    rect_width = (*rect_ptr).right - (*rect_ptr).left;
-    l_rect_top = (*rect_ptr).top;
-    rect_height = (*rect_ptr).bottom - (*rect_ptr).top;
-    num_lines = 0;
+    let rect_width: c_short = (*rect_ptr).right - (*rect_ptr).left;
+    let l_rect_top: c_short = (*rect_ptr).top;
+    let rect_height: c_short = (*rect_ptr).bottom - (*rect_ptr).top;
+    let mut num_lines: c_short = 0;
     let mut rem_length = length;
     let mut line_start = text;
     const MAX_LINES: usize = 100;
@@ -1746,24 +2088,30 @@ unsafe fn draw_text(rect_ptr: *const rect_type, x_align: c_int, y_align: c_int, 
         }
     }
     let font = textstate.ptr_font;
-    font_line_distance = (*font).height_above_baseline + (*font).height_below_baseline + (*font).space_between_lines;
+    let font_line_distance: c_short =
+        (*font).height_above_baseline + (*font).height_below_baseline + (*font).space_between_lines;
+    // The last line has no trailing inter-line gap, hence the subtraction.
     let text_height = (font_line_distance as c_int) * (num_lines as c_int) - (*font).space_between_lines as c_int;
     let mut text_top = l_rect_top as c_int;
     if y_align >= 0 {
-        if y_align <= 0 {
-            text_top += (rect_height as c_int + 1) / 2 - (text_height + 1) / 2;
+        text_top += if y_align <= 0 {
+            // middle. The +1 is for simulating SHR + ADC/SBB.
+            (rect_height as c_int + 1) / 2 - (text_height + 1) / 2
         } else {
-            text_top += rect_height as c_int - text_height;
-        }
+            // bottom
+            rect_height as c_int - text_height
+        };
     }
     textstate.current_y = (text_top + (*font).height_above_baseline as c_int) as c_short;
     for i in 0..num_lines as usize {
         let mut line_pos = line_starts[i];
         let mut line_length = line_lengths[i];
         if x_align < 0 && *line_pos == ' ' as c_char && i != 0 && *line_pos.offset(-1) != '\n' as c_char {
+            // Skip over space if it's not at the beginning of a line.
             line_pos = line_pos.add(1);
             line_length -= 1;
             if line_length != 0 && *line_pos == ' ' as c_char && *line_pos.offset(-2) == '.' as c_char {
+                // Skip over second space after point.
                 line_pos = line_pos.add(1);
                 line_length -= 1;
             }
@@ -1771,11 +2119,11 @@ unsafe fn draw_text(rect_ptr: *const rect_type, x_align: c_int, y_align: c_int, 
         let line_width = get_line_width(line_pos, line_length);
         let mut text_left = (*rect_ptr).left as c_int;
         if x_align >= 0 {
-            if x_align <= 0 {
-                text_left += rect_width as c_int / 2 - line_width / 2;
+            text_left += if x_align <= 0 {
+                rect_width as c_int / 2 - line_width / 2 // center
             } else {
-                text_left += rect_width as c_int - line_width;
-            }
+                rect_width as c_int - line_width // right
+            };
         }
         textstate.current_x = text_left as c_short;
         draw_text_line(line_pos, line_length);
@@ -1785,12 +2133,14 @@ unsafe fn draw_text(rect_ptr: *const rect_type, x_align: c_int, y_align: c_int, 
     rect_ptr
 }
 
+/// [`draw_text`] for a NUL-terminated string.
 // seg009:3E4F show_text
 #[no_mangle]
 pub unsafe extern "C" fn show_text(rect_ptr: *const rect_type, x_align: c_int, y_align: c_int, text: *const c_char) {
     draw_text(rect_ptr, x_align, y_align, text, strlen(text) as c_int);
 }
 
+/// [`show_text`] in a given colour, restoring the previous text colour after.
 // seg009:04FF show_text_with_color
 #[no_mangle]
 pub unsafe extern "C" fn show_text_with_color(rect_ptr: *const rect_type, x_align: c_int, y_align: c_int, text: *const c_char, color: c_int) {
@@ -1800,6 +2150,7 @@ pub unsafe extern "C" fn show_text_with_color(rect_ptr: *const rect_type, x_alig
     textstate.textcolor = saved_textcolor;
 }
 
+/// Moves the text cursor. `ypos` is a baseline, not a top edge.
 // seg009:3A91 set_curr_pos
 #[no_mangle]
 pub unsafe extern "C" fn set_curr_pos(xpos: c_int, ypos: c_int) {
@@ -1807,6 +2158,11 @@ pub unsafe extern "C" fn set_curr_pos(xpos: c_int, ypos: c_int) {
     textstate.current_y = ypos as c_short;
 }
 
+/// Builds the one reusable dialog box, and saves the screen behind it.
+///
+/// Named for the copy-protection prompt it was originally for, but it is the
+/// template every message box in the game uses -- which is why `showmessage`
+/// can be called from anywhere once this has run, and crashes if called before.
 // seg009:145A init_copyprot_dialog
 #[no_mangle]
 pub unsafe extern "C" fn init_copyprot_dialog() {
@@ -1819,10 +2175,15 @@ pub unsafe extern "C" fn init_copyprot_dialog() {
     (*copyprot_dialog).peel = read_peel_from_screen(core::ptr::addr_of!((*copyprot_dialog).peel_rect));
 }
 
+/// Shows a modal message box and blocks until any key is pressed.
+///
+/// The two trailing arguments are vestigial in SDLPoP: the original took a
+/// key-handler callback, but this implementation always uses
+/// [`key_test_quit`], so Ctrl+Q still works from inside the box.
 // seg009:0838 showmessage
 #[no_mangle]
 pub unsafe extern "C" fn showmessage(text: *mut c_char, _arg_4: c_int, _arg_0: *mut c_void) -> c_int {
-    let mut key: word = 0;
+    let key: word;
     let mut rect: rect_type = core::mem::zeroed();
     if offscreen_surface.is_null() {
         offscreen_surface = make_offscreen_buffer(core::ptr::addr_of!(screen_rect));
@@ -1840,8 +2201,9 @@ pub unsafe extern "C" fn showmessage(text: *mut c_char, _arg_4: c_int, _arg_0: *
     clear_kbd_buf();
     loop {
         idle();
-        key = key_test_quit() as word;
-        if key != 0 {
+        let pressed = key_test_quit() as word;
+        if pressed != 0 {
+            key = pressed;
             break;
         }
     }
@@ -1849,6 +2211,10 @@ pub unsafe extern "C" fn showmessage(text: *mut c_char, _arg_4: c_int, _arg_0: *
     key as c_int
 }
 
+/// Allocates a dialog descriptor from a settings template and a text rect.
+///
+/// The peel rect (the region that must be saved and restored) is derived from
+/// the text rect plus the template's borders and drop shadow.
 // seg009:08FB make_dialog_info
 #[no_mangle]
 pub unsafe extern "C" fn make_dialog_info(settings: *mut dialog_settings_type, _dialog_rect: *mut rect_type, text_rect: *mut rect_type, dialog_peel: *mut peel_type) -> *mut dialog_type {
@@ -1866,6 +2232,8 @@ pub unsafe extern "C" fn make_dialog_info(settings: *mut dialog_settings_type, _
     dialog_info
 }
 
+/// Grows the dialog's text rect by its borders and shadow to get the region
+/// that must be saved before drawing.
 // seg009:0BE7 calc_dialog_peel_rect
 #[no_mangle]
 pub unsafe extern "C" fn calc_dialog_peel_rect(dialog: *mut dialog_type) {
@@ -1876,6 +2244,12 @@ pub unsafe extern "C" fn calc_dialog_peel_rect(dialog: *mut dialog_type) {
     (*dialog).peel_rect.bottom = (*dialog).text_rect.bottom + (*settings).bottom_border + (*settings).shadow_bottom;
 }
 
+/// Saves the screen behind the dialog and draws its frame.
+///
+/// Note the guard: this is a no-op unless `has_peel` is *already* set, which
+/// [`make_dialog_info`] never does -- so the peel is in practice taken by
+/// [`init_copyprot_dialog`] directly instead. Faithful to the C source; left
+/// alone because whether that is a bug depends on data files we do not control.
 // seg009:0BB0 read_dialog_peel
 #[no_mangle]
 pub unsafe extern "C" fn read_dialog_peel(dialog: *mut dialog_type) {
@@ -1888,18 +2262,29 @@ pub unsafe extern "C" fn read_dialog_peel(dialog: *mut dialog_type) {
     }
 }
 
+/// Draws the dialog's frame through its settings' frame method.
+///
+/// Indirect because the settings struct is data: different dialog styles supply
+/// different frame renderers. In practice only [`dialog_method_2_frame`] is
+/// ever installed.
 // seg009:09DE draw_dialog_frame
 #[no_mangle]
 pub unsafe extern "C" fn draw_dialog_frame(dialog: *mut dialog_type) {
     ((*(*dialog).settings).method_2_frame).unwrap()(dialog);
 }
 
+/// Clears the dialog's text area to black.
 // seg009:096F add_dialog_rect
 #[no_mangle]
 pub unsafe extern "C" fn add_dialog_rect(dialog: *mut dialog_type) {
     draw_rect(core::ptr::addr_of!((*dialog).text_rect), colorids_color_0_black as c_int);
 }
 
+/// Draws the standard dialog chrome: black backing, a dark-grey drop shadow on
+/// the right and bottom, and a white inner bevel on all four sides.
+///
+/// Each piece is a filled rectangle rather than a line, which is why the four
+/// bevel edges overlap at the corners.
 // seg009:09F0 dialog_method_2_frame
 #[no_mangle]
 pub unsafe extern "C" fn dialog_method_2_frame(dialog: *mut dialog_type) {
@@ -1941,6 +2326,7 @@ pub unsafe extern "C" fn dialog_method_2_frame(dialog: *mut dialog_type) {
     draw_rect(&rect, colorids_color_15_brightwhite as c_int);
 }
 
+/// [`showmessage`] with the standard "Press any key to continue." suffix.
 // seg009:0C44 show_dialog
 #[no_mangle]
 pub unsafe extern "C" fn show_dialog(text: *const c_char) {
@@ -1949,28 +2335,44 @@ pub unsafe extern "C" fn show_dialog(text: *const c_char) {
     showmessage(string.as_mut_ptr(), 1, key_test_quit as *mut c_void);
 }
 
+/// Baseline y for a single line of text vertically centred in `rect`.
+///
+/// `empty_height` is the leftover space above plus below the line. Half of it
+/// goes above, and the odd pixel (`% 2`) is pushed to the top as well -- the
+/// `(h - h % 2) >> 1` shape is the C source's way of flooring toward zero for
+/// negative heights, which `>> 1` alone would not do.
+///
+/// Computed in `c_int`: C promotes each operand of the subtraction chain to
+/// `int` and only the store into the `short` truncates. The result is identical
+/// either way, but doing it in `i16` would give Rust an overflow panic in debug
+/// builds where C simply wraps.
 // seg009:0791 get_text_center_y
 unsafe fn get_text_center_y(rect: *const rect_type) -> c_int {
     let font = core::ptr::addr_of!(hc_font);
-    let empty_height: c_short = (*rect).bottom - (*font).height_above_baseline - (*font).height_below_baseline - (*rect).top;
-    (((empty_height as c_int) - (empty_height as c_int) % 2) >> 1) + (*font).height_above_baseline as c_int + (empty_height as c_int) % 2 + (*rect).top as c_int
+    // height of empty space above+below the line of text
+    let empty_height = ((*rect).bottom as c_int
+        - (*font).height_above_baseline as c_int
+        - (*font).height_below_baseline as c_int
+        - (*rect).top as c_int) as c_short as c_int;
+    ((empty_height - empty_height % 2) >> 1)
+        + (*font).height_above_baseline as c_int
+        + empty_height % 2
+        + (*rect).top as c_int
 }
 
+/// Total advance width of a NUL-terminated string, in pixels.
 // seg009:3E77 get_cstring_width
 unsafe fn get_cstring_width(text: *const c_char) -> c_int {
     let mut width: c_int = 0;
     let mut text_pos = text;
-    loop {
-        let curr_char = *text_pos;
-        if curr_char == 0 {
-            break;
-        }
+    while *text_pos != 0 {
+        width += get_char_width(*text_pos as byte);
         text_pos = text_pos.add(1);
-        width += get_char_width(curr_char as byte);
     }
     width
 }
 
+/// Draws (or, in the background colour, erases) the `_` text-entry caret.
 // seg009:0767 draw_text_cursor
 unsafe fn draw_text_cursor(xpos: c_int, ypos: c_int, color: c_int) {
     set_curr_pos(xpos, ypos);
@@ -1979,6 +2381,22 @@ unsafe fn draw_text_cursor(xpos: c_int, ypos: c_int, color: c_int) {
     textstate.textcolor = 15;
 }
 
+/// Runs a modal single-line text field and blocks until Enter or Escape.
+///
+/// Returns the number of characters entered, or -1 if the player cancelled with
+/// Escape (in which case `buffer` is emptied). Used for naming a replay and for
+/// the copy-protection prompt.
+///
+/// Two input streams are read at once and neither alone would do: SDL's
+/// `SDL_TEXTINPUT` supplies the printable character (correct for the player's
+/// keyboard layout, and the only source that knows about shift and dead keys),
+/// while the raw scancode supplies Enter, Escape and Backspace. `arg_4` is the
+/// left padding inside the rect.
+///
+/// The blinking caret is driven by `timer_0` at a 6-tick period; the inner loop
+/// spins on [`idle`] so the rest of the game keeps redrawing while the field is
+/// up. New characters are rejected outright once the caret plus the character
+/// would reach the rect's right edge -- the field does not scroll.
 // seg009:053C input_str
 #[no_mangle]
 pub unsafe extern "C" fn input_str(
@@ -2014,11 +2432,11 @@ pub unsafe extern "C" fn input_str(
     loop {
         key = 0;
         loop {
-            if cursor_visible != 0 {
-                draw_text_cursor(current_xpos as c_int, ypos as c_int, color);
-            } else {
-                draw_text_cursor(current_xpos as c_int, ypos as c_int, bgcolor);
-            }
+            draw_text_cursor(
+                current_xpos as c_int,
+                ypos as c_int,
+                if cursor_visible != 0 { color } else { bgcolor },
+            );
             cursor_visible = (cursor_visible == 0) as c_short;
             start_timer(timerids_timer_0 as c_int, 6);
             if key != 0 {
@@ -2026,14 +2444,16 @@ pub unsafe extern "C" fn input_str(
                     draw_text_cursor(current_xpos as c_int, ypos as c_int, color);
                     cursor_visible = (cursor_visible == 0) as c_short;
                 }
-                if key as c_int == SDL_SCANCODE_RETURN {
-                    *buffer.offset(length as isize) = 0;
-                    crate::platform::sdl::shared_input().stop_text_input();
-                    return length as c_int;
-                } else {
+                if key as c_int != SDL_SCANCODE_RETURN {
                     break;
                 }
+                *buffer.offset(length as isize) = 0;
+                crate::platform::sdl::shared_input().stop_text_input();
+                return length as c_int;
             }
+            // Spin until the caret's blink timer expires or a key arrives.
+            // The assignment to `key` inside the condition is load-bearing: it
+            // is what carries the keystroke out to the enclosing loop.
             while has_timer_stopped(timerids_timer_0 as c_int) == 0 && {
                 key = key_test_quit() as word;
                 key == 0
@@ -2041,6 +2461,7 @@ pub unsafe extern "C" fn input_str(
                 idle();
             }
         }
+        // Only use the printable ASCII chars (UTF-8 encoding)
         let entered_char: c_char = if last_text_input <= 0x7E { last_text_input } else { 0 };
         clear_kbd_buf();
 
@@ -2059,6 +2480,7 @@ pub unsafe extern "C" fn input_str(
             draw_text_character(*buffer.offset(length as isize) as byte);
             draw_text_cursor(current_xpos as c_int, ypos as c_int, color);
         } else if entered_char >= 0x20 && entered_char <= 0x7E && (length as c_int) < max_length {
+            // Would the new character make the cursor go past the right side of the rect?
             if (get_char_width('_' as byte) + get_char_width(entered_char as byte) + current_xpos as c_int)
                 < ((*rect).right as c_int)
             {
@@ -2073,18 +2495,22 @@ pub unsafe extern "C" fn input_str(
     }
 }
 
+/// Fills a rect with a palette colour.
 // seg009:37E8 draw_rect
 #[no_mangle]
 pub unsafe extern "C" fn draw_rect(rect: *const rect_type, color: c_int) {
     method_5_rect(rect, blitters_blitters_0_no_transp as c_int, color as byte);
 }
 
+/// Identity: the original set a clipping window on the surface; SDL does that
+/// per-blit instead.
 // seg009:3985 rect_sthg
 #[no_mangle]
 pub unsafe extern "C" fn rect_sthg(surface: *mut surface_type, _rect: *const rect_type) -> *mut surface_type {
     surface
 }
 
+/// Insets a rect by `delta_x` horizontally and `delta_y` vertically.
 // seg009:39CE shrink2_rect
 #[no_mangle]
 pub unsafe extern "C" fn shrink2_rect(target_rect: *mut rect_type, source_rect: *const rect_type, delta_x: c_int, delta_y: c_int) -> *mut rect_type {
@@ -2095,6 +2521,7 @@ pub unsafe extern "C" fn shrink2_rect(target_rect: *mut rect_type, source_rect: 
     target_rect
 }
 
+/// Blits a saved peel back where it came from and frees it.
 // seg009:3BBA restore_peel
 #[no_mangle]
 pub unsafe extern "C" fn restore_peel(peel_ptr: *mut peel_type) {
@@ -2102,6 +2529,7 @@ pub unsafe extern "C" fn restore_peel(peel_ptr: *mut peel_type) {
     free_peel(peel_ptr);
 }
 
+/// Copies a region of the current target surface into a freshly allocated peel.
 // seg009:3BE9 read_peel_from_screen
 #[no_mangle]
 pub unsafe extern "C" fn read_peel_from_screen(rect: *const rect_type) -> *mut peel_type {
@@ -2113,6 +2541,11 @@ pub unsafe extern "C" fn read_peel_from_screen(rect: *const rect_type) -> *mut p
         quit(1);
     }
     (*result).peel = peel_surface;
+    // C writes this as a positional initialiser over `short top,left,bottom,right`,
+    // so `bottom` receives the *width* and `right` receives the *height* -- they
+    // are transposed. Harmless, because the only thing method_1_blit_rect reads
+    // out of a destination rect is its top-left corner (SDL_BlitSurface takes
+    // the size from the source), and both are 0 here. Reproduced as written.
     let target_rect = rect_type {
         top: 0,
         left: 0,
@@ -2123,16 +2556,21 @@ pub unsafe extern "C" fn read_peel_from_screen(rect: *const rect_type) -> *mut p
     result
 }
 
+/// Intersects two rects into `output`; returns 1 if the result is non-empty.
+///
+/// On an empty intersection `output` is zeroed. Note the early half-write: if
+/// the horizontal ranges overlap but the vertical ones do not, `left`/`right`
+/// have already been stored before the zeroing wipes them again.
 // seg009:3D95 intersect_rect
 #[no_mangle]
 pub unsafe extern "C" fn intersect_rect(output: *mut rect_type, input1: *const rect_type, input2: *const rect_type) -> c_int {
-    let left = if (*input1).left > (*input2).left { (*input1).left } else { (*input2).left };
-    let right = if (*input1).right < (*input2).right { (*input1).right } else { (*input2).right };
+    let left = (*input1).left.max((*input2).left);
+    let right = (*input1).right.min((*input2).right);
     if left < right {
         (*output).left = left;
         (*output).right = right;
-        let top = if (*input1).top > (*input2).top { (*input1).top } else { (*input2).top };
-        let bottom = if (*input1).bottom < (*input2).bottom { (*input1).bottom } else { (*input2).bottom };
+        let top = (*input1).top.max((*input2).top);
+        let bottom = (*input1).bottom.min((*input2).bottom);
         if top < bottom {
             (*output).top = top;
             (*output).bottom = bottom;
@@ -2143,22 +2581,35 @@ pub unsafe extern "C" fn intersect_rect(output: *mut rect_type, input1: *const r
     0
 }
 
+/// Writes the bounding box of two rects into `output`.
 // seg009:4063 union_rect
 #[no_mangle]
 pub unsafe extern "C" fn union_rect(output: *mut rect_type, input1: *const rect_type, input2: *const rect_type) -> *mut rect_type {
-    let top = if (*input1).top < (*input2).top { (*input1).top } else { (*input2).top };
-    let left = if (*input1).left < (*input2).left { (*input1).left } else { (*input2).left };
-    let bottom = if (*input1).bottom > (*input2).bottom { (*input1).bottom } else { (*input2).bottom };
-    let right = if (*input1).right > (*input2).right { (*input1).right } else { (*input2).right };
-    (*output).top = top;
-    (*output).left = left;
-    (*output).bottom = bottom;
-    (*output).right = right;
+    *output = rect_type {
+        top: (*input1).top.min((*input2).top),
+        left: (*input1).left.min((*input2).left),
+        bottom: (*input1).bottom.max((*input2).bottom),
+        right: (*input1).right.max((*input2).right),
+    };
     output
 }
 
-// ===================== audio =====================
+// ============================================================================
+// Audio
+//
+// There is one SDL audio device and one callback. Four sources can feed it, and
+// the four `*_playing` flags below say which are live. `audio_callback` mixes at
+// most one "sound effect" source (digi or speaker) with at most one "music"
+// source (midi or ogg) -- which is why starting a sound effect does not cut the
+// music, but starting a second sound effect does.
+//
+// Each source is stopped by clearing its flag under the audio lock, so a
+// callback already in flight on the audio thread cannot observe a half-torn-down
+// source. When a source runs out it posts an SDL_USEREVENT so the game loop can
+// notice from the main thread rather than being called back on the audio one.
+// ============================================================================
 
+/// Silences the PC-speaker source and rewinds it to its first note.
 unsafe fn speaker_sound_stop() {
     if speaker_playing == 0 {
         return;
@@ -2171,6 +2622,7 @@ unsafe fn speaker_sound_stop() {
     crate::platform::sdl::shared_audio().unlock();
 }
 
+/// Silences the digitised-sample source.
 unsafe fn stop_digi() {
     if digi_playing == 0 {
         return;
@@ -2183,6 +2635,11 @@ unsafe fn stop_digi() {
     crate::platform::sdl::shared_audio().unlock();
 }
 
+/// Silences the Ogg music source.
+///
+/// Note the device is paused *before* the `ogg_playing` check, so this also
+/// serves as the general "stop the audio device" call that
+/// [`stop_sounds`] relies on.
 unsafe fn stop_ogg() {
     crate::platform::sdl::shared_audio().pause(true);
     if ogg_playing == 0 {
@@ -2194,6 +2651,7 @@ unsafe fn stop_ogg() {
     crate::platform::sdl::shared_audio().unlock();
 }
 
+/// Silences every audio source.
 // seg009:7214 stop_sounds
 #[no_mangle]
 pub unsafe extern "C" fn stop_sounds() {
@@ -2203,6 +2661,17 @@ pub unsafe extern "C" fn stop_sounds() {
     stop_ogg();
 }
 
+/// Synthesises `samples` frames of a square wave at `note_freq` into `stream`.
+///
+/// State carries across calls through `square_wave_state` (the current level)
+/// and `square_wave_samples_since_last_flip` (the fractional phase), because a
+/// note routinely straddles several audio-callback buffers.
+///
+/// `!square_wave_state` is a *bitwise* NOT here, matching C's `~` on a `short`
+/// -- the value is an amplitude, not a boolean, so this is the one place in the
+/// port where Rust's integer `!` is the right translation of C rather than the
+/// classic trap. It flips 4000 to -4001, an off-by-one asymmetry that is
+/// inaudible and is what the C source does.
 unsafe fn generate_square_wave(mut stream: *mut byte, note_freq: f32, samples: c_int) {
     let channels = (*digi_audiospec).channels as c_int;
     let half_period_in_samples: f32 = ((*digi_audiospec).freq as f32 / note_freq) * 0.5f32;
@@ -2210,17 +2679,18 @@ unsafe fn generate_square_wave(mut stream: *mut byte, note_freq: f32, samples: c
     let mut samples_left = samples;
     while samples_left > 0 {
         if square_wave_samples_since_last_flip > half_period_in_samples {
+            // Produce a square wave by flipping the signal.
             square_wave_state = !square_wave_state;
             square_wave_samples_since_last_flip -= half_period_in_samples;
         } else {
-            let mut samples_until_next_flip = (half_period_in_samples - square_wave_samples_since_last_flip) as c_int;
-            samples_until_next_flip += 1;
+            // Round up, so a sub-sample remainder still emits one sample and
+            // the loop cannot stall.
+            let samples_until_next_flip =
+                (half_period_in_samples - square_wave_samples_since_last_flip) as c_int + 1;
             let samples_to_emit = MIN_i(samples_until_next_flip, samples_left);
-            let mut i = 0;
-            while i < samples_to_emit * channels {
+            for _ in 0..samples_to_emit * channels {
                 *(stream as *mut c_short) = square_wave_state;
                 stream = stream.add(core::mem::size_of::<c_short>());
-                i += 1;
             }
             samples_left -= samples_to_emit;
             square_wave_samples_since_last_flip += samples_to_emit as f32;
@@ -2228,6 +2698,12 @@ unsafe fn generate_square_wave(mut stream: *mut byte, note_freq: f32, samples: c
     }
 }
 
+/// Renders the PC-speaker source: walks the note list, emitting a square wave
+/// (or silence, for a rest) for each note's share of the buffer.
+///
+/// A note's duration is `length` ticks scaled by the tune's `tempo` and the
+/// device rate. Frequency `0x12` is the end-of-tune sentinel and frequency
+/// `<= 1` is a rest.
 unsafe fn speaker_callback(_userdata: *mut c_void, mut stream: *mut u8, len: c_int) {
     let output_channels = (*digi_audiospec).channels as c_int;
     let bytes_per_sample = core::mem::size_of::<c_short>() as c_int * output_channels;
@@ -2242,7 +2718,7 @@ unsafe fn speaker_callback(_userdata: *mut c_void, mut stream: *mut u8, len: c_i
     while total_samples_left > 0 {
         let notes = core::ptr::addr_of!((*current_speaker_sound).notes) as *const note_type;
         let note = notes.add(speaker_note_index as usize);
-        if swaple16((*note).frequency) == 0x12 {
+        if swaple16((*note).frequency) == 0x12 /* end */ {
             speaker_playing = 0;
             current_speaker_sound = null_mut();
             speaker_note_index = 0;
@@ -2257,7 +2733,7 @@ unsafe fn speaker_callback(_userdata: *mut c_void, mut stream: *mut u8, len: c_i
         let note_samples_to_emit = MIN_i(note_length_in_samples - current_speaker_note_samples_already_emitted, total_samples_left);
         total_samples_left -= note_samples_to_emit;
         let copy_len = note_samples_to_emit as usize * bytes_per_sample as usize;
-        if swaple16((*note).frequency) <= 0x01 {
+        if swaple16((*note).frequency) <= 0x01 /* rest */ {
             memset(stream as *mut c_void, (*digi_audiospec).silence as c_int, copy_len);
         } else {
             generate_square_wave(stream as *mut byte, swaple16((*note).frequency) as f32, note_samples_to_emit);
@@ -2274,6 +2750,7 @@ unsafe fn speaker_callback(_userdata: *mut c_void, mut stream: *mut u8, len: c_i
     }
 }
 
+/// Starts a PC-speaker tune, cutting whatever was playing.
 // seg009:7640 play_speaker_sound
 unsafe fn play_speaker_sound(buffer: *mut sound_buffer_type) {
     speaker_sound_stop();
@@ -2284,6 +2761,12 @@ unsafe fn play_speaker_sound(buffer: *mut sound_buffer_type) {
     crate::platform::sdl::shared_audio().pause(false);
 }
 
+/// Renders the digitised-sample source: copies from the resampled buffer and
+/// pads the tail with silence.
+///
+/// When sound is off the samples are still *consumed* (the cursor advances) --
+/// the sound plays out silently rather than pausing, so timing stays the same
+/// whether or not the player has sound enabled.
 unsafe fn digi_callback(_userdata: *mut c_void, stream: *mut u8, len: c_int) {
     let copy_len = MIN_i(len, digi_remaining_length);
     if is_sound_on != 0 {
@@ -2303,6 +2786,12 @@ unsafe fn digi_callback(_userdata: *mut c_void, stream: *mut u8, len: c_int) {
     digi_remaining_pos = digi_remaining_pos.add(copy_len as usize);
 }
 
+/// Renders the Ogg music source through the Vorbis decoder.
+///
+/// With sound off the decoder is still pumped, into a scratch buffer that is
+/// thrown away -- same reasoning as [`digi_callback`]: the music must reach its
+/// end at the same wall-clock moment either way, since that is what posts the
+/// finished-playing event.
 unsafe fn ogg_callback(_userdata: *mut c_void, stream: *mut u8, len: c_int) {
     let output_channels = (*digi_audiospec).channels as c_int;
     let bytes_per_sample = core::mem::size_of::<c_short>() as c_int * output_channels;
@@ -2333,16 +2822,21 @@ unsafe fn ogg_callback(_userdata: *mut c_void, stream: *mut u8, len: c_int) {
     }
 }
 
+/// SDL's audio callback: the single mixing point for all four sources.
+///
+/// Runs on SDL's audio thread, which is why every source's start/stop takes the
+/// audio lock.
+///
+/// Under fast-forward (`audio_speed > 1`) the sources are asked for `speed`
+/// times as much audio into a scratch buffer, of which only the first
+/// `len_orig` bytes are handed back. That keeps the *game's* audio clock running
+/// at the accelerated rate -- sounds still end when they should relative to
+/// gameplay -- at the cost of the pitch being wrong, which the C source's own
+/// comment calls a hack.
 pub unsafe extern "C" fn audio_callback(userdata: *mut c_void, stream_orig: *mut u8, len_orig: c_int) {
-    let stream: *mut u8;
-    let len: c_int;
-    if audio_speed > 1 {
-        len = len_orig * audio_speed;
-        stream = malloc(len as usize) as *mut u8;
-    } else {
-        len = len_orig;
-        stream = stream_orig;
-    }
+    let fast_forwarding = audio_speed > 1;
+    let len = if fast_forwarding { len_orig * audio_speed } else { len_orig };
+    let stream = if fast_forwarding { malloc(len as usize) as *mut u8 } else { stream_orig };
 
     memset(stream as *mut c_void, (*digi_audiospec).silence as c_int, len as usize);
     if digi_playing != 0 {
@@ -2356,7 +2850,7 @@ pub unsafe extern "C" fn audio_callback(userdata: *mut c_void, stream_orig: *mut
         ogg_callback(userdata, stream, len);
     }
 
-    if audio_speed > 1 {
+    if fast_forwarding {
         // FAST_FORWARD_MUTE and FAST_FORWARD_RESAMPLE_SOUND are off:
         // Hack: use the beginning of the buffer instead of resampling.
         memcpy(stream_orig as *mut c_void, stream as *const c_void, len_orig as usize);
@@ -2364,6 +2858,14 @@ pub unsafe extern "C" fn audio_callback(userdata: *mut c_void, stream_orig: *mut
     }
 }
 
+/// Opens the audio device, once, on first use.
+///
+/// Every `play_*_sound` calls this, so audio is initialised lazily rather than
+/// at startup. If opening fails, `digi_unavailable` latches and all later audio
+/// calls become no-ops instead of retrying.
+///
+/// SDL older than 2.0.4 has a resampling bug that garbles 16-bit output, so on
+/// those versions the device is opened as 8-bit instead.
 // seg009 init_digi
 #[no_mangle]
 pub unsafe extern "C" fn init_digi() {
@@ -2399,6 +2901,13 @@ pub unsafe extern "C" fn init_digi() {
     digi_audiospec = desired;
 }
 
+/// Reads `data/music/names.txt`, mapping sound ids to Ogg filenames.
+///
+/// This is what makes replacement music possible: a sound with a name here is
+/// looked for as `music/<name>.ogg` before falling back to the DAT resource.
+/// Lines are `index=name`; a malformed line is reported and skipped, which with
+/// `fscanf` failing to consume anything can spin until EOF -- faithful to the C
+/// source, and harmless for the shipped file.
 // seg009 load_sound_names
 #[no_mangle]
 pub unsafe extern "C" fn load_sound_names() {
@@ -2426,6 +2935,7 @@ pub unsafe extern "C" fn load_sound_names() {
     fclose(fp);
 }
 
+/// The Ogg filename registered for a sound id, or null.
 unsafe fn sound_name(index: c_int) -> *mut c_char {
     if !sound_names.is_null() && index >= 0 && index < max_sound_id {
         *sound_names.offset(index as isize)
@@ -2434,6 +2944,13 @@ unsafe fn sound_name(index: c_int) -> *mut c_char {
     }
 }
 
+/// Loads one sound by id, preferring a replacement Ogg over the DAT resource.
+///
+/// The Ogg is read into memory whole but *not* decoded -- decoding every track
+/// up front would make loading far slower, so only a decoder is constructed and
+/// the audio callback pulls chunks from it during playback. Digitised sounds
+/// from the DAT, by contrast, are resampled eagerly by [`convert_digi_sound`],
+/// because they are short and must start instantly.
 // seg009 load_sound
 #[no_mangle]
 pub unsafe extern "C" fn load_sound(index: c_int) -> *mut sound_buffer_type {
@@ -2501,6 +3018,7 @@ pub unsafe extern "C" fn load_sound(index: c_int) -> *mut sound_buffer_type {
     result
 }
 
+/// Starts an Ogg track from the beginning, cutting whatever was playing.
 unsafe fn play_ogg_sound(buffer: *mut sound_buffer_type) {
     init_digi();
     if digi_unavailable != 0 {
@@ -2526,6 +3044,18 @@ struct waveinfo_type {
     samples: *mut byte,
 }
 
+/// Works out which of two incompatible digitised-sound layouts a buffer uses,
+/// and fills in `waveinfo` accordingly.
+///
+/// PoP 1.0/1.1 and PoP 1.3/1.4 put the sample-rate, size and count fields at
+/// different offsets, and nothing in the data says which. The heuristic reads
+/// the byte that would be `sample_size` under each layout and takes the one that
+/// says 8 bits: exactly one match identifies the version, both matching is
+/// ambiguous, neither is unrecognisable.
+///
+/// The answer is cached in `wave_version` after the first *unambiguous* result,
+/// because a whole data set is always one version -- but an ambiguous or unknown
+/// buffer deliberately does not poison the cache.
 unsafe fn determine_wave_version(buffer: *mut sound_buffer_type, waveinfo: *mut waveinfo_type) -> bool {
     let mut version = wave_version;
     if version == -1 {
@@ -2544,6 +3074,7 @@ unsafe fn determine_wave_version(buffer: *mut sound_buffer_type, waveinfo: *mut 
         }
     }
     match version {
+        // 1.0 and 1.1
         1 => {
             let digi = core::ptr::addr_of_mut!((*buffer).__bindgen_anon_1) as *mut digi_type;
             (*waveinfo).sample_rate = swaple16((*digi).sample_rate) as c_int;
@@ -2552,6 +3083,7 @@ unsafe fn determine_wave_version(buffer: *mut sound_buffer_type, waveinfo: *mut 
             (*waveinfo).samples = core::ptr::addr_of_mut!((*digi).samples) as *mut byte;
             true
         }
+        // 1.3 and 1.4 (and PoP2)
         2 => {
             let digi_new = core::ptr::addr_of_mut!((*buffer).__bindgen_anon_1) as *mut digi_new_type;
             (*waveinfo).sample_rate = swaple16((*digi_new).sample_rate) as c_int;
@@ -2560,10 +3092,12 @@ unsafe fn determine_wave_version(buffer: *mut sound_buffer_type, waveinfo: *mut 
             (*waveinfo).samples = core::ptr::addr_of_mut!((*digi_new).samples) as *mut byte;
             true
         }
+        // ambiguous
         3 => {
             printf(cs!("Warning: Ambiguous wave version.\n"));
             false
         }
+        // case 0, unknown
         _ => {
             printf(cs!("Warning: Can't determine wave version.\n"));
             false
@@ -2571,6 +3105,20 @@ unsafe fn determine_wave_version(buffer: *mut sound_buffer_type, waveinfo: *mut 
     }
 }
 
+/// Resamples an 8-bit unsigned mono DAT sound to the device's rate, in 16-bit
+/// signed stereo.
+///
+/// Linear interpolation between adjacent source samples, with the final sample
+/// held rather than interpolated past the end. The source byte is widened by
+/// `b | (b << 8)` -- replicating the byte into both halves, so 0x00 maps to 0
+/// and 0xFF maps to 0xFFFF, giving full-scale coverage that a plain `<< 8` would
+/// not -- then biased by -32768 from unsigned to signed.
+///
+/// The output buffer is over-allocated: it is sized in *shorts* from a length
+/// already counted in *bytes*, so it is twice as large as needed. That waste is
+/// in the C source and is left alone. Note also that `converted.samples` points
+/// at a separate allocation, not into the trailing space of `converted_buffer`,
+/// so [`free_sound`] on a converted sound leaks it -- again as in C.
 unsafe fn convert_digi_sound(buf: *mut sound_buffer_type) -> *mut sound_buffer_type {
     init_digi();
     if digi_unavailable != 0 {
@@ -2596,31 +3144,35 @@ unsafe fn convert_digi_sound(buf: *mut sound_buffer_type) -> *mut sound_buffer_t
     let mut dest = malloc(core::mem::size_of::<c_short>() * (*converted).length as usize) as *mut c_short;
     (*converted).samples = dest;
 
+    // Widens one unsigned 8-bit source sample to signed 16-bit.
+    let sample_at = |frame: c_int| -> c_int {
+        let b = *source.offset(frame as isize) as c_int;
+        (b | (b << 8)) - 32768
+    };
+
     for i in 0..expanded_frames {
         let src_frame_float: f32 = i as f32 * freq_ratio;
         let src_frame_0 = src_frame_float as c_int; // truncation
 
-        let sample_0 = ((*source.offset(src_frame_0 as isize) as c_int) | ((*source.offset(src_frame_0 as isize) as c_int) << 8)) - 32768;
-        let interpolated_sample: c_short;
-        if src_frame_0 >= waveinfo.sample_count - 1 {
-            interpolated_sample = sample_0 as c_short;
+        let sample_0 = sample_at(src_frame_0);
+        let interpolated_sample: c_short = if src_frame_0 >= waveinfo.sample_count - 1 {
+            sample_0 as c_short
         } else {
-            let src_frame_1 = src_frame_0 + 1;
             let alpha: f32 = src_frame_float - src_frame_0 as f32;
-            let sample_1 = ((*source.offset(src_frame_1 as isize) as c_int) | ((*source.offset(src_frame_1 as isize) as c_int) << 8)) - 32768;
-            interpolated_sample = ((1.0f32 - alpha) * sample_0 as f32 + alpha * sample_1 as f32) as c_short;
-        }
-        let mut channel = 0;
-        while channel < (*digi_audiospec).channels as c_int {
+            let sample_1 = sample_at(src_frame_0 + 1);
+            ((1.0f32 - alpha) * sample_0 as f32 + alpha * sample_1 as f32) as c_short
+        };
+        for _ in 0..(*digi_audiospec).channels as c_int {
             *dest = interpolated_sample;
             dest = dest.add(1);
-            channel += 1;
         }
     }
 
     converted_buffer
 }
 
+/// Starts a digitised sound. The buffer must already have been through
+/// [`convert_digi_sound`].
 // seg009:74F0 play_digi_sound
 unsafe fn play_digi_sound(buffer: *mut sound_buffer_type) {
     init_digi();
@@ -2642,6 +3194,7 @@ unsafe fn play_digi_sound(buffer: *mut sound_buffer_type) {
     crate::platform::sdl::shared_audio().pause(false);
 }
 
+/// Frees a loaded sound, including an Ogg's decoder and file bytes.
 // seg009 free_sound
 #[no_mangle]
 pub unsafe extern "C" fn free_sound(buffer: *mut sound_buffer_type) {
@@ -2656,6 +3209,10 @@ pub unsafe extern "C" fn free_sound(buffer: *mut sound_buffer_type) {
     free(buffer as *mut c_void);
 }
 
+/// Plays a loaded sound, dispatching on the type tag in its low three bits.
+///
+/// Silently does nothing while fast-forwarding through a replay, which is what
+/// keeps a skipped replay from firing hundreds of overlapping sounds.
 // seg009:7220 play_sound_from_buffer
 #[no_mangle]
 pub unsafe extern "C" fn play_sound_from_buffer(buffer: *mut sound_buffer_type) {
@@ -2686,6 +3243,7 @@ pub unsafe extern "C" fn play_sound_from_buffer(buffer: *mut sound_buffer_type) 
     }
 }
 
+/// Toggles music. Re-applies the sound setting, since the two share a device.
 // seg009 turn_music_on_off
 #[no_mangle]
 pub unsafe extern "C" fn turn_music_on_off(new_state: byte) {
@@ -2693,63 +3251,79 @@ pub unsafe extern "C" fn turn_music_on_off(new_state: byte) {
     turn_sound_on_off(is_sound_on);
 }
 
+/// Toggles sound. Playback keeps running; the callbacks emit silence instead.
 // seg009:7273 turn_sound_on_off
 #[no_mangle]
 pub unsafe extern "C" fn turn_sound_on_off(new_state: byte) {
     is_sound_on = new_state;
 }
 
+/// True if any of the four sources is still playing.
 // seg009:7299 check_sound_playing
 #[no_mangle]
 pub unsafe extern "C" fn check_sound_playing() -> c_int {
     (speaker_playing != 0 || digi_playing != 0 || midi_playing != 0 || ogg_playing != 0) as c_int
 }
 
+// ============================================================================
+// Palette
+//
+// The game keeps its own 256-entry palette in 6-bit VGA components, and only
+// converts to 8-bit SDL colours at blit time. That indirection is what lets the
+// fades and the flash effect work by rewriting the palette rather than by
+// touching pixels.
+// ============================================================================
+
+/// Writes `count` palette entries starting at `start`; a null `array` writes
+/// black (which is how the fade-in blanks a row).
 // seg009:9289 set_pal_arr
 #[no_mangle]
 pub unsafe extern "C" fn set_pal_arr(start: c_int, count: c_int, array: *const rgb_type) {
     for i in 0..count {
-        if !array.is_null() {
+        if array.is_null() {
+            set_pal(start + i, 0, 0, 0);
+        } else {
             let p = array.offset(i as isize);
             set_pal(start + i, (*p).r as c_int, (*p).g as c_int, (*p).b as c_int);
-        } else {
-            set_pal(start + i, 0, 0, 0);
         }
     }
 }
 
+/// Writes one palette entry. Components are 6-bit VGA values (0..=63).
 // seg009:92DF set_pal
 #[no_mangle]
 pub unsafe extern "C" fn set_pal(index: c_int, red: c_int, green: c_int, blue: c_int) {
-    palette[index as usize].r = red as byte;
-    palette[index as usize].g = green as byte;
-    palette[index as usize].b = blue as byte;
+    palette[index as usize] = rgb_type { r: red as byte, g: green as byte, b: blue as byte };
 }
 
+/// Stub: the original allocated free palette rows for a new sprite sheet.
+///
+/// Always returning 0 means "no rows available", so the one caller
+/// ([`load_sprites_from_file`]) has its auto-allocation path commented out
+/// rather than quitting.
 // seg009:969C add_palette_bits
 #[no_mangle]
 pub unsafe extern "C" fn add_palette_bits(_n_colors: byte) -> c_int {
     0
 }
 
+/// Index of the lowest set bit of a 16-bit palette-row mask; 0 if none is set.
 // seg009:9C36 find_first_pal_row
 #[no_mangle]
 pub unsafe extern "C" fn find_first_pal_row(which_rows_mask: c_int) -> c_int {
-    let mut which_row: word = 0;
-    let mut row_mask: word = 1;
-    loop {
-        if (row_mask as c_int) & which_rows_mask != 0 {
-            return which_row as c_int;
-        }
-        which_row += 1;
-        row_mask <<= 1;
-        if !(which_row < 16) {
-            break;
+    for which_row in 0..16 {
+        if (1 << which_row) & which_rows_mask != 0 {
+            return which_row;
         }
     }
     0
 }
 
+/// Maps a logical colour to a palette index for the active graphics mode.
+///
+/// In VGA mode a colour is a row (the high nibble, selected by
+/// `high_half_mask`) plus a column (`low_half`); CGA and Hercules ignore both
+/// and take `cga_color` directly.
 // seg009:9C6C get_text_color
 #[no_mangle]
 pub unsafe extern "C" fn get_text_color(cga_color: c_int, low_half: c_int, high_half_mask: c_int) -> c_int {
@@ -2762,6 +3336,24 @@ pub unsafe extern "C" fn get_text_color(cga_color: c_int, low_half: c_int, high_
     }
 }
 
+/// Finds a resource and leaves a `FILE*` positioned at its first data byte.
+///
+/// This is the single place that decides where a resource comes from. It walks
+/// the open-DAT chain from most recently opened to least, and for each entry
+/// tries two sources in order:
+///
+/// 1. The DAT's own resource table, if the DAT actually opened.
+/// 2. A loose file `data/<datname>/res<id>.<ext>` -- and under a mod, the same
+///    path inside `mods/<MODNAME>/` first.
+///
+/// The first hit wins, and `result` reports which kind it was, because the two
+/// need different handling downstream: a DAT resource shares the DAT's file
+/// handle and must not be closed, whereas a directory resource owns its handle
+/// and the caller must close it.
+///
+/// A DAT entry for a `png` of two bytes or fewer is treated as *absent* rather
+/// than as an empty image, specifically so a mod can blank out a base-game
+/// sprite in its DAT and have the directory fallback take over.
 unsafe fn load_from_opendats_metadata(
     resource_id: c_int,
     extension: *const c_char,
@@ -2784,32 +3376,28 @@ unsafe fn load_from_opendats_metadata(
             let dat_table = (*pointer).dat_table;
             let entries = core::ptr::addr_of!((*dat_table).entries) as *const dat_res_type;
             let res_count = swaple16((*dat_table).res_count) as c_int;
-            let mut i: c_int = 0;
-            while i < res_count {
-                if swaple16((*entries.offset(i as isize)).id) as c_int == resource_id {
-                    break;
+            let found = (0..res_count)
+                .find(|&i| swaple16((*entries.offset(i as isize)).id) as c_int == resource_id);
+            match found {
+                Some(i) => {
+                    let entry = entries.offset(i as isize);
+                    *result = data_location_data_DAT;
+                    *size = swaple16((*entry).size) as c_int;
+                    if strcmp(extension, cs!("png")) == 0 && *size <= 2 {
+                        // Skip empty images in DATs, so we can fall back to directories.
+                        fp = null_mut();
+                        *result = data_location_data_none;
+                        *size = 0;
+                    } else if fseek(fp, swaple32((*entry).offset) as c_long, SEEK_SET) != 0
+                        || fread(checksum as *mut c_void, 1, 1, fp) != 1
+                    {
+                        printf(cs!("Cannot seek or cannot read checksum: "));
+                        perror(core::ptr::addr_of!((*pointer).filename) as *const c_char);
+                        fp = null_mut();
+                    }
                 }
-                i += 1;
-            }
-            if i < res_count {
-                // found
-                *result = data_location_data_DAT;
-                *size = swaple16((*entries.offset(i as isize)).size) as c_int;
-                if strcmp(extension, cs!("png")) == 0 && *size <= 2 {
-                    // Skip empty images in DATs, so we can fall back to directories.
-                    fp = null_mut();
-                    *result = data_location_data_none;
-                    *size = 0;
-                } else if fseek(fp, swaple32((*entries.offset(i as isize)).offset) as c_long, SEEK_SET) != 0
-                    || fread(checksum as *mut c_void, 1, 1, fp) != 1
-                {
-                    printf(cs!("Cannot seek or cannot read checksum: "));
-                    perror(core::ptr::addr_of!((*pointer).filename) as *const c_char);
-                    fp = null_mut();
-                }
-            } else {
                 // not found
-                fp = null_mut();
+                None => fp = null_mut(),
             }
         }
         // If the image is not in the DAT then try the directory as well.
@@ -2821,19 +3409,22 @@ unsafe fn load_from_opendats_metadata(
                 filename_no_ext[len - 4] = 0;
             }
             snprintf_check!(image_filename.as_mut_ptr(), POP_MAX_PATH, cs!("data/%s/res%d.%s"), filename_no_ext.as_ptr(), resource_id, extension);
+            // Opens a path after running it through the search-directory list.
+            let open_located = |path: *const c_char| -> *mut FILE {
+                let mut located = [0 as c_char; POP_MAX_PATH];
+                fopen(locate_file_(path, located.as_mut_ptr(), POP_MAX_PATH as c_int), cs!("rb"))
+            };
             if use_custom_levelset == 0 {
-                let mut __lf = [0 as c_char; POP_MAX_PATH];
-                fp = fopen(locate_file_(image_filename.as_ptr(), __lf.as_mut_ptr(), POP_MAX_PATH as c_int), cs!("rb"));
+                fp = open_located(image_filename.as_ptr());
             } else {
+                // before checking the root directory, first try mods/MODNAME/
                 if !skip_mod_data_files {
                     let mut image_filename_mod = [0 as c_char; POP_MAX_PATH];
                     snprintf_check!(image_filename_mod.as_mut_ptr(), POP_MAX_PATH, cs!("%s/%s"), mod_data_path.as_ptr(), image_filename.as_ptr());
-                    let mut __lf = [0 as c_char; POP_MAX_PATH];
-                    fp = fopen(locate_file_(image_filename_mod.as_ptr(), __lf.as_mut_ptr(), POP_MAX_PATH as c_int), cs!("rb"));
+                    fp = open_located(image_filename_mod.as_ptr());
                 }
                 if fp.is_null() && !skip_normal_data_files {
-                    let mut __lf = [0 as c_char; POP_MAX_PATH];
-                    fp = fopen(locate_file_(image_filename.as_ptr(), __lf.as_mut_ptr(), POP_MAX_PATH as c_int), cs!("rb"));
+                    fp = open_located(image_filename.as_ptr());
                 }
             }
             if !fp.is_null() {
@@ -2857,6 +3448,9 @@ unsafe fn load_from_opendats_metadata(
     }
 }
 
+/// Unlinks a DAT from the open-DAT chain and frees it.
+///
+/// Silently does nothing if `pointer` is not in the chain.
 // seg009:9F34 close_dat
 #[no_mangle]
 pub unsafe extern "C" fn close_dat(pointer: *mut dat_type) {
@@ -2879,6 +3473,10 @@ pub unsafe extern "C" fn close_dat(pointer: *mut dat_type) {
     }
 }
 
+/// Loads a resource into a freshly allocated buffer the caller must free.
+///
+/// Returns null if the resource does not exist or could not be read; the
+/// optional out-params report where it was found and how big it is.
 // seg009:9F80 load_from_opendats_alloc
 #[no_mangle]
 pub unsafe extern "C" fn load_from_opendats_alloc(resource: c_int, extension: *const c_char, out_result: *mut data_location, out_size: *mut c_int) -> *mut c_void {
@@ -2909,6 +3507,10 @@ pub unsafe extern "C" fn load_from_opendats_alloc(resource: c_int, extension: *c
     area
 }
 
+/// Loads a resource into a caller-supplied buffer, truncating to `length`.
+///
+/// On a read failure the buffer is zeroed rather than left with stale bytes.
+/// The return value is always 0; callers do not check it.
 // seg009:A172 load_from_opendats_to_area
 #[no_mangle]
 pub unsafe extern "C" fn load_from_opendats_to_area(resource: c_int, area: *mut c_void, length: c_int, extension: *const c_char) -> c_int {
@@ -2931,6 +3533,29 @@ pub unsafe extern "C" fn load_from_opendats_to_area(resource: c_int, area: *mut 
     0
 }
 
+// ============================================================================
+// Blitting
+//
+// The `method_N_*` names are inherited from the original's jump table of
+// drawing primitives. Each takes a `blitters` id saying how transparency
+// should be handled; only a few of those ids are still meaningful.
+// ============================================================================
+
+/// A palette entry as 8-bit RGB, ready for `SDL_MapRGB`.
+///
+/// The stored components are 6-bit VGA values, so each is shifted up by two.
+#[inline]
+unsafe fn palette_rgb8(color: byte) -> (u8, u8, u8) {
+    let entry = palette[color as usize];
+    (
+        ((entry.r as c_int) << 2) as u8,
+        ((entry.g as c_int) << 2) as u8,
+        ((entry.b as c_int) << 2) as u8,
+    )
+}
+
+/// Converts the game's `(top, left, bottom, right)` rect to SDL's
+/// `(x, y, w, h)`.
 // seg009 rect_to_sdlrect
 #[no_mangle]
 pub unsafe extern "C" fn rect_to_sdlrect(rect: *const rect_type, sdlrect: *mut SDL_Rect) {
@@ -2940,6 +3565,10 @@ pub unsafe extern "C" fn rect_to_sdlrect(rect: *const rect_type, sdlrect: *mut S
     (*sdlrect).h = ((*rect).bottom - (*rect).top) as c_int;
 }
 
+/// Blits a rectangle between two surfaces.
+///
+/// Only the destination rect's *position* matters: SDL takes the size from the
+/// source rect.
 // seg009 method_1_blit_rect
 #[no_mangle]
 pub unsafe extern "C" fn method_1_blit_rect(target_surface: *mut surface_type, source_surface: *mut surface_type, target_rect: *const rect_type, source_rect: *const rect_type, blit: c_int) {
@@ -2948,18 +3577,10 @@ pub unsafe extern "C" fn method_1_blit_rect(target_surface: *mut surface_type, s
     let mut dest_rect: SDL_Rect = core::mem::zeroed();
     rect_to_sdlrect(target_rect, &mut dest_rect);
 
-    if blit == blitters_blitters_0_no_transp as c_int {
-        // Disable transparency.
-        if crate::platform::sdl::shared_renderer().set_color_key(source_surface, false, 0) != 0 {
-            sdlperror(cs!("method_1_blit_rect: SDL_SetColorKey"));
-            quit(1);
-        }
-    } else {
-        // Enable transparency.
-        if crate::platform::sdl::shared_renderer().set_color_key(source_surface, true, 0) != 0 {
-            sdlperror(cs!("method_1_blit_rect: SDL_SetColorKey"));
-            quit(1);
-        }
+    let transparent = blit != blitters_blitters_0_no_transp as c_int;
+    if crate::platform::sdl::shared_renderer().set_color_key(source_surface, transparent, 0) != 0 {
+        sdlperror(cs!("method_1_blit_rect: SDL_SetColorKey"));
+        quit(1);
     }
     if SDL_BlitSurface(source_surface, &src_rect, target_surface, &mut dest_rect) != 0 {
         sdlperror(cs!("method_1_blit_rect: SDL_BlitSurface"));
@@ -2967,6 +3588,12 @@ pub unsafe extern "C" fn method_1_blit_rect(target_surface: *mut surface_type, s
     }
 }
 
+/// Blits an image recoloured to a single palette colour, preserving its alpha.
+///
+/// This is how text is drawn: the glyph surfaces are monochrome, and every
+/// pixel's RGB is overwritten with the requested colour while the alpha channel
+/// (which came from the colour key) decides what actually shows. Converting to
+/// ARGB8888 first is what makes that separation available.
 // seg009 method_3_blit_mono
 #[no_mangle]
 pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int, ypos: c_int, _blitter: c_int, color: byte) -> *mut image_type {
@@ -2985,10 +3612,8 @@ pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int,
         quit(1);
     }
 
-    let pr = palette[color as usize].r;
-    let pg = palette[color as usize].g;
-    let pb = palette[color as usize].b;
-    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8) & 0xFFFFFF;
+    let (pr, pg, pb) = palette_rgb8(color);
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, pr, pg, pb) & 0xFFFFFF;
     let stride = (*colored_image).pitch;
     for y in 0..h {
         let mut pixel_ptr = ((*colored_image).pixels as *mut byte).offset((stride * y) as isize) as *mut u32;
@@ -3014,6 +3639,12 @@ pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int,
     image
 }
 
+/// Detects, once, whether this SDL build byte-swaps 24-bit `SDL_FillRect`
+/// colours.
+///
+/// Some SDL versions get the channel order wrong for 24-bit surfaces. The probe
+/// fills a 1x1 surface with pure red and checks whether the red mask actually
+/// came back set. Result is cached in `RGB24_bug_affected`.
 unsafe fn RGB24_bug_check() -> bool {
     if !RGB24_bug_checked {
         let test_surface = crate::platform::sdl::shared_renderer().create_surface(1, 1, 24, 0, 0, 0, 0);
@@ -3032,6 +3663,8 @@ unsafe fn RGB24_bug_check() -> bool {
     RGB24_bug_affected
 }
 
+/// `SDL_FillRect` with the 24-bit channel order pre-swapped on affected SDL
+/// builds. See [`RGB24_bug_check`].
 unsafe fn safe_fill_rect(dst: *mut SDL_Surface, rect: *const SDL_Rect, mut color: u32) -> c_int {
     if (*(*dst).format).BitsPerPixel == 24 && RGB24_bug_check() {
         color = ((color & 0xFF) << 16) | (color & 0xFF00) | ((color & 0xFF0000) >> 16);
@@ -3039,15 +3672,14 @@ unsafe fn safe_fill_rect(dst: *mut SDL_Surface, rect: *const SDL_Rect, mut color
     crate::platform::sdl::shared_renderer().fill_rect(dst, rect, color)
 }
 
+/// Fills a rect on the current target with an opaque palette colour.
 // seg009 method_5_rect
 #[no_mangle]
 pub unsafe extern "C" fn method_5_rect(rect: *const rect_type, _blit: c_int, color: byte) -> *const rect_type {
     let mut dest_rect: SDL_Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut dest_rect);
-    let pr = palette[color as usize].r;
-    let pg = palette[color as usize].g;
-    let pb = palette[color as usize].b;
-    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*current_target_surface).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8, 0xFF);
+    let (pr, pg, pb) = palette_rgb8(color);
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*current_target_surface).format, pr, pg, pb, 0xFF);
     if safe_fill_rect(current_target_surface, &dest_rect, rgb_color) != 0 {
         sdlperror(cs!("method_5_rect: SDL_FillRect"));
         quit(1);
@@ -3055,21 +3687,30 @@ pub unsafe extern "C" fn method_5_rect(rect: *const rect_type, _blit: c_int, col
     rect
 }
 
+/// Fills a rect with a semi-transparent palette colour -- the backing of the
+/// timer and menu overlays.
+///
+/// Note the alpha is mapped against `overlay_surface`'s format but filled into
+/// `current_target_surface`. That works because the overlay *is* the target
+/// whenever this is called, and is left as the C source has it.
 // seg009 draw_rect_with_alpha
 #[no_mangle]
 pub unsafe extern "C" fn draw_rect_with_alpha(rect: *const rect_type, color: byte, alpha: byte) {
     let mut dest_rect: SDL_Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut dest_rect);
-    let pr = palette[color as usize].r;
-    let pg = palette[color as usize].g;
-    let pb = palette[color as usize].b;
-    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*overlay_surface).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8, alpha);
+    let (pr, pg, pb) = palette_rgb8(color);
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*overlay_surface).format, pr, pg, pb, alpha);
     if safe_fill_rect(current_target_surface, &dest_rect, rgb_color) != 0 {
         sdlperror(cs!("draw_rect_with_alpha: SDL_FillRect"));
         quit(1);
     }
 }
 
+/// Draws a one-pixel outline around a rect, clipped to the surface.
+///
+/// Writes pixels directly rather than through SDL, so it only supports 32-bit
+/// targets; anything else prints a warning and gives up. Used to highlight menu
+/// items.
 // seg009 draw_rect_contours
 #[no_mangle]
 pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte) {
@@ -3079,10 +3720,8 @@ pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte)
     }
     let mut dest_rect: SDL_Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut dest_rect);
-    let pr = palette[color as usize].r;
-    let pg = palette[color as usize].g;
-    let pb = palette[color as usize].b;
-    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*overlay_surface).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8, 0xFF);
+    let (pr, pg, pb) = palette_rgb8(color);
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*overlay_surface).format, pr, pg, pb, 0xFF);
     if crate::platform::sdl::shared_renderer().lock_surface(current_target_surface) != 0 {
         sdlperror(cs!("draw_rect_contours: SDL_LockSurface"));
         quit(1);
@@ -3114,6 +3753,12 @@ pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte)
     crate::platform::sdl::shared_renderer().unlock_surface(current_target_surface);
 }
 
+/// XOR-blits an image onto a surface, via a read-modify-write through a scratch
+/// 24-bit surface.
+///
+/// SDL has no XOR blend mode, so the destination region is read out, XORed byte
+/// by byte with the image, and written back. Used for the flashing "press any
+/// key" style effects.
 unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, image: *mut SDL_Surface, src_rect: *mut SDL_Rect) {
     if (*dest_rect).w != (*src_rect).w || (*dest_rect).h != (*src_rect).h {
         printf(cs!("blit_xor: dest_rect and src_rect have different sizes\n"));
@@ -3164,7 +3809,11 @@ unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, i
     crate::platform::sdl::shared_renderer().free_surface(helper_surface);
 }
 
-// USE_COLORED_TORCHES
+/// Draws a torch flame recoloured to an arbitrary RGB (USE_COLORED_TORCHES).
+///
+/// `color` packs three 2-bit channels (`rrggbb`), each scaled by 85 to span
+/// 0..255. Every pixel matching the flame's stock orange `#FC8400` is replaced;
+/// the rest of the sprite is untouched, so the torch bracket keeps its colour.
 unsafe fn draw_colored_torch(color: c_int, image: *mut SDL_Surface, xpos: c_int, ypos: c_int) {
     if crate::platform::sdl::shared_renderer().set_color_key(image, true, 0) != 0 {
         sdlperror(cs!("draw_colored_torch: SDL_SetColorKey"));
@@ -3202,6 +3851,13 @@ unsafe fn draw_colored_torch(color: c_int, image: *mut SDL_Surface, xpos: c_int,
     crate::platform::sdl::shared_renderer().free_surface(colored_image);
 }
 
+/// The general image blitter -- every sprite in the game reaches the screen
+/// through here.
+///
+/// Dispatches on the `blitters` id: black-silhouette, XOR, and the range of
+/// coloured-flame ids each go to a specialised path, and everything else is a
+/// plain blit with transparency on or off. Indexed surfaces use a colour key,
+/// truecolour ones use a blend mode, since only one of the two applies to each.
 // seg009 method_6_blit_img_to_scr
 #[no_mangle]
 pub unsafe extern "C" fn method_6_blit_img_to_scr(image: *mut image_type, xpos: c_int, ypos: c_int, blit: c_int) -> *mut image_type {
@@ -3223,7 +3879,8 @@ pub unsafe extern "C" fn method_6_blit_img_to_scr(image: *mut image_type, xpos: 
         return image;
     }
 
-    if blit >= blitters_blitters_colored_flame as c_int && blit <= blitters_blitters_colored_flame_last as c_int {
+    let colored_flames = (blitters_blitters_colored_flame as c_int)..=(blitters_blitters_colored_flame_last as c_int);
+    if colored_flames.contains(&blit) {
         draw_colored_torch(blit - blitters_blitters_colored_flame as c_int, image, xpos, ypos);
         return image;
     }
@@ -3232,18 +3889,12 @@ pub unsafe extern "C" fn method_6_blit_img_to_scr(image: *mut image_type, xpos: 
     crate::platform::sdl::shared_renderer().set_color_key(image, false, 0);
     crate::platform::sdl::shared_renderer().set_alpha_mod(image, 255);
 
-    if blit == blitters_blitters_0_no_transp as c_int {
-        if SDL_ISPIXELFORMAT_INDEXED((*(*image).format).format) {
-            crate::platform::sdl::shared_renderer().set_color_key(image, false, 0);
-        } else {
-            crate::platform::sdl::shared_renderer().set_blend_mode(image, SDL_BLENDMODE_NONE);
-        }
+    let transparent = blit != blitters_blitters_0_no_transp as c_int;
+    if SDL_ISPIXELFORMAT_INDEXED((*(*image).format).format) {
+        crate::platform::sdl::shared_renderer().set_color_key(image, transparent, 0);
     } else {
-        if SDL_ISPIXELFORMAT_INDEXED((*(*image).format).format) {
-            crate::platform::sdl::shared_renderer().set_color_key(image, true, 0);
-        } else {
-            crate::platform::sdl::shared_renderer().set_blend_mode(image, SDL_BLENDMODE_BLEND);
-        }
+        let mode = if transparent { SDL_BLENDMODE_BLEND } else { SDL_BLENDMODE_NONE };
+        crate::platform::sdl::shared_renderer().set_blend_mode(image, mode);
     }
     if SDL_BlitSurface(image, &src_rect, current_target_surface, &mut dest_rect) != 0 {
         sdlperror(cs!("method_6_blit_img_to_scr: SDL_BlitSurface 2247"));
@@ -3251,6 +3902,15 @@ pub unsafe extern "C" fn method_6_blit_img_to_scr(image: *mut image_type, xpos: 
     image
 }
 
+// ============================================================================
+// Screen: window, renderer, scaling and presentation
+// ============================================================================
+
+/// Sets the renderer's logical size to the chosen aspect ratio.
+///
+/// The 320x200 framebuffer was displayed on 4:3 CRTs with non-square pixels.
+/// "Correct" aspect ratio reproduces that by declaring a 1600x1200 logical size;
+/// the alternative shows the raw 16:10 pixels.
 // seg009 apply_aspect_ratio
 #[no_mangle]
 pub unsafe extern "C" fn apply_aspect_ratio() {
@@ -3262,6 +3922,11 @@ pub unsafe extern "C" fn apply_aspect_ratio() {
     window_resized();
 }
 
+/// Re-evaluates whether integer scaling is usable at the current window size.
+///
+/// Integer scaling is switched off when the window is *smaller* than the
+/// logical size, since the smallest integer factor (1x) would then crop rather
+/// than fit.
 // seg009 window_resized
 #[no_mangle]
 pub unsafe extern "C" fn window_resized() {
@@ -3274,6 +3939,23 @@ pub unsafe extern "C" fn window_resized() {
     }
 }
 
+/// `SDL_SetHint` over the NUL-terminated byte-string constants above.
+#[inline]
+unsafe fn set_hint(name: &[u8], value: *const c_char) {
+    crate::platform::sdl::shared_renderer().set_hint(
+        std::ffi::CStr::from_ptr(name.as_ptr() as *const c_char),
+        std::ffi::CStr::from_ptr(value),
+    );
+}
+
+/// Sets `SDL_RENDER_SCALE_QUALITY`, which SDL samples when a texture is
+/// *created*, not when it is drawn.
+#[inline]
+unsafe fn set_scale_quality_linear(linear: bool) {
+    set_hint(SDL_HINT_RENDER_SCALE_QUALITY, if linear { cs!("1") } else { cs!("0") });
+}
+
+/// Allocates the overlay and compositing surfaces, once.
 unsafe fn init_overlay() {
     if !overlay_initialized {
         overlay_surface = crate::platform::sdl::shared_renderer().create_surface(320, 200, 32, Rmsk, Gmsk, Bmsk, Amsk);
@@ -3282,6 +3964,19 @@ unsafe fn init_overlay() {
     }
 }
 
+/// Creates whichever texture the current `scaling_type` needs and points
+/// `target_texture` at it. Idempotent, and called every frame.
+///
+/// * 0 (sharp) -- a 320x200 nearest-neighbour texture.
+/// * 1 (fuzzy) -- upscale 2x with linear filtering *first*, then let the
+///   renderer scale the result, which is how DOSBox gets its soft-but-not-blurry
+///   look. Done on the GPU as a render target where available, otherwise via a
+///   CPU `SDL_BlitScaled` into `onscreen_surface_2x`.
+/// * 2 (blurry) -- a 320x200 texture with linear filtering, so the renderer
+///   smooths it on the way up.
+///
+/// The scale-quality hint is set and cleared around each creation because SDL
+/// samples it when the texture is made, not when it is drawn.
 unsafe fn init_scaling() {
     // Don't crash in validate mode.
     if renderer_.is_null() {
@@ -3295,17 +3990,17 @@ unsafe fn init_scaling() {
             onscreen_surface_2x = crate::platform::sdl::shared_renderer().create_surface(320 * 2, 200 * 2, 24, Rmsk, Gmsk, Bmsk, 0);
         }
         if texture_fuzzy.is_null() {
-            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("1")));
+            set_scale_quality_linear(true);
             let access = if is_renderer_targettexture_supported { SDL_TEXTUREACCESS_TARGET } else { SDL_TEXTUREACCESS_STREAMING };
             texture_fuzzy = crate::platform::sdl::shared_renderer().create_texture(renderer_, SDL_PIXELFORMAT_RGB24, access, 320 * 2, 200 * 2);
-            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("0")));
+            set_scale_quality_linear(false);
         }
         target_texture = texture_fuzzy;
     } else if scaling_type == 2 {
         if texture_blurry.is_null() {
-            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("1")));
+            set_scale_quality_linear(true);
             texture_blurry = crate::platform::sdl::shared_renderer().create_texture(renderer_, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, 320, 200);
-            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("0")));
+            set_scale_quality_linear(false);
         }
         target_texture = texture_blurry;
     } else {
@@ -3317,10 +4012,22 @@ unsafe fn init_scaling() {
     }
 }
 
+/// Brings up everything graphical: SDL, the window, the renderer, the
+/// framebuffer surfaces and the fonts.
+///
+/// The `grmode` argument is ignored -- only the VGA mode is implemented.
+///
+/// In validate (replay-checking) mode no window is created at all, but the
+/// renderer and surfaces still are, so the game's drawing code runs unchanged
+/// and headless replays exercise the same paths.
+///
+/// VSync is explicitly disabled: the game's timing is driven by the performance
+/// counter, and letting the display block presentation would drag those timers
+/// with it.
 // seg009:38ED set_gr_mode
 #[no_mangle]
 pub unsafe extern "C" fn set_gr_mode(_grmode: byte) {
-    crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_WINDOWS_DISABLE_THREAD_NAMING.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("1")));
+    set_hint(SDL_HINT_WINDOWS_DISABLE_THREAD_NAMING, cs!("1"));
     if crate::platform::sdl::shared_renderer().sdl_init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_NOPARACHUTE | SDL_INIT_GAMECONTROLLER) != 0 {
         sdlperror(cs!("set_gr_mode: SDL_Init"));
         quit(1);
@@ -3362,17 +4069,13 @@ pub unsafe extern "C" fn set_gr_mode(_grmode: byte) {
         );
     }
     // Make absolutely sure that VSync will be off, to prevent timer issues.
-    crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_VSYNC.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("0")));
-    flags = 0;
-    match use_hardware_acceleration {
-        0 => {
-            flags |= SDL_RENDERER_SOFTWARE;
-        }
-        1 => {
-            flags |= SDL_RENDERER_ACCELERATED;
-        }
-        _ => {}
-    }
+    set_hint(SDL_HINT_RENDER_VSYNC, cs!("0"));
+    // Anything other than 0 or 1 means "let SDL choose".
+    flags = match use_hardware_acceleration {
+        0 => SDL_RENDERER_SOFTWARE,
+        1 => SDL_RENDERER_ACCELERATED,
+        _ => 0,
+    };
     renderer_ = crate::platform::sdl::shared_renderer().create_renderer(window_, -1, flags | SDL_RENDERER_TARGETTEXTURE);
     let renderer_info_flags = crate::platform::sdl::shared_renderer().get_renderer_info_flags(renderer_);
     if renderer_info_flags & SDL_RENDERER_TARGETTEXTURE != 0 {
@@ -3408,6 +4111,8 @@ pub unsafe extern "C" fn set_gr_mode(_grmode: byte) {
     load_font();
 }
 
+/// The surface that should actually be shown: the plain framebuffer, or the
+/// composited one when an overlay is up.
 // seg009 get_final_surface
 #[no_mangle]
 pub unsafe extern "C" fn get_final_surface() -> *mut SDL_Surface {
@@ -3418,28 +4123,46 @@ pub unsafe extern "C" fn get_final_surface() -> *mut SDL_Surface {
     }
 }
 
+/// Which overlay, if any, should be composited over the frame.
+///
+/// The pause menu wins over either timer; the level timer wins over the feather
+/// timer.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Overlay {
+    None,
+    LevelTimer,
+    Menu,
+    FeatherTimer,
+}
+
+/// Draws the current overlay into `overlay_surface` and composites it with the
+/// frame into `merged_surface`.
+///
+/// The game's own framebuffer is never touched, so the overlay can appear and
+/// disappear without the frame underneath being redrawn.
 unsafe fn draw_overlay() {
-    let mut overlay: c_int = 0;
     is_overlay_displayed = false;
-    if is_timer_displayed != 0 && start_level > 0 {
-        overlay = 1; // Timer overlay
+    let mut overlay = if is_timer_displayed != 0 && start_level > 0 {
+        Overlay::LevelTimer
     } else if (*fixes).fix_quicksave_during_feather != 0
         && is_feather_timer_displayed != 0
         && start_level > 0
         && is_feather_fall > 0
     {
-        overlay = 3; // Feather timer overlay
-    }
+        Overlay::FeatherTimer
+    } else {
+        Overlay::None
+    };
     // Menu overlay
     if is_paused != 0 && is_menu_shown != 0 {
-        overlay = 2;
+        overlay = Overlay::Menu;
     }
-    if overlay != 0 {
+    if overlay != Overlay::None {
         is_overlay_displayed = true;
         let saved_target_surface = current_target_surface;
         current_target_surface = overlay_surface;
         let drawn_rect: rect_type;
-        if overlay == 1 {
+        if overlay == Overlay::LevelTimer {
             let mut timer_text = [0 as c_char; 32];
             if rem_min < 0 {
                 snprintf(timer_text.as_mut_ptr(), 32, cs!("%02d:%02d:%02d"), -((rem_min as c_int) + 1), (719 - rem_tick as c_int) / 12, (719 - rem_tick as c_int) % 12);
@@ -3473,7 +4196,7 @@ unsafe fn draw_overlay() {
             }
 
             drawn_rect = timer_box_rect;
-        } else if overlay == 3 {
+        } else if overlay == Overlay::FeatherTimer {
             // Feather timer
             let mut timer_text = [0 as c_char; 32];
             let ticks_per_sec = get_ticks_per_sec(timerids_timer_1 as c_int) as c_int;
@@ -3499,6 +4222,7 @@ unsafe fn draw_overlay() {
     }
 }
 
+/// Presents one frame: composite overlays, upload to a texture, scale, present.
 // seg009 update_screen
 #[no_mangle]
 pub unsafe extern "C" fn update_screen() {
@@ -3509,9 +4233,9 @@ pub unsafe extern "C" fn update_screen() {
         // Make "fuzzy pixels" like DOSBox does.
         if is_renderer_targettexture_supported {
             crate::platform::sdl::shared_renderer().update_texture(texture_sharp, core::ptr::null(), (*surface).pixels, (*surface).pitch);
-            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("1")));
+            set_scale_quality_linear(true);
             crate::platform::sdl::shared_renderer().set_render_target(renderer_, target_texture);
-            crate::platform::sdl::shared_renderer().set_hint(std::ffi::CStr::from_ptr(SDL_HINT_RENDER_SCALE_QUALITY.as_ptr() as *const c_char), std::ffi::CStr::from_ptr(cs!("0")));
+            set_scale_quality_linear(false);
             crate::platform::sdl::shared_renderer().render_clear(renderer_);
             crate::platform::sdl::shared_renderer().render_copy(renderer_, texture_sharp, core::ptr::null(), core::ptr::null());
             crate::platform::sdl::shared_renderer().set_render_target(renderer_, null_mut());
@@ -3528,26 +4252,59 @@ pub unsafe extern "C" fn update_screen() {
     crate::platform::sdl::shared_renderer().render_present(renderer_);
 }
 
+// ============================================================================
+// Timers
+//
+// Three independent timers, driven by SDL's performance counter rather than by
+// millisecond ticks. Each holds a start counter and a length in *game ticks*;
+// `has_timer_stopped` converts the elapsed counter difference into ticks and
+// compares. `fps` is the tick rate, which fast-forward multiplies by
+// FAST_FORWARD_RATIO -- so speeding the game up is a matter of redefining how
+// long a tick is, not of skipping frames.
+// ============================================================================
+
+/// Restarts a timer's clock without changing its length.
 // seg009 reset_timer
 #[no_mangle]
 pub unsafe extern "C" fn reset_timer(timer_index: c_int) {
     timer_last_counter[timer_index as usize] = crate::platform::sdl::shared_renderer().performance_counter();
 }
 
+/// How many times per second this timer currently expires.
+///
+/// Its length is in ticks and `fps` ticks pass per second, so this is the
+/// timer's real-time rate -- used to convert the feather-fall countdown between
+/// game speeds.
 // seg009 get_ticks_per_sec
 #[no_mangle]
 pub unsafe extern "C" fn get_ticks_per_sec(timer_index: c_int) -> f64 {
     fps as f64 / wait_time[timer_index as usize] as f64
 }
 
+/// Rescales the feather-fall countdown when the game speed changes underneath
+/// it.
+///
+/// Feather fall is counted in timer expiries, not seconds, so changing the timer
+/// length would otherwise silently lengthen or shorten the effect. Only scales
+/// *down*-going conversions where the remaining count exceeds both rates, which
+/// is the C source's guard against rounding a nearly-expired counter to zero.
 unsafe fn recalculate_feather_fall_timer(previous_ticks_per_second: f64, ticks_per_second: f64) {
-    let m = if previous_ticks_per_second > ticks_per_second { previous_ticks_per_second } else { ticks_per_second };
-    if (is_feather_fall as f64) <= m || previous_ticks_per_second == ticks_per_second {
+    if (is_feather_fall as f64) <= previous_ticks_per_second.max(ticks_per_second)
+        || previous_ticks_per_second == ticks_per_second
+    {
         return;
     }
+    // there are more ticks per second in base mode vs fight mode so
+    // feather fall length needs to be recalculated
     is_feather_fall = (is_feather_fall as f64 / previous_ticks_per_second * ticks_per_second) as word;
 }
 
+/// Sets a timer's length in ticks.
+///
+/// With `fix_quicksave_during_feather` on, changing the length while feather
+/// fall is active also rescales the countdown -- but only when the *old* length
+/// was one of the two gameplay speeds, so setting a cutscene or menu timer does
+/// not disturb it.
 // seg009 set_timer_length
 #[no_mangle]
 pub unsafe extern "C" fn set_timer_length(timer_index: c_int, length: c_int) {
@@ -3565,6 +4322,9 @@ pub unsafe extern "C" fn set_timer_length(timer_index: c_int, length: c_int) {
     recalculate_feather_fall_timer(previous_ticks_per_second, ticks_per_second);
 }
 
+/// Starts a timer: reset its clock and set its length.
+///
+/// Skipped entirely while fast-forwarding a replay, so the game never waits.
 // seg009 start_timer
 #[no_mangle]
 pub unsafe extern "C" fn start_timer(timer_index: c_int, length: c_int) {
@@ -3575,6 +4335,7 @@ pub unsafe extern "C" fn start_timer(timer_index: c_int, length: c_int) {
     wait_time[timer_index as usize] = length;
 }
 
+/// Toggles borderless fullscreen, hiding the cursor while fullscreen.
 unsafe fn toggle_fullscreen() {
     let flags = crate::platform::sdl::shared_renderer().get_window_flags(window_);
     if flags & SDL_WINDOW_FULLSCREEN_DESKTOP != 0 {
@@ -3609,6 +4370,7 @@ static mut SCRIPT_EVENTS: Vec<(u32, c_int, bool)> = Vec::new();
 static mut SCRIPT_LOADED: bool = false;
 static mut SCRIPT_INDEX: usize = 0;
 
+/// Maps a script's key name to an SDL scancode.
 fn scancode_from_key_name(name: &str) -> Option<c_int> {
     Some(match name.to_ascii_lowercase().as_str() {
         "left" => SDL_SCANCODE_LEFT,
@@ -3624,6 +4386,10 @@ fn scancode_from_key_name(name: &str) -> Option<c_int> {
     })
 }
 
+/// Parses the `POPTRACE_INPUT` script into `SCRIPT_EVENTS`, once.
+///
+/// Malformed lines are reported and skipped rather than fatal, so a typo in a
+/// long script does not lose the rest of it.
 unsafe fn load_scripted_input() {
     SCRIPT_LOADED = true;
     let Ok(path) = std::env::var("POPTRACE_INPUT") else { return };
@@ -3659,6 +4425,12 @@ unsafe fn load_scripted_input() {
     SCRIPT_EVENTS.sort_by_key(|e| e.0);
 }
 
+/// Pushes any scripted events whose tick has arrived onto SDL's real event
+/// queue.
+///
+/// `<=` rather than `==` so an event whose tick was skipped (the tick clock can
+/// advance by more than one between calls) still fires, late, rather than being
+/// lost.
 unsafe fn inject_scripted_input() {
     if !SCRIPT_LOADED {
         load_scripted_input();
@@ -3685,6 +4457,23 @@ unsafe fn inject_scripted_input() {
     }
 }
 
+/// Drains SDL's event queue into the game's input globals.
+///
+/// This is the only door between the outside world and the game. It writes:
+/// `last_key_scancode` (the one pending keystroke, modifier bits folded into
+/// its high bits), `last_any_key_scancode`, `key_states` (held/newly-held bits
+/// per scancode), `last_text_input`, the joystick axis and button arrays, and
+/// the mouse flags the menu reads. Nothing here interprets those -- the
+/// gameplay code polls them on its own schedule.
+///
+/// Called from [`idle`] and from every wait loop, so it runs many times per
+/// game tick.
+///
+/// Three input families are handled in parallel because they are not
+/// interchangeable: the GameController API for devices SDL has a mapping for,
+/// the raw joystick API for those it does not (gated on
+/// `using_sdl_joystick_interface`), and the keyboard. Keyboard and joystick
+/// modes are mutually exclusive and each switches itself on when used.
 // seg009 process_events
 #[no_mangle]
 pub unsafe extern "C" fn process_events() {
@@ -4005,6 +4794,7 @@ pub unsafe extern "C" fn process_events() {
     }
 }
 
+/// One turn of the "nothing to do" loop: pump input, redraw.
 // seg009 idle
 #[no_mangle]
 pub unsafe extern "C" fn idle() {
@@ -4012,6 +4802,10 @@ pub unsafe extern "C" fn idle() {
     update_screen();
 }
 
+/// Blocks until the timer expires, keeping input and rendering alive.
+///
+/// Returns immediately when there is no real time to spend: fast-forwarding a
+/// replay, or validating headlessly.
 // seg009 do_simple_wait
 #[no_mangle]
 pub unsafe extern "C" fn do_simple_wait(timer_index: c_int) {
@@ -4025,6 +4819,11 @@ pub unsafe extern "C" fn do_simple_wait(timer_index: c_int) {
     }
 }
 
+/// [`do_simple_wait`] that can also be interrupted by a keystroke.
+///
+/// Returns 1 if the wait was cut short by a key, 0 if the timer ran out. The
+/// `word_1D63A` flag decides whether *any* key interrupts or only Escape
+/// (`0x1B`) -- it is what makes cutscenes skippable but some prompts not.
 // seg009 do_wait
 #[no_mangle]
 pub unsafe extern "C" fn do_wait(timer_index: c_int) -> c_int {
@@ -4043,6 +4842,11 @@ pub unsafe extern "C" fn do_wait(timer_index: c_int) -> c_int {
     0
 }
 
+/// Sets the global tick rate and recomputes the performance-counter
+/// conversions.
+///
+/// Called at startup with `BASE_FPS`, and by the fast-forward key with
+/// `BASE_FPS * FAST_FORWARD_RATIO`.
 // seg009:78E9 init_timer
 #[no_mangle]
 pub unsafe extern "C" fn init_timer(frequency: c_int) {
@@ -4053,6 +4857,7 @@ pub unsafe extern "C" fn init_timer(frequency: c_int) {
     milliseconds_per_counter = 1000.0f32 / perf_frequency as f32;
 }
 
+/// Restricts drawing on the current target to `rect`.
 // seg009:35F6 set_clip_rect
 #[no_mangle]
 pub unsafe extern "C" fn set_clip_rect(rect: *const rect_type) {
@@ -4061,12 +4866,21 @@ pub unsafe extern "C" fn set_clip_rect(rect: *const rect_type) {
     crate::platform::sdl::shared_renderer().set_clip_rect(current_target_surface, &clip_rect);
 }
 
+/// Removes the clip rect from the current target.
 // seg009:365C reset_clip_rect
 #[no_mangle]
 pub unsafe extern "C" fn reset_clip_rect() {
     crate::platform::sdl::shared_renderer().set_clip_rect(current_target_surface, core::ptr::null());
 }
 
+/// Draws the screen-flash effect (USE_FLASH): the hit-taken red, the
+/// potion-drunk white.
+///
+/// Implemented as "clear the screen to the flash colour, then blit the frame
+/// over it with black made transparent", so the flash shows through wherever
+/// the frame is black -- which reproduces what the original got for free by
+/// reprogramming the VGA border/background attribute. Only `vga_pal_index == 0`
+/// is implemented; other values are no-ops.
 // seg009:1983 set_bg_attr
 #[no_mangle]
 pub unsafe extern "C" fn set_bg_attr(vga_pal_index: c_int, hc_pal_index: c_int) {
@@ -4082,10 +4896,8 @@ pub unsafe extern "C" fn set_bg_attr(vga_pal_index: c_int, hc_pal_index: c_int) 
         let mut rect = SDL_Rect { x: 0, y: 0, w: 0, h: 0 };
         rect.w = (*offscreen_surface).w;
         rect.h = (*offscreen_surface).h;
-        let pr = palette[hc_pal_index as usize].r;
-        let pg = palette[hc_pal_index as usize].g;
-        let pb = palette[hc_pal_index as usize].b;
-        let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*onscreen_surface_).format, ((pr as c_int) << 2) as u8, ((pg as c_int) << 2) as u8, ((pb as c_int) << 2) as u8);
+        let (pr, pg, pb) = palette_rgb8(hc_pal_index as byte);
+        let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*onscreen_surface_).format, pr, pg, pb);
         // First clear the screen with the color of the flash.
         if safe_fill_rect(onscreen_surface_, &rect, rgb_color) != 0 {
             sdlperror(cs!("set_bg_attr: SDL_FillRect"));
@@ -4113,6 +4925,7 @@ pub unsafe extern "C" fn set_bg_attr(vga_pal_index: c_int, hc_pal_index: c_int) 
     }
 }
 
+/// Copies a rect, adding an independent delta to each of its four edges.
 // seg009:07EB offset4_rect_add
 #[no_mangle]
 pub unsafe extern "C" fn offset4_rect_add(dest: *mut rect_type, source: *const rect_type, d_left: c_int, d_top: c_int, d_right: c_int, d_bottom: c_int) -> *mut rect_type {
@@ -4124,6 +4937,7 @@ pub unsafe extern "C" fn offset4_rect_add(dest: *mut rect_type, source: *const r
     dest
 }
 
+/// Copies a rect, translated by `(delta_x, delta_y)`.
 // seg009:3AA5 offset2_rect
 #[no_mangle]
 pub unsafe extern "C" fn offset2_rect(dest: *mut rect_type, source: *const rect_type, delta_x: c_int, delta_y: c_int) -> *mut rect_type {
@@ -4134,8 +4948,40 @@ pub unsafe extern "C" fn offset2_rect(dest: *mut rect_type, source: *const rect_
     dest
 }
 
-// ===================== USE_FADE =====================
+// ============================================================================
+// Fades (USE_FADE)
+//
+// A fade runs as 0x40 frames, each advancing `fade_pos` by one, and works on
+// two levels at once: the palette entries are ramped toward (or away from)
+// their original values, *and* the framebuffer pixels are darkened by
+// `fade_pos * 4`. The palette half is what the original did; the pixel half is
+// needed because SDLPoP's onscreen surface is truecolour and no longer changes
+// when the palette does.
+//
+// `which_rows` is a 16-bit mask selecting which palette rows participate, which
+// is how a cutscene can fade its background while leaving the text visible.
+//
+// A fade is driven by the caller: `make_pal_buffer_*` sets it up,
+// `fade_*_frame` is called until it returns nonzero, `pal_restore_free_*`
+// cleans up. The buffer also carries function pointers to its own frame and
+// cleanup routines so a generic caller can drive either direction.
+// ============================================================================
 
+/// The palette rows a fade's `which_rows` mask selects, as index ranges into
+/// the 256-entry palette.
+///
+/// Each of the 16 rows covers 16 consecutive palette entries, so row *n*
+/// (selected by bit *n*) is `n * 16 .. n * 16 + 16`.
+unsafe fn selected_pal_rows(
+    palette_buffer: *const palette_fade_type,
+) -> impl Iterator<Item = core::ops::Range<usize>> {
+    let which_rows = (*palette_buffer).which_rows;
+    (0..0x10usize)
+        .filter(move |row| which_rows & (1u16 << row) != 0)
+        .map(|row| (row << 4)..((row << 4) + 0x10))
+}
+
+/// Fades the screen in from black, blocking until done.
 // seg009:19EF fade_in_2
 #[no_mangle]
 pub unsafe extern "C" fn fade_in_2(source_surface: *mut surface_type, which_rows: c_int) {
@@ -4149,6 +4995,7 @@ pub unsafe extern "C" fn fade_in_2(source_surface: *mut surface_type, which_rows
     }
 }
 
+/// Sets up a fade-in: saves the target palette and blanks the selected rows.
 // seg009:1A51 make_pal_buffer_fadein
 #[no_mangle]
 pub unsafe extern "C" fn make_pal_buffer_fadein(_source_surface: *mut surface_type, which_rows: c_int, wait_time_arg: c_int) -> *mut palette_fade_type {
@@ -4162,19 +5009,17 @@ pub unsafe extern "C" fn make_pal_buffer_fadein(_source_surface: *mut surface_ty
     let faded = core::ptr::addr_of_mut!((*palette_buffer).faded_pal) as *mut rgb_type;
     let orig = core::ptr::addr_of!((*palette_buffer).original_pal) as *const rgb_type;
     memcpy(faded as *mut c_void, orig as *const c_void, core::mem::size_of::<[rgb_type; 256]>());
-    let mut curr_row: word = 0;
-    let mut curr_row_mask: word = 1;
-    while curr_row < 0x10 {
-        if which_rows & (curr_row_mask as c_int) != 0 {
-            memset(faded.add((curr_row as usize) << 4) as *mut c_void, 0, core::mem::size_of::<[rgb_type; 0x10]>());
+    for curr_row in 0..0x10usize {
+        if which_rows & (1 << curr_row) != 0 {
+            memset(faded.add(curr_row << 4) as *mut c_void, 0, core::mem::size_of::<[rgb_type; 0x10]>());
             set_pal_arr((curr_row as c_int) << 4, 0x10, core::ptr::null());
         }
-        curr_row += 1;
-        curr_row_mask <<= 1;
     }
     palette_buffer
 }
 
+/// Finishes a fade-in: restores the real palette and repaints from the
+/// offscreen buffer.
 // seg009:1B64 pal_restore_free_fadein
 #[no_mangle]
 pub unsafe extern "C" fn pal_restore_free_fadein(palette_buffer: *mut palette_fade_type) {
@@ -4183,43 +5028,38 @@ pub unsafe extern "C" fn pal_restore_free_fadein(palette_buffer: *mut palette_fa
     method_1_blit_rect(onscreen_surface_, offscreen_surface, core::ptr::addr_of!(screen_rect), core::ptr::addr_of!(screen_rect), 0);
 }
 
+/// Advances a fade-in by one step; returns nonzero once it has finished.
+///
+/// Each selected palette component is nudged up by one if it has not yet
+/// reached its target, and the framebuffer is rebuilt from the offscreen copy
+/// darkened by the current `fade_pos`. Completion is by counter, not by
+/// convergence: `fade_pos` starts at 0x40 and the fade ends when it hits 0.
 // seg009:1B88 fade_in_frame
 #[no_mangle]
 pub unsafe extern "C" fn fade_in_frame(palette_buffer: *mut palette_fade_type) -> c_int {
     start_timer(timerids_timer_1 as c_int, (*palette_buffer).wait_time as c_int);
 
     (*palette_buffer).fade_pos = (*palette_buffer).fade_pos.wrapping_sub(1);
-    let mut start: word = 0;
-    let mut current_row_mask: word = 1;
-    while start < 0x100 {
-        if (*palette_buffer).which_rows & current_row_mask != 0 {
-            let original_pal_ptr = (core::ptr::addr_of!((*palette_buffer).original_pal) as *const rgb_type).add(start as usize);
-            let faded_pal_ptr = (core::ptr::addr_of_mut!((*palette_buffer).faded_pal) as *mut rgb_type).add(start as usize);
-            let mut column: word = 0;
-            while column < 0x10 {
-                if (*original_pal_ptr.add(column as usize)).r as c_int > (*palette_buffer).fade_pos as c_int {
-                    (*faded_pal_ptr.add(column as usize)).r = (*faded_pal_ptr.add(column as usize)).r.wrapping_add(1);
-                }
-                if (*original_pal_ptr.add(column as usize)).g as c_int > (*palette_buffer).fade_pos as c_int {
-                    (*faded_pal_ptr.add(column as usize)).g = (*faded_pal_ptr.add(column as usize)).g.wrapping_add(1);
-                }
-                if (*original_pal_ptr.add(column as usize)).b as c_int > (*palette_buffer).fade_pos as c_int {
-                    (*faded_pal_ptr.add(column as usize)).b = (*faded_pal_ptr.add(column as usize)).b.wrapping_add(1);
-                }
-                column += 1;
+    let fade_pos = (*palette_buffer).fade_pos as c_int;
+    for row in selected_pal_rows(palette_buffer) {
+        let original_pal_ptr = (core::ptr::addr_of!((*palette_buffer).original_pal) as *const rgb_type).add(row.start);
+        let faded_pal_ptr = (core::ptr::addr_of_mut!((*palette_buffer).faded_pal) as *mut rgb_type).add(row.start);
+        for column in 0..0x10usize {
+            let original = original_pal_ptr.add(column);
+            let faded = faded_pal_ptr.add(column);
+            if (*original).r as c_int > fade_pos {
+                (*faded).r = (*faded).r.wrapping_add(1);
+            }
+            if (*original).g as c_int > fade_pos {
+                (*faded).g = (*faded).g.wrapping_add(1);
+            }
+            if (*original).b as c_int > fade_pos {
+                (*faded).b = (*faded).b.wrapping_add(1);
             }
         }
-        start = start.wrapping_add(0x10);
-        current_row_mask <<= 1;
     }
-    let mut start: word = 0;
-    let mut current_row_mask: word = 1;
-    while start < 0x100 {
-        if (*palette_buffer).which_rows & current_row_mask != 0 {
-            set_pal_arr(start as c_int, 0x10, (core::ptr::addr_of!((*palette_buffer).faded_pal) as *const rgb_type).add(start as usize));
-        }
-        start = start.wrapping_add(0x10);
-        current_row_mask <<= 1;
+    for row in selected_pal_rows(palette_buffer) {
+        set_pal_arr(row.start as c_int, 0x10, (core::ptr::addr_of!((*palette_buffer).faded_pal) as *const rgb_type).add(row.start));
     }
 
     let h = (*offscreen_surface).h;
@@ -4254,6 +5094,7 @@ pub unsafe extern "C" fn fade_in_frame(palette_buffer: *mut palette_fade_type) -
     ((*palette_buffer).fade_pos == 0) as c_int
 }
 
+/// Fades the screen out to black, blocking until done.
 // seg009:1CC9 fade_out_2
 #[no_mangle]
 pub unsafe extern "C" fn fade_out_2(rows: c_int) {
@@ -4267,6 +5108,8 @@ pub unsafe extern "C" fn fade_out_2(rows: c_int) {
     }
 }
 
+/// Sets up a fade-out: saves the current palette and snapshots the screen into
+/// the offscreen buffer, which every frame then re-darkens.
 // seg009:1D28 make_pal_buffer_fadeout
 #[no_mangle]
 pub unsafe extern "C" fn make_pal_buffer_fadeout(which_rows: c_int, wait_time_arg: c_int) -> *mut palette_fade_type {
@@ -4284,6 +5127,7 @@ pub unsafe extern "C" fn make_pal_buffer_fadeout(which_rows: c_int, wait_time_ar
     palette_buffer
 }
 
+/// Finishes a fade-out: blacks out both surfaces and restores the real palette.
 // seg009:1DAF pal_restore_free_fadeout
 #[no_mangle]
 pub unsafe extern "C" fn pal_restore_free_fadeout(palette_buffer: *mut palette_fade_type) {
@@ -4296,46 +5140,37 @@ pub unsafe extern "C" fn pal_restore_free_fadeout(palette_buffer: *mut palette_f
     method_5_rect(core::ptr::addr_of!(screen_rect), 0, colorids_color_0_black as byte);
 }
 
+/// Advances a fade-out by one step; returns nonzero once it has finished.
+///
+/// Mirror of [`fade_in_frame`], except completion is by *convergence*: it
+/// reports done when no selected palette component was still above zero this
+/// step. `fade_pos` here only drives the pixel darkening.
 // seg009:1DF7 fade_out_frame
 #[no_mangle]
 pub unsafe extern "C" fn fade_out_frame(palette_buffer: *mut palette_fade_type) -> c_int {
     let mut finished_fading: word = 1;
     (*palette_buffer).fade_pos = (*palette_buffer).fade_pos.wrapping_add(1);
     start_timer(timerids_timer_1 as c_int, (*palette_buffer).wait_time as c_int);
-    let mut start: word = 0;
-    let mut current_row_mask: word = 1;
-    while start < 0x100 {
-        if (*palette_buffer).which_rows & current_row_mask != 0 {
-            let faded_pal_ptr = (core::ptr::addr_of_mut!((*palette_buffer).faded_pal) as *mut rgb_type).add(start as usize);
-            let mut column: word = 0;
-            while column < 0x10 {
-                let curr = faded_pal_ptr.add(column as usize);
-                if (*curr).r != 0 {
-                    (*curr).r = (*curr).r.wrapping_sub(1);
-                    finished_fading = 0;
-                }
-                if (*curr).g != 0 {
-                    (*curr).g = (*curr).g.wrapping_sub(1);
-                    finished_fading = 0;
-                }
-                if (*curr).b != 0 {
-                    (*curr).b = (*curr).b.wrapping_sub(1);
-                    finished_fading = 0;
-                }
-                column += 1;
+    for row in selected_pal_rows(palette_buffer) {
+        let faded_pal_ptr = (core::ptr::addr_of_mut!((*palette_buffer).faded_pal) as *mut rgb_type).add(row.start);
+        for column in 0..0x10usize {
+            let curr = faded_pal_ptr.add(column);
+            if (*curr).r != 0 {
+                (*curr).r = (*curr).r.wrapping_sub(1);
+                finished_fading = 0;
+            }
+            if (*curr).g != 0 {
+                (*curr).g = (*curr).g.wrapping_sub(1);
+                finished_fading = 0;
+            }
+            if (*curr).b != 0 {
+                (*curr).b = (*curr).b.wrapping_sub(1);
+                finished_fading = 0;
             }
         }
-        start = start.wrapping_add(0x10);
-        current_row_mask <<= 1;
     }
-    let mut start: word = 0;
-    let mut current_row_mask: word = 1;
-    while start < 0x100 {
-        if (*palette_buffer).which_rows & current_row_mask != 0 {
-            set_pal_arr(start as c_int, 0x10, (core::ptr::addr_of!((*palette_buffer).faded_pal) as *const rgb_type).add(start as usize));
-        }
-        start = start.wrapping_add(0x10);
-        current_row_mask <<= 1;
+    for row in selected_pal_rows(palette_buffer) {
+        set_pal_arr(row.start as c_int, 0x10, (core::ptr::addr_of!((*palette_buffer).faded_pal) as *const rgb_type).add(row.start));
     }
 
     let h = (*offscreen_surface).h;
@@ -4370,67 +5205,79 @@ pub unsafe extern "C" fn fade_out_frame(palette_buffer: *mut palette_fade_type) 
     finished_fading as c_int
 }
 
+/// Snapshots the whole 256-entry palette into `target`.
 // seg009:1F28 read_palette_256
 #[no_mangle]
 pub unsafe extern "C" fn read_palette_256(target: *mut rgb_type) {
     for i in 0..256usize {
-        (*target.add(i)).r = palette[i].r;
-        (*target.add(i)).g = palette[i].g;
-        (*target.add(i)).b = palette[i].b;
+        *target.add(i) = palette[i];
     }
 }
 
+/// Restores the whole 256-entry palette from `source`.
 // seg009:1F5E set_pal_256
 #[no_mangle]
 pub unsafe extern "C" fn set_pal_256(source: *mut rgb_type) {
     for i in 0..256usize {
-        palette[i].r = (*source.add(i)).r;
-        palette[i].g = (*source.add(i)).g;
-        palette[i].b = (*source.add(i)).b;
+        palette[i] = *source.add(i);
     }
 }
 
+/// Repaints an entire sprite sheet by swapping the palette of each of its
+/// surfaces.
+///
+/// This is how one set of guard sprites yields the differently-coloured guards
+/// of each level: `colors` is a flat run of `n_colors` RGB triples in 6-bit VGA
+/// components. Each image's palette may be shorter than `n_colors`, so the
+/// count is clamped per image.
 // seg009 set_chtab_palette
 #[no_mangle]
 pub unsafe extern "C" fn set_chtab_palette(chtab: *mut chtab_type, mut colors: *mut byte, n_colors: c_int) {
-    if !chtab.is_null() {
-        let scolors = malloc(n_colors as usize * core::mem::size_of::<SDL_Color>()) as *mut SDL_Color;
-        for i in 0..n_colors {
-            (*scolors.offset(i as isize)).r = ((*colors as c_int) << 2) as u8;
-            colors = colors.add(1);
-            (*scolors.offset(i as isize)).g = ((*colors as c_int) << 2) as u8;
-            colors = colors.add(1);
-            (*scolors.offset(i as isize)).b = ((*colors as c_int) << 2) as u8;
-            colors = colors.add(1);
-            (*scolors.offset(i as isize)).a = SDL_ALPHA_OPAQUE;
-        }
-        // Color 0 of the palette data is not used; replaced by the background color.
-        (*scolors.offset(0)).r = 0;
-        (*scolors.offset(0)).g = 0;
-        (*scolors.offset(0)).b = 0;
-        (*scolors.offset(0)).a = SDL_ALPHA_TRANSPARENT;
-
-        let images = core::ptr::addr_of!((*chtab).images) as *const *mut image_type;
-        for i in 0..(*chtab).n_images as c_int {
-            let current_image = *images.offset(i as isize);
-            if !current_image.is_null() {
-                let mut n_colors_to_be_set = n_colors;
-                let current_palette = (*(*current_image).format).palette;
-                if !current_palette.is_null() {
-                    if (*current_palette).ncolors < n_colors_to_be_set {
-                        n_colors_to_be_set = (*current_palette).ncolors;
-                    }
-                    if crate::platform::sdl::shared_renderer().set_palette_colors(current_palette, scolors, 0, n_colors_to_be_set) != 0 {
-                        sdlperror(cs!("set_chtab_palette: SDL_SetPaletteColors"));
-                        quit(1);
-                    }
-                }
-            }
-        }
-        free(scolors as *mut c_void);
+    if chtab.is_null() {
+        return;
     }
+    let scolors = malloc(n_colors as usize * core::mem::size_of::<SDL_Color>()) as *mut SDL_Color;
+    for i in 0..n_colors as isize {
+        let mut next = || {
+            let component = ((*colors as c_int) << 2) as u8;
+            colors = colors.add(1);
+            component
+        };
+        *scolors.offset(i) = SDL_Color { r: next(), g: next(), b: next(), a: SDL_ALPHA_OPAQUE };
+    }
+    // Color 0 of the palette data is not used; replaced by the background color.
+    *scolors = SDL_Color { r: 0, g: 0, b: 0, a: SDL_ALPHA_TRANSPARENT };
+
+    let images = core::ptr::addr_of!((*chtab).images) as *const *mut image_type;
+    for i in 0..(*chtab).n_images as isize {
+        let current_image = *images.offset(i);
+        if current_image.is_null() {
+            continue;
+        }
+        let current_palette = (*(*current_image).format).palette;
+        if current_palette.is_null() {
+            continue;
+        }
+        let n_colors_to_be_set = n_colors.min((*current_palette).ncolors);
+        if crate::platform::sdl::shared_renderer().set_palette_colors(current_palette, scolors, 0, n_colors_to_be_set) != 0 {
+            sdlperror(cs!("set_chtab_palette: SDL_SetPaletteColors"));
+            quit(1);
+        }
+    }
+    free(scolors as *mut c_void);
 }
 
+/// True once the timer's length has elapsed; also rearms it for the next
+/// interval.
+///
+/// Rearming keeps the *phase*: instead of restarting from now, the new start
+/// counter is backed up by however far this call overshot, so a run of intervals
+/// does not accumulate drift. The correction is capped at 3 ticks, because a
+/// larger overshoot means the game genuinely stalled (a breakpoint, a slow
+/// frame) and pretending otherwise would make it try to catch up.
+///
+/// Always true when fast-forwarding a replay or validating headlessly, so the
+/// game never actually waits.
 // seg009 has_timer_stopped
 #[no_mangle]
 pub unsafe extern "C" fn has_timer_stopped(index: c_int) -> c_int {
