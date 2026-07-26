@@ -45,10 +45,6 @@ pub(crate) unsafe fn sound_interruptible_at(idx: usize) -> u8 {
 pub(crate) unsafe fn sound_interruptible_set(idx: usize, val: u8) {
     *core::ptr::addr_of_mut!(sound_interruptible).cast::<u8>().add(idx) = val;
 }
-// tbl_line is an extern const incomplete array; bindgen emits [T; 0]
-pub(crate) unsafe fn tbl_line_at(idx: usize) -> u8 {
-    *core::ptr::addr_of!(tbl_line).cast::<u8>().add(idx)
-}
 // doorlink1_ad and doorlink2_ad are extern byte arrays; bindgen emits [byte; 0]
 pub(crate) unsafe fn doorlink1_ad_at(idx: usize) -> u8 {
     *doorlink1_ad.add(idx)
