@@ -75,6 +75,8 @@ pub mod menu;
 pub mod ogg_decode;
 pub mod platform;
 pub mod state;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_libc;
 
 // Shared support for tests that touch real files on disk (quicksave, hall-of-fame,
 // long-term save). `getenv`/`setenv` are process-global, not thread-local, and `cargo
