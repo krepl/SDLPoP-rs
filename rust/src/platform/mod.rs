@@ -28,7 +28,22 @@
 //! for surfaces is Step D's job, alongside de-globalization.
 
 pub mod backend;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod sdl;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
+// All ~224 real call sites reach the active backend through `crate::platform::sdl::
+// shared_renderer()`/`shared_audio()`/`shared_input()` -- a hardcoded module path, not a
+// backend-agnostic one (Step C never built that indirection; it only made the *type*
+// backend-selected via `platform::backend::Active*`). Rather than touch every call site
+// to route through some new backend-agnostic path, keep the `sdl` path itself valid on
+// every target: on wasm32, `platform::sdl` becomes this tiny inline module forwarding to
+// the real wasm32 implementation, instead of the file-based native module.
+#[cfg(target_arch = "wasm32")]
+pub mod sdl {
+    pub use crate::platform::wasm::{shared_audio, shared_input, shared_renderer};
+}
 
 use std::os::raw::c_int;
 

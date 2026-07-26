@@ -30,13 +30,11 @@ pub type ActiveInput = crate::platform::sdl::SdlInput;
 #[cfg(not(target_arch = "wasm32"))]
 pub type ActiveFiles = crate::platform::sdl::SdlFiles;
 
-// Future backends land here, e.g.:
-//
-// #[cfg(target_arch = "wasm32")]
-// pub type ActiveRenderer = crate::platform::wasm::WasmRenderer;
-// #[cfg(target_arch = "wasm32")]
-// pub type ActiveAudio = crate::platform::wasm::WasmAudio;
-// #[cfg(target_arch = "wasm32")]
-// pub type ActiveInput = crate::platform::wasm::WasmInput;
-// #[cfg(target_arch = "wasm32")]
-// pub type ActiveFiles = crate::platform::wasm::WasmFiles;
+#[cfg(target_arch = "wasm32")]
+pub type ActiveRenderer = crate::platform::wasm::WasmRenderer;
+#[cfg(target_arch = "wasm32")]
+pub type ActiveAudio = crate::platform::wasm::WasmAudio;
+#[cfg(target_arch = "wasm32")]
+pub type ActiveInput = crate::platform::wasm::WasmInput;
+#[cfg(target_arch = "wasm32")]
+pub type ActiveFiles = crate::platform::wasm::WasmFiles;

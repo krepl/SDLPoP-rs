@@ -25,11 +25,27 @@ fn main() {
     println!("cargo:rerun-if-changed=rust/src/opl3.rs");
     println!("cargo:rerun-if-changed=rust/src/midi.rs");
 
-    // Probe SDL2 (auto-emits cargo:rustc-link-* directives)
+    // wasm32-unknown-unknown has no real SDL2 to link against -- bindgen still needs the
+    // headers (on the host) to parse common.h's struct layouts, so the probe itself still
+    // runs, but with cargo_metadata(false) so it doesn't emit cargo:rustc-link-lib/-search
+    // directives that would break the wasm32 link step.
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+    let is_wasm = target_arch == "wasm32";
+
+    // pkg-config refuses to probe host .pc files when TARGET != HOST unless explicitly
+    // told it's OK -- we only want the include paths for bindgen to parse types.h's real
+    // `#include <SDL2/SDL.h>` (there is no wasm32 SDL2 to actually link against, hence
+    // cargo_metadata(false) above), so allowing the cross-probe here is safe.
+    if is_wasm {
+        env::set_var("PKG_CONFIG_ALLOW_CROSS", "1");
+    }
+
     let sdl2 = pkg_config::Config::new()
+        .cargo_metadata(!is_wasm)
         .probe("sdl2")
         .expect("sdl2 not found via pkg-config; install libsdl2-dev");
     let sdl2_image = pkg_config::Config::new()
+        .cargo_metadata(!is_wasm)
         .probe("SDL2_image")
         .expect("SDL2_image not found via pkg-config; install libsdl2-image-dev");
 
@@ -80,7 +96,9 @@ fn main() {
         build.compile("sdlpop");
     }
 
-    println!("cargo:rustc-link-lib=m");
+    if !is_wasm {
+        println!("cargo:rustc-link-lib=m");
+    }
 
     // Generate bindings from common.h
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -100,6 +118,38 @@ fn main() {
         .allowlist_file(r".*src/.*")
         .blocklist_var(DATA_C_GLOBALS)
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));
+
+    // bindgen auto-derives clang's `-target` from Cargo's TARGET env var, so a
+    // `--target wasm32-unknown-unknown` build gets `-target wasm32-unknown-unknown` for
+    // free even though we never asked for it. That breaks parsing here: `types.h`
+    // unconditionally `#include <SDL2/SDL.h>`, and parsing real glibc headers under a
+    // foreign wasm32 clang target hits glibc's x86 multilib dispatch in `gnu/stubs.h` (it
+    // wants `stubs-32.h`, which doesn't exist without an i386 multilib install) -- wasm32
+    // has no real glibc/SDL2 to begin with, so there's no correct wasm32 header parse to
+    // have here anyway.
+    //
+    // Fix: force clang back to the *host* target explicitly when cross-compiling. This is
+    // safe because every bindgen'd SDL_* type (SDL_Surface/SDL_Window/SDL_Renderer/...) is
+    // used *only* as an opaque pointer outside `platform/sdl.rs` (which is
+    // `#[cfg(not(target_arch = "wasm32"))]` and never compiled for this target) -- nothing
+    // in the wasm32 build reads/writes one of these structs by value using bindgen's
+    // (host-derived) field offsets. If a future `platform/wasm.rs` implementation ever
+    // needs to dereference a bindgen SDL struct's fields directly, revisit this.
+    if is_wasm {
+        let host = env::var("HOST").unwrap();
+        builder = builder.clang_arg(format!("--target={host}"));
+        // bindgen's generated `size_of::<T>() - N` self-check assertions hardcode N from
+        // *this* (host) parse -- they'd fail to compile for the real wasm32 target, whose
+        // pointers are narrower, even though rustc computes the real wasm32 struct layout
+        // correctly on its own from the same field declarations (ordinary #[repr(C)]
+        // layout is target-native by construction; only bindgen's own literal-baked
+        // assertions are host-specific). Disabling just the assertions is safe *for plain
+        // #[repr(C)] structs*; it is NOT a substitute for auditing structs that mix
+        // pointer fields with manually-computed bindgen padding (`_bindgen_padding_N`),
+        // where a padding byte count baked in from the host parse could be genuinely wrong
+        // on wasm32. See the WASM plan notes for the follow-up audit this still owes.
+        builder = builder.layout_tests(false);
+    }
 
     for path in &include_paths {
         builder = builder.clang_arg(format!("-I{}", path.display()));

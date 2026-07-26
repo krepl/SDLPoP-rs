@@ -21,7 +21,11 @@ extern "C" {
     fn printf(fmt: *const c_char, ...) -> c_int;
     fn fprintf(stream: *mut FILE, fmt: *const c_char, ...) -> c_int;
     fn putchar(c: c_int) -> c_int;
-    fn time(t: *mut i64) -> i64;
+    // Real libc signature is `time_t`-width (`c_long`), matching seg009.rs's own
+    // `time` declaration -- these must agree exactly, not just be "close enough": wasm's
+    // linker enforces identical import signatures for the same symbol, unlike native ELF
+    // linking, which only warns on a mismatch (`clashing_extern_declarations`).
+    fn time(t: *mut std::os::raw::c_long) -> std::os::raw::c_long;
     fn difftime(time1: i64, time0: i64) -> f64;
     fn malloc(size: usize) -> *mut c_void;
     fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
@@ -1199,7 +1203,10 @@ pub unsafe extern "C" fn save_recorded_replay(full_filename: *const c_char) -> c
         fwrite(addr_of!(replay_format_class) as *const c_void, size_of::<word>(), 1, replay_fp);
         fputc(REPLAY_FORMAT_CURR_VERSION, replay_fp);
         fputc(REPLAY_FORMAT_DEPRECATION_NUMBER, replay_fp);
-        let seconds: i64 = time(null_mut());
+        // On-disk replay format field is a fixed 8 bytes (`size_of::<i64>()` below), so
+        // widen `time()`'s real (target-width) `c_long` return here rather than change
+        // the file format.
+        let seconds: i64 = time(null_mut()) as i64;
         fwrite(addr_of!(seconds) as *const c_void, size_of::<i64>(), 1, replay_fp);
         // levelset_name
         fputc(
