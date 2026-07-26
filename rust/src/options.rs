@@ -5,6 +5,7 @@
 use std::os::raw::{c_char, c_int, c_long, c_short, c_void};
 use core::mem::size_of;
 use core::ptr::{addr_of, addr_of_mut};
+use std::ffi::CStr;
 use super::*;
 
 // ============================================================================
@@ -23,16 +24,11 @@ extern "C" {
     fn strtol(nptr: *const c_char, endptr: *mut *mut c_char, base: c_int) -> c_long;
     fn strtoimax(nptr: *const c_char, endptr: *mut *mut c_char, base: c_int) -> i64;
     fn isspace(c: c_int) -> c_int;
-    fn snprintf(buf: *mut c_char, size: usize, fmt: *const c_char, ...) -> c_int;
-    fn printf(fmt: *const c_char, ...) -> c_int;
-    fn fprintf(stream: *mut FILE, fmt: *const c_char, ...) -> c_int;
-    fn fscanf(stream: *mut FILE, fmt: *const c_char, ...) -> c_int;
-    fn sscanf(s: *const c_char, fmt: *const c_char, ...) -> c_int;
+    fn fgetc(stream: *mut FILE) -> c_int;
     fn feof(stream: *mut FILE) -> c_int;
     fn fileno(stream: *mut FILE) -> c_int;
     fn stat(path: *const c_char, buf: *mut stat_t) -> c_int;
     fn fstat(fd: c_int, buf: *mut stat_t) -> c_int;
-    static mut stderr: *mut FILE;
 
     // process_rw_write / process_rw_read and never_is_16_list are defined in
     // src/sdl_rw_wrappers.c (still compiled as C). Reference never_is_16_list here.
@@ -73,12 +69,67 @@ macro_rules! cs {
     };
 }
 
+// Renders a C string the way printf's "%s" would, including glibc's "(null)" for a null
+// pointer. Used by the `format!`-based replacements for the printf family.
+unsafe fn cstr_arg(p: *const c_char) -> String {
+    if p.is_null() {
+        return String::from("(null)");
+    }
+    CStr::from_ptr(p).to_string_lossy().into_owned()
+}
+
+/// Replaces `sscanf(str, "%d", out)` for the three call sites that pull a plain decimal
+/// integer off the front of a C string. Mirrors `%d`: skip leading whitespace, accept an
+/// optional sign, then require at least one decimal digit; trailing characters are ignored.
+/// Out-of-range values behave like glibc, which parses with strtol and then truncates the
+/// result to `int`. Returns the number of assignments (1 on success, 0 on a matching
+/// failure) or -1 when the string ends before the conversion could start.
+unsafe fn sscanf_leading_int(s: *const c_char, out: *mut c_int) -> c_int {
+    let mut p = s;
+    while matches!(*p as u8, 0x20 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D) {
+        p = p.add(1);
+    }
+    if *p == 0 {
+        return -1; // input failure: nothing left to convert
+    }
+    let negative = match *p as u8 {
+        b'-' => {
+            p = p.add(1);
+            true
+        }
+        b'+' => {
+            p = p.add(1);
+            false
+        }
+        _ => false,
+    };
+    if !(*p as u8).is_ascii_digit() {
+        return 0; // matching failure (a lone sign counts as one too)
+    }
+    let mut acc: i64 = 0;
+    while (*p as u8).is_ascii_digit() {
+        let digit = (*p as u8 - b'0') as i64;
+        acc = acc.saturating_mul(10);
+        acc = if negative {
+            acc.saturating_sub(digit)
+        } else {
+            acc.saturating_add(digit)
+        };
+        p = p.add(1);
+    }
+    *out = acc as c_int; // glibc truncates the long result to int
+    1
+}
+
 // snprintf_check (from common.h): bail out with quit(2) on truncation.
+// The C original wraps snprintf; here the caller passes a Rust format string instead and
+// the formatted text goes through write_c_str_truncating, which returns the same
+// "length the full string would have had" that snprintf does.
 macro_rules! snprintf_check {
     ($dst:expr, $size:expr, $($arg:tt)*) => {{
-        let __len = snprintf($dst, $size, $($arg)*);
+        let __len = crate::write_c_str_truncating($dst, $size, &format!($($arg)*));
         if __len < 0 || __len >= ($size) as c_int {
-            fprintf(stderr, cs!("%s: buffer truncation detected!\n"), cs!("options"));
+            crate::c_log_err("options: buffer truncation detected!\n");
             quit(2);
         }
     }};
@@ -112,6 +163,189 @@ pub unsafe extern "C" fn turn_custom_options_on_off(new_state: byte) {
 // ============================================================================
 type ini_report_fn = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char) -> c_int;
 
+// ---------------------------------------------------------------------------
+// Hand-written replacements for the four `fscanf` calls in ini_load.
+//
+// C's fscanf is variadic, so it can't be used from stable Rust on every target; the four
+// format strings used here are fixed, so each is reimplemented directly against the stream
+// with fgetc plus a one-character pushback (which is exactly what fscanf's internal ungetc
+// does -- fscanf never looks ahead more than one character for these directives).
+//
+// The emulated rules, verified experimentally against glibc:
+//   * whitespace in the format ("` `", "`\n`") = consume all whitespace, never fails.
+//   * an ordinary character = read one char; on mismatch push it back and stop ("matching
+//     failure"); at EOF stop ("input failure").
+//   * `%<width>[^set]` = consume up to <width> chars not in `set`; the terminating char is
+//     pushed back (as is the char just past the width limit). Assigns and NUL-terminates
+//     only if at least one char matched; zero chars matched is a matching failure, and
+//     zero chars matched *because of EOF* is an input failure.
+//   * return value = number of assignments made, except that EOF (-1) is returned when an
+//     input failure happens before the first conversion has completed. Suppressed
+//     conversions (`%*[...]`) count as conversions for that rule but never as assignments.
+// ---------------------------------------------------------------------------
+
+/// Sentinel for "nothing pushed back" / EOF, matching C's EOF.
+const INI_EOF: c_int = -1;
+
+/// One-character pushback buffer standing in for the ungetc that fscanf performs.
+struct IniStream {
+    f: *mut FILE,
+    pushback: c_int,
+}
+
+impl IniStream {
+    unsafe fn getc(&mut self) -> c_int {
+        if self.pushback != INI_EOF {
+            let c = self.pushback;
+            self.pushback = INI_EOF;
+            c
+        } else {
+            fgetc(self.f)
+        }
+    }
+
+    /// ungetc: pushing back EOF is a no-op, as in C.
+    fn ungetc(&mut self, c: c_int) {
+        if c != INI_EOF {
+            self.pushback = c;
+        }
+    }
+
+    /// True when the stream is exhausted: no pushback pending and the EOF flag is set.
+    /// (C's ungetc clears the EOF indicator, hence the pushback check.)
+    unsafe fn at_eof(&self) -> bool {
+        self.pushback == INI_EOF && feof(self.f) != 0
+    }
+
+    /// A whitespace directive in the format string.
+    unsafe fn skip_whitespace(&mut self) {
+        loop {
+            let c = self.getc();
+            if c == INI_EOF {
+                break;
+            }
+            // C locale isspace(): space, \t, \n, \v, \f, \r
+            if !matches!(c, 0x20 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D) {
+                self.ungetc(c);
+                break;
+            }
+        }
+    }
+}
+
+/// Outcome of one `%[...]` conversion.
+const INI_SCANSET_INPUT_FAILURE: c_int = -1;
+const INI_SCANSET_MATCH_FAILURE: c_int = 0;
+const INI_SCANSET_OK: c_int = 1;
+
+/// `%<width>[^<stop>]`. Writes into `dst` (NUL-terminated) only on success.
+/// `dst` may be null, standing in for a suppressed conversion (`%*[^...]`).
+unsafe fn ini_scanset(
+    s: &mut IniStream,
+    dst: *mut c_char,
+    width: usize,
+    stop: &[u8],
+) -> c_int {
+    let mut n: usize = 0;
+    let mut hit_eof = false;
+    while n < width {
+        let c = s.getc();
+        if c == INI_EOF {
+            hit_eof = true;
+            break;
+        }
+        if stop.contains(&(c as u8)) {
+            s.ungetc(c);
+            break;
+        }
+        if !dst.is_null() {
+            *dst.add(n) = c as u8 as c_char;
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return if hit_eof {
+            INI_SCANSET_INPUT_FAILURE
+        } else {
+            INI_SCANSET_MATCH_FAILURE
+        };
+    }
+    if !dst.is_null() {
+        *dst.add(n) = 0;
+    }
+    INI_SCANSET_OK
+}
+
+/// Replaces `fscanf(f, "[%127[^];\n]]\n", section)`.
+unsafe fn ini_scan_section(s: &mut IniStream, section: *mut c_char) -> c_int {
+    // literal '['
+    let c = s.getc();
+    if c == INI_EOF {
+        return -1; // input failure before the first conversion
+    }
+    if c != b'[' as c_int {
+        s.ungetc(c);
+        return 0;
+    }
+    // %127[^];\n]
+    match ini_scanset(s, section, 127, b"];\n") {
+        INI_SCANSET_INPUT_FAILURE => return -1,
+        INI_SCANSET_MATCH_FAILURE => return 0,
+        _ => {}
+    }
+    // literal ']' -- a mismatch here still leaves the one assignment made above
+    let c = s.getc();
+    if c != b']' as c_int {
+        s.ungetc(c);
+        return 1;
+    }
+    // trailing '\n' whitespace directive
+    s.skip_whitespace();
+    1
+}
+
+/// Replaces `fscanf(f, " %63[^=;\n] = %255[^;\n]", name, value)`.
+unsafe fn ini_scan_name_value(s: &mut IniStream, name: *mut c_char, value: *mut c_char) -> c_int {
+    s.skip_whitespace();
+    match ini_scanset(s, name, 63, b"=;\n") {
+        INI_SCANSET_INPUT_FAILURE => return -1,
+        INI_SCANSET_MATCH_FAILURE => return 0,
+        _ => {}
+    }
+    s.skip_whitespace();
+    let c = s.getc();
+    if c != b'=' as c_int {
+        s.ungetc(c);
+        return 1;
+    }
+    s.skip_whitespace();
+    // Both a matching failure and an input failure here leave the count at 1, because the
+    // first conversion already completed.
+    if ini_scanset(s, value, 255, b";\n") == INI_SCANSET_OK {
+        2
+    } else {
+        1
+    }
+}
+
+/// Replaces `fscanf(f, " ;%*[^\n]")`. Never assigns, so it returns 0 or EOF.
+unsafe fn ini_scan_comment(s: &mut IniStream) -> c_int {
+    s.skip_whitespace();
+    let c = s.getc();
+    if c == INI_EOF {
+        return -1; // input failure before the (suppressed) conversion completed
+    }
+    if c != b';' as c_int {
+        s.ungetc(c);
+        return 0;
+    }
+    // %*[^\n] -- unbounded width, assignment suppressed
+    if ini_scanset(s, core::ptr::null_mut(), usize::MAX, b"\n") == INI_SCANSET_INPUT_FAILURE {
+        return -1;
+    }
+    0
+}
+
 unsafe fn ini_load(filename: *const c_char, report: ini_report_fn) -> c_int {
     let mut name = [0 as c_char; 64];
     let mut value = [0 as c_char; 256];
@@ -124,16 +358,16 @@ unsafe fn ini_load(filename: *const c_char, report: ini_report_fn) -> c_int {
         return -1;
     }
 
-    while feof(f) == 0 {
-        if fscanf(f, cs!("[%127[^];\n]]\n"), section.as_mut_ptr()) == 1 {
+    let mut s = IniStream {
+        f,
+        pushback: INI_EOF,
+    };
+
+    while !s.at_eof() {
+        if ini_scan_section(&mut s, section.as_mut_ptr()) == 1 {
             // section header
         } else {
-            cnt = fscanf(
-                f,
-                cs!(" %63[^=;\n] = %255[^;\n]"),
-                name.as_mut_ptr(),
-                value.as_mut_ptr(),
-            );
+            cnt = ini_scan_name_value(&mut s, name.as_mut_ptr(), value.as_mut_ptr());
             if cnt != 0 {
                 if cnt == 1 {
                     value[0] = 0;
@@ -153,8 +387,17 @@ unsafe fn ini_load(filename: *const c_char, report: ini_report_fn) -> c_int {
                 report(section.as_ptr(), name.as_ptr(), value.as_ptr());
             }
         }
-        if fscanf(f, cs!(" ;%*[^\n]")) != 0 || fscanf(f, cs!(" \n")) != 0 {
-            fprintf(stderr, cs!("short read from %s!?\n"), filename);
+        // C: `fscanf(f, " ;%*[^\n]") != 0 || fscanf(f, " \n") != 0`. The second format
+        // contains only whitespace directives, so it always returns 0 -- but it is
+        // short-circuited away (and its whitespace not consumed) when the first is nonzero.
+        let short_read = if ini_scan_comment(&mut s) != 0 {
+            true
+        } else {
+            s.skip_whitespace();
+            false
+        };
+        if short_read {
+            crate::c_log_err(&format!("short read from {}!?\n", cstr_arg(filename)));
             fclose(f);
             return -1;
         }
@@ -473,7 +716,7 @@ unsafe extern "C" fn global_ini_callback(
             if *value != 0 && strcasecmp(value, cs!("default")) != 0 {
                 let mut __lf = [0 as c_char; POP_MAX_PATH as usize];
                 let lf = locate_file_(value, __lf.as_mut_ptr(), POP_MAX_PATH as c_int);
-                snprintf_check!(addr_of_mut!(mods_folder) as *mut c_char, POP_MAX_PATH as usize, cs!("%s"), lf);
+                snprintf_check!(addr_of_mut!(mods_folder) as *mut c_char, POP_MAX_PATH as usize, "{}", cstr_arg(lf));
             }
             return 1;
         }
@@ -518,7 +761,7 @@ unsafe extern "C" fn global_ini_callback(
             if *value != 0 {
                 let mut __lf = [0 as c_char; POP_MAX_PATH as usize];
                 let lf = locate_file_(value, __lf.as_mut_ptr(), POP_MAX_PATH as c_int);
-                snprintf_check!(addr_of_mut!(gamecontrollerdb_file) as *mut c_char, POP_MAX_PATH as usize, cs!("%s"), lf);
+                snprintf_check!(addr_of_mut!(gamecontrollerdb_file) as *mut c_char, POP_MAX_PATH as usize, "{}", cstr_arg(lf));
             }
             return 1;
         }
@@ -534,7 +777,7 @@ unsafe extern "C" fn global_ini_callback(
             if *value != 0 && strcasecmp(value, cs!("default")) != 0 {
                 let mut __lf = [0 as c_char; POP_MAX_PATH as usize];
                 let lf = locate_file_(value, __lf.as_mut_ptr(), POP_MAX_PATH as c_int);
-                snprintf_check!(addr_of_mut!(replays_folder) as *mut c_char, POP_MAX_PATH as usize, cs!("%s"), lf);
+                snprintf_check!(addr_of_mut!(replays_folder) as *mut c_char, POP_MAX_PATH as usize, "{}", cstr_arg(lf));
             }
             return 1;
         }
@@ -624,7 +867,7 @@ unsafe extern "C" fn global_ini_callback(
         let prefix_len: usize = 10; // sizeof("vga_color_")-1
         let mut ini_palette_color: c_int = -1;
         if strncasecmp(name, prefix, prefix_len) == 0
-            && sscanf(name.add(prefix_len), cs!("%d"), addr_of_mut!(ini_palette_color)) == 1
+            && sscanf_leading_int(name.add(prefix_len), addr_of_mut!(ini_palette_color)) == 1
         {
             if !(ini_palette_color >= 0 && ini_palette_color <= 15) {
                 return 0;
@@ -722,7 +965,7 @@ unsafe extern "C" fn global_ini_callback(
     // [Level 1], etc.
     let mut ini_level: c_int = -1;
     if strncasecmp(section, cs!("Level "), 6) == 0
-        && sscanf(section.add(6), cs!("%d"), addr_of_mut!(ini_level)) == 1
+        && sscanf_leading_int(section.add(6), addr_of_mut!(ini_level)) == 1
     {
         if ini_level >= 0 && ini_level <= 15 {
             process_byte!("level_type", addr_of_mut!(custom_saved.tbl_level_type[ini_level as usize]), addr_of_mut!(level_type_names_list));
@@ -741,14 +984,14 @@ unsafe extern "C" fn global_ini_callback(
             process_byte!("entry_pose", addr_of_mut!(custom_saved.tbl_entry_pose[ini_level as usize]), addr_of_mut!(entry_pose_names_list));
             process_sbyte!("seamless_exit", addr_of_mut!(custom_saved.tbl_seamless_exit[ini_level as usize]), null_names);
         } else {
-            printf(cs!("Warning: Invalid section [Level %d] in the INI!\n"), ini_level);
+            crate::c_log(&format!("Warning: Invalid section [Level {}] in the INI!\n", ini_level));
         }
     }
 
     // [Skill 0], etc.
     let mut ini_skill: c_int = -1;
     if strncasecmp(section, cs!("Skill "), 6) == 0
-        && sscanf(section.add(6), cs!("%d"), addr_of_mut!(ini_skill)) == 1
+        && sscanf_leading_int(section.add(6), addr_of_mut!(ini_skill)) == 1
     {
         if ini_skill >= 0 && ini_skill < NUM_GUARD_SKILLS as c_int {
             process_word!("strikeprob", addr_of_mut!(custom_saved.strikeprob[ini_skill as usize]), null_names);
@@ -759,7 +1002,7 @@ unsafe extern "C" fn global_ini_callback(
             process_word!("refractimer", addr_of_mut!(custom_saved.refractimer[ini_skill as usize]), null_names);
             process_word!("extrastrength", addr_of_mut!(custom_saved.extrastrength[ini_skill as usize]), null_names);
         } else {
-            printf(cs!("Warning: Invalid section [Skill %d] in the INI!\n"), ini_skill);
+            crate::c_log(&format!("Warning: Invalid section [Skill {}] in the INI!\n", ini_skill));
         }
     }
 
@@ -830,7 +1073,7 @@ pub unsafe extern "C" fn check_mod_param() {
     if !mod_param.is_null() {
         use_custom_levelset = 1;
         memset(addr_of_mut!(levelset_name) as *mut c_void, 0, POP_MAX_PATH as usize);
-        snprintf_check!(addr_of_mut!(levelset_name) as *mut c_char, POP_MAX_PATH as usize, cs!("%s"), mod_param);
+        snprintf_check!(addr_of_mut!(levelset_name) as *mut c_char, POP_MAX_PATH as usize, "{}", cstr_arg(mod_param));
     }
 }
 
@@ -881,7 +1124,7 @@ pub unsafe extern "C" fn identify_dos_exe_version(filesize: c_int) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn load_dos_exe_modifications(folder_name: *const c_char) {
     let mut filename = [0 as c_char; POP_MAX_PATH as usize];
-    snprintf_check!(filename.as_mut_ptr(), POP_MAX_PATH as usize, cs!("%s/%s"), folder_name, cs!("PRINCE.EXE"));
+    snprintf_check!(filename.as_mut_ptr(), POP_MAX_PATH as usize, "{}/{}", cstr_arg(folder_name), "PRINCE.EXE");
     let mut fp: *mut FILE = fopen(filename.as_ptr(), cs!("rb"));
 
     let mut dos_version: c_int = -1;
@@ -894,7 +1137,7 @@ pub unsafe extern "C" fn load_dos_exe_modifications(folder_name: *const c_char) 
         if !directory_listing.is_null() {
             loop {
                 let current_filename = get_current_filename_from_directory_listing(directory_listing);
-                snprintf_check!(filename.as_mut_ptr(), POP_MAX_PATH as usize, cs!("%s/%s"), folder_name, current_filename);
+                snprintf_check!(filename.as_mut_ptr(), POP_MAX_PATH as usize, "{}/{}", cstr_arg(folder_name), cstr_arg(current_filename));
                 fp = fopen(filename.as_ptr(), cs!("rb"));
                 if !fp.is_null() && fstat(fileno(fp), addr_of_mut!(info)) == 0 && info.st_size > 0 {
                     dos_version = identify_dos_exe_version(info.st_size as c_int);
@@ -916,7 +1159,7 @@ pub unsafe extern "C" fn load_dos_exe_modifications(folder_name: *const c_char) 
         turn_custom_options_on_off(1);
         let exe_memory = malloc(info.st_size as usize) as *mut byte;
         if fread(exe_memory as *mut c_void, info.st_size as usize, 1, fp) != 1 {
-            fprintf(stderr, cs!("Could not read %s!?\n"), filename.as_ptr());
+            crate::c_log_err(&format!("Could not read {}!?\n", cstr_arg(filename.as_ptr())));
             fclose(fp);
             return;
         }
@@ -1146,7 +1389,7 @@ pub unsafe extern "C" fn load_mod_options() {
     if use_custom_levelset != 0 {
         // find the folder containing the mod's files
         let mut folder_name = [0 as c_char; POP_MAX_PATH as usize];
-        snprintf_check!(folder_name.as_mut_ptr(), POP_MAX_PATH as usize, cs!("%s/%s"), addr_of!(mods_folder) as *const c_char, addr_of!(levelset_name) as *const c_char);
+        snprintf_check!(folder_name.as_mut_ptr(), POP_MAX_PATH as usize, "{}/{}", cstr_arg(addr_of!(mods_folder) as *const c_char), cstr_arg(addr_of!(levelset_name) as *const c_char));
         let mut __lf = [0 as c_char; POP_MAX_PATH as usize];
         let located_folder_name = locate_file_(folder_name.as_ptr(), __lf.as_mut_ptr(), POP_MAX_PATH as c_int);
         let mut ok = false;
@@ -1155,24 +1398,24 @@ pub unsafe extern "C" fn load_mod_options() {
             if S_ISDIR(info.st_mode) {
                 // It's a directory
                 ok = true;
-                snprintf_check!(addr_of_mut!(mod_data_path) as *mut c_char, POP_MAX_PATH as usize, cs!("%s"), located_folder_name);
+                snprintf_check!(addr_of_mut!(mod_data_path) as *mut c_char, POP_MAX_PATH as usize, "{}", cstr_arg(located_folder_name));
                 // Try to load PRINCE.EXE (DOS)
                 load_dos_exe_modifications(located_folder_name);
                 // Try to load mod.ini
                 let mut mod_ini_filename = [0 as c_char; POP_MAX_PATH as usize];
-                snprintf_check!(mod_ini_filename.as_mut_ptr(), POP_MAX_PATH as usize, cs!("%s/%s"), located_folder_name, cs!("mod.ini"));
+                snprintf_check!(mod_ini_filename.as_mut_ptr(), POP_MAX_PATH as usize, "{}/{}", cstr_arg(located_folder_name), "mod.ini");
                 if file_exists(mod_ini_filename.as_ptr()) {
                     // Nearly all mods would want to use custom options, so always allow them.
                     use_custom_options = 1;
                     ini_load(mod_ini_filename.as_ptr(), mod_ini_callback);
                 }
             } else {
-                printf(cs!("Could not load mod '%s' - not a directory\n"), addr_of!(levelset_name) as *const c_char);
+                crate::c_log(&format!("Could not load mod '{}' - not a directory\n", cstr_arg(addr_of!(levelset_name) as *const c_char)));
             }
         } else {
-            printf(cs!("Mod '%s' not found\n"), addr_of!(levelset_name) as *const c_char);
+            crate::c_log(&format!("Mod '{}' not found\n", cstr_arg(addr_of!(levelset_name) as *const c_char)));
             let mut message = [0 as c_char; 256];
-            snprintf_check!(message.as_mut_ptr(), 256usize, cs!("Cannot find the mod '%s' in the mods folder."), addr_of!(levelset_name) as *const c_char);
+            snprintf_check!(message.as_mut_ptr(), 256usize, "Cannot find the mod '{}' in the mods folder.", cstr_arg(addr_of!(levelset_name) as *const c_char));
             show_dialog(message.as_ptr());
             if replaying != 0 {
                 show_dialog(cs!("If the replay file restarts the level or advances to the next level, a wrong level will be loaded."));
@@ -1185,4 +1428,176 @@ pub unsafe extern "C" fn load_mod_options() {
     }
     turn_fixes_and_enhancements_on_off(use_fixes_and_enhancements);
     turn_custom_options_on_off(use_custom_options);
+}
+
+#[cfg(test)]
+mod ini_scan_tests {
+    use super::*;
+    use std::io::Write;
+
+    extern "C" {
+        fn ftell(stream: *mut FILE) -> c_long;
+    }
+
+    fn temp_file(data: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("sdlpop_ini_scan_{:p}_{}.tmp", data.as_ptr(), data.len()));
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(data.as_bytes()).unwrap();
+        path
+    }
+
+    unsafe fn open(path: &std::path::Path) -> *mut FILE {
+        let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        fopen(c.as_ptr(), b"r\0".as_ptr() as *const c_char)
+    }
+
+    /// Mirrors the instrumented C ini_load loop so its output can be diffed against glibc.
+    fn trace(label: &str, data: &str) -> String {
+        let path = temp_file(data);
+        let out = trace_path(&format!("{}: {}", label, data), &path);
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    fn trace_path(label: &str, path: &std::path::Path) -> String {
+        let mut out = String::new();
+        unsafe {
+            let f = open(path);
+            assert!(!f.is_null());
+            let mut name = [0 as c_char; 64];
+            let mut value = [0 as c_char; 256];
+            let mut section = [0 as c_char; 128];
+            let mut s = IniStream { f, pushback: INI_EOF };
+            let pos = |s: &IniStream| -> c_long {
+                ftell(s.f) - if s.pushback != INI_EOF { 1 } else { 0 }
+            };
+            let eofflag = |s: &IniStream| -> c_int {
+                if s.pushback != INI_EOF { 0 } else { feof(s.f) }
+            };
+            out.push_str(&format!("=== {}\n", label));
+            let mut iter = 0;
+            while !s.at_eof() {
+                iter += 1;
+                if iter > 12 { out.push_str("  LOOPGUARD\n"); break; }
+                let p0 = pos(&s);
+                let r1 = ini_scan_section(&mut s, section.as_mut_ptr());
+                out.push_str(&format!("  it{} sec_scan={} pos {}->{} sec='{}'\n",
+                    iter, r1, p0, pos(&s), cstr_arg(section.as_ptr())));
+                if r1 != 1 {
+                    let p1 = pos(&s);
+                    let cnt = ini_scan_name_value(&mut s, name.as_mut_ptr(), value.as_mut_ptr());
+                    out.push_str(&format!("       nv_scan={} pos {}->{} name='{}' value='{}'\n",
+                        cnt, p1, pos(&s), cstr_arg(name.as_ptr()), cstr_arg(value.as_ptr())));
+                    if cnt != 0 {
+                        if cnt == 1 { value[0] = 0; }
+                        let np = name.as_mut_ptr();
+                        let mut q = np.wrapping_add(strlen(np)).wrapping_sub(1);
+                        while q > np && isspace(*q as c_int) != 0 { *q = 0; q = q.wrapping_sub(1); }
+                        let vp = value.as_mut_ptr();
+                        let mut q = vp.wrapping_add(strlen(vp)).wrapping_sub(1);
+                        while q > vp && isspace(*q as c_int) != 0 { *q = 0; q = q.wrapping_sub(1); }
+                        out.push_str(&format!("       REPORT [{}] '{}' = '{}'\n",
+                            cstr_arg(section.as_ptr()), cstr_arg(name.as_ptr()), cstr_arg(value.as_ptr())));
+                    }
+                }
+                let p2 = pos(&s);
+                let a = ini_scan_comment(&mut s);
+                let p3 = pos(&s);
+                let b = if a != 0 { 0 } else { s.skip_whitespace(); 0 };
+                out.push_str(&format!("       tail a={} b={} pos {}->{}->{} eof={}\n",
+                    a, b, p2, p3, pos(&s), eofflag(&s)));
+                if a != 0 || b != 0 { out.push_str("       SHORT READ -> return -1\n"); break; }
+            }
+            out.push_str(&format!("  loop exited, eof={}\n", eofflag(&s)));
+            fclose(f);
+        }
+        out
+    }
+
+    fn trace_tail(data: &str) -> String {
+        unsafe {
+            let path = temp_file(data);
+            let f = open(&path);
+            let mut s = IniStream { f, pushback: INI_EOF };
+            let pos = |s: &IniStream| -> c_long { ftell(s.f) - if s.pushback != INI_EOF { 1 } else { 0 } };
+            let a = ini_scan_comment(&mut s);
+            let p = pos(&s);
+            let b = if a != 0 { 0 } else { s.skip_whitespace(); 0 };
+            let eofflag = if s.pushback != INI_EOF { 0 } else { feof(s.f) };
+            let out = format!("tail({:<12}) a={:2} b={:2} pos={}->{} eof={}\n", data, a, b, p, pos(&s), eofflag);
+            fclose(f);
+            let _ = std::fs::remove_file(&path);
+            out
+        }
+    }
+
+    fn trace_ival(text: &str) -> String {
+        unsafe {
+            let c = std::ffi::CString::new(text).unwrap();
+            let mut v: c_int = 0xDEAD;
+            let r = sscanf_leading_int(c.as_ptr(), &mut v);
+            format!("sscanf({:<24}) r={} v={}\n", text, r, v)
+        }
+    }
+
+    fn trace_sect(data: &str) -> String {
+        unsafe {
+            let path = temp_file(data);
+            let f = open(&path);
+            let mut s = IniStream { f, pushback: INI_EOF };
+            let pos = |s: &IniStream| -> c_long { ftell(s.f) - if s.pushback != INI_EOF { 1 } else { 0 } };
+            let mut section = [b'?' as c_char; 128];
+            section[127] = 0;
+            let r = ini_scan_section(&mut s, section.as_mut_ptr());
+            let eofflag = if s.pushback != INI_EOF { 0 } else { feof(s.f) };
+            let out = format!("sect r={} pos={} len={} eof={}\n", r, pos(&s), strlen(section.as_ptr()), eofflag);
+            fclose(f);
+            let _ = std::fs::remove_file(&path);
+            out
+        }
+    }
+
+    /// Golden output captured from glibc (see the C probe in the commit message): the
+    /// hand-written scanners must return the same counts and leave the stream in the same
+    /// position as the fscanf/sscanf calls they replace.
+    #[test]
+    fn micro_scans_match_glibc() {
+        let mut all = String::new();
+        for d in [";", ";\n", ";x", ";x\n", "", "\n", "   ", "k", "  ;c\n  "] {
+            all.push_str(&trace_tail(d));
+        }
+        for d in ["3", "  -7abc", "+12", "", "abc", "99999999999999", "-99999999999999",
+                  "2147483648", "0x10", "  \t 5", "5 "] {
+            all.push_str(&trace_ival(d));
+        }
+        let mut big = vec![b'a'; 302];
+        big[0] = b'['; big[300] = b']'; big[301] = b'\n';
+        all.push_str(&trace_sect(std::str::from_utf8(&big).unwrap()));
+        all.push_str(&trace_sect("["));
+        all.push_str(&trace_sect("[]"));
+        assert_eq!(all, "tail(;           ) a=-1 b= 0 pos=1->1 eof=1\ntail(;\n          ) a= 0 b= 0 pos=1->2 eof=1\ntail(;x          ) a= 0 b= 0 pos=2->2 eof=1\ntail(;x\n         ) a= 0 b= 0 pos=2->3 eof=1\ntail(            ) a=-1 b= 0 pos=0->0 eof=1\ntail(\n           ) a=-1 b= 0 pos=1->1 eof=1\ntail(            ) a=-1 b= 0 pos=3->3 eof=1\ntail(k           ) a= 0 b= 0 pos=0->0 eof=0\ntail(  ;c\n       ) a= 0 b= 0 pos=4->7 eof=1\nsscanf(3                       ) r=1 v=3\nsscanf(  -7abc                 ) r=1 v=-7\nsscanf(+12                     ) r=1 v=12\nsscanf(                        ) r=-1 v=57005\nsscanf(abc                     ) r=0 v=57005\nsscanf(99999999999999          ) r=1 v=276447231\nsscanf(-99999999999999         ) r=1 v=-276447231\nsscanf(2147483648              ) r=1 v=-2147483648\nsscanf(0x10                    ) r=1 v=0\nsscanf(  \t 5                   ) r=1 v=5\nsscanf(5                       ) r=1 v=5\nsect r=1 pos=128 len=127 eof=0\nsect r=-1 pos=1 len=127 eof=1\nsect r=0 pos=1 len=127 eof=0\n");
+    }
+
+    /// Golden output captured from glibc for the full ini_load parse loop.
+    #[test]
+    fn ini_load_loop_matches_glibc() {
+        let cases: &[(&str, &str)] = &[
+            ("simple", "[Section]\nkey = value\n"),
+            ("no trailing nl", "[Section]\nkey = value"),
+            ("comment", "; a comment\n[S]\nk = v ; trailing comment\n"),
+            ("empty", ""),
+            ("blank lines", "\n\n[S]\n\nk=v\n\n"),
+            ("no value", "key =\n"),
+            ("no equals", "keyonly\n"),
+            ("bracket then bracket", "[]\nk=v\n"),
+            ("unterminated section", "[Sec\nk=v\n"),
+            ("semicolon in section", "[Se;c]\nk=v\n"),
+            ("spaces", "   [ S ]  \n  k  =  v  \n"),
+            ("crlf", "[S]\r\nk = v\r\n"),
+        ];
+        let mut all = String::new();
+        for (l, d) in cases { all.push_str(&trace(l, d)); }
+        assert_eq!(all, "=== simple: [Section]\nkey = value\n\n  it1 sec_scan=1 pos 0->10 sec='Section'\n       tail a=0 b=0 pos 10->10->10 eof=0\n  it2 sec_scan=0 pos 10->10 sec='Section'\n       nv_scan=2 pos 10->21 name='key ' value='value'\n       REPORT [Section] 'key' = 'value'\n       tail a=-1 b=0 pos 21->22->22 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n=== no trailing nl: [Section]\nkey = value\n  it1 sec_scan=1 pos 0->10 sec='Section'\n       tail a=0 b=0 pos 10->10->10 eof=0\n  it2 sec_scan=0 pos 10->10 sec='Section'\n       nv_scan=2 pos 10->21 name='key ' value='value'\n       REPORT [Section] 'key' = 'value'\n       tail a=-1 b=0 pos 21->21->21 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n=== comment: ; a comment\n[S]\nk = v ; trailing comment\n\n  it1 sec_scan=0 pos 0->0 sec=''\n       nv_scan=0 pos 0->0 name='' value=''\n       tail a=0 b=0 pos 0->11->12 eof=0\n  it2 sec_scan=1 pos 12->16 sec='S'\n       tail a=0 b=0 pos 16->16->16 eof=0\n  it3 sec_scan=0 pos 16->16 sec='S'\n       nv_scan=2 pos 16->22 name='k ' value='v '\n       REPORT [S] 'k' = 'v'\n       tail a=0 b=0 pos 22->40->41 eof=1\n  loop exited, eof=1\n=== empty: \n  it1 sec_scan=-1 pos 0->0 sec=''\n       nv_scan=-1 pos 0->0 name='' value=''\n       REPORT [] '' = ''\n       tail a=-1 b=0 pos 0->0->0 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n=== blank lines: \n\n[S]\n\nk=v\n\n\n  it1 sec_scan=0 pos 0->0 sec=''\n       nv_scan=1 pos 0->7 name='[S]' value=''\n       REPORT [] '[S]' = ''\n       tail a=0 b=0 pos 7->7->7 eof=0\n  it2 sec_scan=0 pos 7->7 sec=''\n       nv_scan=2 pos 7->10 name='k' value='v'\n       REPORT [] 'k' = 'v'\n       tail a=-1 b=0 pos 10->12->12 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n=== no value: key =\n\n  it1 sec_scan=0 pos 0->0 sec=''\n       nv_scan=1 pos 0->6 name='key ' value=''\n       REPORT [] 'key' = ''\n       tail a=-1 b=0 pos 6->6->6 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n=== no equals: keyonly\n\n  it1 sec_scan=0 pos 0->0 sec=''\n       nv_scan=1 pos 0->8 name='keyonly' value=''\n       REPORT [] 'keyonly' = ''\n       tail a=-1 b=0 pos 8->8->8 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n=== bracket then bracket: []\nk=v\n\n  it1 sec_scan=0 pos 0->1 sec=''\n       nv_scan=1 pos 1->3 name=']' value=''\n       REPORT [] ']' = ''\n       tail a=0 b=0 pos 3->3->3 eof=0\n  it2 sec_scan=0 pos 3->3 sec=''\n       nv_scan=2 pos 3->6 name='k' value='v'\n       REPORT [] 'k' = 'v'\n       tail a=-1 b=0 pos 6->7->7 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n=== unterminated section: [Sec\nk=v\n\n  it1 sec_scan=1 pos 0->4 sec='Sec'\n       tail a=0 b=0 pos 4->5->5 eof=0\n  it2 sec_scan=0 pos 5->5 sec='Sec'\n       nv_scan=2 pos 5->8 name='k' value='v'\n       REPORT [Sec] 'k' = 'v'\n       tail a=-1 b=0 pos 8->9->9 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n=== semicolon in section: [Se;c]\nk=v\n\n  it1 sec_scan=1 pos 0->3 sec='Se'\n       tail a=0 b=0 pos 3->6->7 eof=0\n  it2 sec_scan=0 pos 7->7 sec='Se'\n       nv_scan=2 pos 7->10 name='k' value='v'\n       REPORT [Se] 'k' = 'v'\n       tail a=-1 b=0 pos 10->11->11 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n=== spaces:    [ S ]  \n  k  =  v  \n\n  it1 sec_scan=0 pos 0->0 sec=''\n       nv_scan=1 pos 0->13 name='[ S ]  ' value=''\n       REPORT [] '[ S ]' = ''\n       tail a=0 b=0 pos 13->13->13 eof=0\n  it2 sec_scan=0 pos 13->13 sec=''\n       nv_scan=2 pos 13->22 name='k  ' value='v  '\n       REPORT [] 'k' = 'v'\n       tail a=-1 b=0 pos 22->23->23 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n=== crlf: [S]\r\nk = v\r\n\n  it1 sec_scan=1 pos 0->5 sec='S'\n       tail a=0 b=0 pos 5->5->5 eof=0\n  it2 sec_scan=0 pos 5->5 sec='S'\n       nv_scan=2 pos 5->11 name='k ' value='v\r'\n       REPORT [S] 'k' = 'v'\n       tail a=-1 b=0 pos 11->12->12 eof=1\n       SHORT READ -> return -1\n  loop exited, eof=1\n");
+    }
 }
