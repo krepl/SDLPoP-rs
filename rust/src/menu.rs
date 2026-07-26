@@ -1,8 +1,80 @@
-// In-game pause menu — ported from menu.c (USE_MENU).
+//! The in-game pause menu: the modern SDLPoP addition that lets you change
+//! settings, quicksave, restart or quit without editing an INI file by hand.
+//!
+//! Nothing here is part of the original DOS game — there are no `seg0NN:XXXX`
+//! offsets to map back to — so this module is free-standing SDLPoP code that
+//! happens to live inside a codebase shaped by a disassembly.
+//!
+//! # The two screens
+//!
+//! Pressing Escape (or Backspace) puts the game in [`draw_menu`], a modal loop
+//! that owns the frame until the player leaves it. It renders one of two
+//! screens, selected by the `drawn_menu` global:
+//!
+//! * `drawn_menu == 0` — the **pause menu** ([`draw_pause_menu`]): a short
+//!   vertical list of actions (RESUME, QUICKSAVE, SETTINGS, QUIT…).
+//! * `drawn_menu == 1` — the **settings menu** ([`draw_settings_menu`]): a
+//!   subsection list down the left-hand side (GENERAL, GAMEPLAY, VISUALS,
+//!   MODS, CONTROLS, BACK) and, to its right, the scrollable list of settings
+//!   belonging to the active subsection.
+//!
+//! In the settings screen `controlled_area` says which half has the focus: 0
+//! for the subsection list on the left, 1 for the settings on the right.
+//!
+//! # Update and draw are the same pass
+//!
+//! There is no separate update step. `draw_pause_menu_item` and [`draw_setting`]
+//! both *act* on the item they are drawing — they notice that the mouse is over
+//! their own hitbox, apply Left/Right to a toggle, fire the click handler — and
+//! then draw the result. This is why menu state (`hovering_pause_menu_item`,
+//! `highlighted_setting_id`, `next_pause_menu_item`, …) is a pile of globals
+//! that the draw functions write as a side effect, and why `draw_menu` may need
+//! to redraw twice (`need_full_menu_redraw_count`) for a change to become
+//! visible.
+//!
+//! Keyboard, controller and mouse input all funnel into a handful of
+//! normalized globals — `menu_control_x`, `menu_control_y`, `menu_control_back`,
+//! `pressed_enter`, `mouse_clicked` — filled by [`key_test_paused_menu`] and
+//! [`process_additional_menu_input`] and wiped by [`clear_menu_controls`] at
+//! the top of every iteration. `menu_control_y` carries magnitude as well as
+//! direction: ±1 for a single row, ±9 for Page Up/Down, ±1000 for Home/End.
+//!
+//! # Settings
+//!
+//! A [`setting_type`] is a static description of one row: an id, the address of
+//! the variable it edits (`linked`), an optional gate variable (`required` —
+//! when it reads zero the row is greyed out and inert), a min/max range, and a
+//! display *style*:
+//!
+//! * `SETTING_STYLE_TOGGLE` — ON/OFF, edited through [`turn_setting_on_off`],
+//!   which is where the settings that need more than a store live (fullscreen,
+//!   aspect ratio, lighting, sound, music, and the two master switches).
+//! * `SETTING_STYLE_NUMBER` — a number, read and written through the
+//!   `number_type` tag because `linked` may point at a `byte`, `sbyte`, `word`,
+//!   `short` or `int`. An optional `names_list` maps values to labels.
+//! * `SETTING_STYLE_TEXT_ONLY` — a row that opens a dialog instead.
+//! * `SETTING_STYLE_KEY` — a rebindable control, handled in
+//!   [`handle_setting`] rather than [`draw_setting`] so that the modal
+//!   "press a key" prompt does not stop the rest of the list being drawn.
+//!
+//! The tables are `static mut` because [`init_menu`] links them at startup:
+//! each entry is given its index and the ids of its neighbours, so navigation
+//! never has to search. The level-customization subsection is the one dynamic
+//! case — its `linked` pointers are re-aimed at row `menu_current_level` of the
+//! per-level tables every time it is entered.
+//!
+//! # Persistence
+//!
+//! Changing anything sets `were_settings_changed`, and closing the menu writes
+//! `SDLPoP.cfg` ([`save_ingame_settings`]). The file starts with a CRC-32 of
+//! the executable: if the binary changes the settings are silently discarded,
+//! which saves having to version the format. Mod-managed settings are stored
+//! after the levelset name and are only read back when the same mod is loaded.
+//! [`load_ingame_settings`] additionally defers to `SDLPoP.ini` whenever the
+//! INI is the newer of the two files, so hand-editing the INI still wins.
 #![allow(non_upper_case_globals)]
 #![allow(non_snake_case)]
 #![allow(static_mut_refs)]
-#![allow(unused_assignments)]
 
 use std::os::raw::{c_char, c_int, c_short, c_void};
 use core::ptr::{addr_of, addr_of_mut, null, null_mut};
@@ -18,7 +90,6 @@ extern "C" {
     fn strncpy(dst: *mut c_char, src: *const c_char, n: usize) -> *mut c_char;
     fn strnlen(s: *const c_char, maxlen: usize) -> usize;
     fn strncmp(a: *const c_char, b: *const c_char, n: usize) -> c_int;
-    fn memset(s: *mut c_void, c: c_int, n: usize) -> *mut c_void;
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
     fn ftell(stream: *mut FILE) -> std::os::raw::c_long;
@@ -32,14 +103,16 @@ extern "C" {
     pub static mut never_is_16_list: names_list_type;
 }
 
-// SDL_BlitSurface is a macro in SDL2 that expands to SDL_UpperBlit.
+/// `SDL_BlitSurface` is a macro in SDL2 that expands to `SDL_UpperBlit`; here it
+/// goes through the platform renderer so the backend stays swappable.
 #[inline]
 unsafe fn SDL_BlitSurface(src: *mut SDL_Surface, srcrect: *const SDL_Rect,
                            dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int {
     crate::platform::sdl::shared_renderer().blit(src, srcrect, dst, dstrect)
 }
 
-// glibc x86-64 struct stat (144 bytes). We only read st_mtim.
+/// glibc x86-64 `struct stat` (144 bytes). Only `st_mtim` is ever read, but the
+/// whole layout has to be right for `stat()` to fill it correctly.
 #[repr(C)]
 struct stat_t {
     st_dev: u64,
@@ -59,6 +132,8 @@ struct stat_t {
     __glibc_reserved: [i64; 3],
 }
 
+/// A NUL-terminated C string literal, for the many `const char*` arguments the
+/// text-drawing and `snprintf` calls take.
 macro_rules! cs {
     ($s:literal) => {
         concat!($s, "\0").as_ptr() as *const c_char
@@ -101,7 +176,9 @@ const SEEK_END: c_int = 2;
 const SEEK_SET: c_int = 0;
 const POP_MAX_PATH: usize = 256;
 
-// const helper: build a fixed-size NUL-terminated char array from a byte string.
+/// Builds a fixed-size NUL-terminated `char` array from a byte string at compile
+/// time, standing in for C's `.text = "..."` designated initializers. Overlong
+/// input is truncated so that the terminator always fits.
 const fn cstr<const N: usize>(src: &[u8]) -> [c_char; N] {
     let mut a = [0 as c_char; N];
     let mut i = 0;
@@ -114,18 +191,29 @@ const fn cstr<const N: usize>(src: &[u8]) -> [c_char; N] {
 
 // ============================================================================
 // Hardcoded small font + arrowhead bitmaps (decoded from macros in menu.c).
+//
+// The menu needs a font much smaller than the game's own, so one is embedded
+// here rather than loaded from a .DAT. The bitmaps are written a pixel per
+// macro argument, `1` for ink and `_` for paper, exactly as in menu.c; the
+// alphanumerics were adapted from the freeware font '04b_03' by Yuji Oshimoto.
+// Each glyph is preceded by its height, width and stride as little-endian
+// words, matching the `rawimage_type` header that decode_image() expects.
 // ============================================================================
+
+/// One pixel of a hardcoded glyph: `1` is ink, `_` is paper.
 macro_rules! mbit {
     (_) => { 0u8 };
     (1) => { 1u8 };
 }
-// BINARY_4(b7,b6,b5,b4) = (b4<<4)|(b5<<5)|(b6<<6)|(b7<<7)
+/// One row of a glyph up to four pixels wide, packed into the high nibble:
+/// `BINARY_4(b7,b6,b5,b4) = (b4<<4)|(b5<<5)|(b6<<6)|(b7<<7)`.
 macro_rules! b4 {
     ($a:tt,$b:tt,$c:tt,$d:tt) => {
         (mbit!($d) << 4) | (mbit!($c) << 5) | (mbit!($b) << 6) | (mbit!($a) << 7)
     };
 }
-// BINARY_8(b7,b6,b5,b4,b3,b2,b1,b0) = b0|b1<<1|...|b7<<7
+/// One row of a glyph up to eight pixels wide:
+/// `BINARY_8(b7,...,b0) = b0 | b1<<1 | ... | b7<<7`.
 macro_rules! b8 {
     ($a:tt,$b:tt,$c:tt,$d:tt,$e:tt,$f:tt,$g:tt,$h:tt) => {
         mbit!($h) | (mbit!($g) << 1) | (mbit!($f) << 2) | (mbit!($e) << 3)
@@ -133,6 +221,9 @@ macro_rules! b8 {
     };
 }
 
+/// The menu's small font, as a raw `rawfont_type` image the platform layer
+/// decodes at startup. Covers ASCII 32..=126; the per-character offset table is
+/// left zeroed here and filled in at load time.
 #[no_mangle]
 pub static mut hc_small_font_data: [u8; 1242] = [
     // header: 32, 126, WORD(5), WORD(2), WORD(1), WORD(1)
@@ -340,6 +431,9 @@ pub static mut hc_small_font_data: [u8; 1242] = [
     5,0,4,0,1,0, b4!(_,_,_,_),b4!(_,1,_,1),b4!(1,_,1,_),b4!(_,_,_,_),b4!(_,_,_,_),
 ];
 
+/// The little triangles drawn beside a scrollable list and either side of a
+/// numeric setting's value. Raw image data; decoded once by
+/// [`load_arrowhead_images`].
 static mut arrowhead_up_image_data: [u8; 10] = [
     4,0,7,0,1,0,
     b8!(_,_,_,1,_,_,_,_),
@@ -371,36 +465,45 @@ static mut arrowhead_right_image_data: [u8; 11] = [
     b8!(1,_,_,_,_,_,_,_),
 ];
 
+/// Decoded arrowhead surfaces, allocated on first use and then kept forever.
 static mut arrowhead_up_image: *mut image_type = null_mut();
 static mut arrowhead_down_image: *mut image_type = null_mut();
 static mut arrowhead_left_image: *mut image_type = null_mut();
 static mut arrowhead_right_image: *mut image_type = null_mut();
 
+/// Decodes `data` into `*slot`, unless `*slot` already holds a surface.
+unsafe fn decode_arrowhead_once(slot: &mut *mut image_type, data: *mut u8, palette: *mut dat_pal_type) {
+    if slot.is_null() {
+        *slot = decode_image(data as *mut image_data_type, palette);
+    }
+}
+
+/// Decodes the four arrowhead bitmaps, once per run.
+///
+/// `decode_image` wants a palette, but these are one-bit images, so a throwaway
+/// all-black palette with entry 1 set to white is enough.
 unsafe fn load_arrowhead_images() {
-    // Make a dummy palette for decode_image().
     let mut dat_pal: dat_pal_type = core::mem::zeroed();
-    memset(addr_of_mut!(dat_pal) as *mut c_void, 0, core::mem::size_of::<dat_pal_type>());
     dat_pal.vga[1].r = 0x3F;
     dat_pal.vga[1].g = 0x3F;
     dat_pal.vga[1].b = 0x3F; // white
-    if arrowhead_up_image.is_null() {
-        arrowhead_up_image = decode_image(addr_of_mut!(arrowhead_up_image_data) as *mut image_data_type, addr_of_mut!(dat_pal));
-    }
-    if arrowhead_down_image.is_null() {
-        arrowhead_down_image = decode_image(addr_of_mut!(arrowhead_down_image_data) as *mut image_data_type, addr_of_mut!(dat_pal));
-    }
-    if arrowhead_left_image.is_null() {
-        arrowhead_left_image = decode_image(addr_of_mut!(arrowhead_left_image_data) as *mut image_data_type, addr_of_mut!(dat_pal));
-    }
-    if arrowhead_right_image.is_null() {
-        arrowhead_right_image = decode_image(addr_of_mut!(arrowhead_right_image_data) as *mut image_data_type, addr_of_mut!(dat_pal));
-    }
+    let palette = addr_of_mut!(dat_pal);
+    decode_arrowhead_once(&mut arrowhead_up_image, addr_of_mut!(arrowhead_up_image_data) as *mut u8, palette);
+    decode_arrowhead_once(&mut arrowhead_down_image, addr_of_mut!(arrowhead_down_image_data) as *mut u8, palette);
+    decode_arrowhead_once(&mut arrowhead_left_image, addr_of_mut!(arrowhead_left_image_data) as *mut u8, palette);
+    decode_arrowhead_once(&mut arrowhead_right_image, addr_of_mut!(arrowhead_right_image_data) as *mut u8, palette);
 }
 // ============================================================================
 // Enums (as C-style sequential consts)
 // ============================================================================
 const MAX_MENU_ITEM_LENGTH: usize = 32;
 
+/// One row of the pause menu or of the settings-menu subsection list.
+///
+/// `previous`/`next` are wired up by [`init_pause_menu_items`] into a circular
+/// doubly-linked list so up/down navigation is a pointer hop. `required`, when
+/// non-null, points at a `byte` that must be non-zero for the row to be shown
+/// at all — navigation skips over hidden rows.
 #[repr(C)]
 struct pause_menu_item_type {
     id: c_int,
@@ -410,7 +513,9 @@ struct pause_menu_item_type {
     text: [c_char; MAX_MENU_ITEM_LENGTH],
 }
 
-// pause_menu_item_ids
+// pause_menu_item_ids — shared id space for the pause menu (0..=7) and the
+// settings-menu subsection list (8..=14), because both are drawn by
+// draw_pause_menu_item and dispatched by pause_menu_clicked.
 const PAUSE_MENU_RESUME: c_int = 0;
 const PAUSE_MENU_CHEATS: c_int = 1;
 const PAUSE_MENU_SAVE_GAME: c_int = 2;
@@ -439,14 +544,17 @@ const SETTING_STYLE_NUMBER: c_int = 1;
 const SETTING_STYLE_TEXT_ONLY: c_int = 2;
 const SETTING_STYLE_KEY: c_int = 3;
 
-// menu_setting_number_type_ids
+// menu_setting_number_type_ids — how to interpret the pointer in `linked`.
+// Note the gap: there is no type 4.
 const SETTING_BYTE: u8 = 0;
 const SETTING_SBYTE: u8 = 1;
 const SETTING_WORD: u8 = 2;
 const SETTING_SHORT: u8 = 3;
 const SETTING_INT: u8 = 5;
 
-// setting_ids (sequential, chained from 0)
+// setting_ids — one id per settable option, chained off the previous constant
+// so that inserting a row anywhere renumbers the rest, exactly as the C enum
+// does. The values are not persisted anywhere, so renumbering is harmless.
 const SETTING_RESET_ALL_SETTINGS: c_int = 0;
 const SETTING_SHOW_MENU_ON_PAUSE: c_int = SETTING_RESET_ALL_SETTINGS + 1;
 const SETTING_ENABLE_INFO_SCREEN: c_int = SETTING_SHOW_MENU_ON_PAUSE + 1;
@@ -614,6 +722,18 @@ const SETTING_KEY_ACTION: c_int = SETTING_KEY_JUMP_RIGHT + 1;
 const SETTING_KEY_ENTER: c_int = SETTING_KEY_ACTION + 1;
 const SETTING_KEY_ESC: c_int = SETTING_KEY_ENTER + 1;
 
+/// The static description of one settings row.
+///
+/// `index`, `previous` and `next` are filled in by [`init_settings_list`]:
+/// `index` is the row's position in its area (used for scrolling), while
+/// `previous`/`next` hold neighbour *ids* rather than pointers, clamped at both
+/// ends instead of wrapping.
+///
+/// `linked` points at the variable being edited and `number_type` says how wide
+/// it is; `required` gates the row the same way it does for
+/// [`pause_menu_item_type`], except a gated *setting* is drawn greyed out
+/// rather than hidden. `min`/`max` bound a `SETTING_STYLE_NUMBER` row and
+/// `names_list`, when present, gives its values readable labels.
 #[repr(C)]
 struct setting_type {
     index: c_int,
@@ -631,6 +751,8 @@ struct setting_type {
     names_list: *mut names_list_type,
 }
 
+/// One subsection's settings table: the list drawn on the right of the settings
+/// menu when that subsection is active.
 #[repr(C)]
 struct settings_area_type {
     settings: *mut setting_type,
@@ -644,44 +766,83 @@ const UINT8_MAX: c_int = 255;
 // ============================================================================
 // Mutable menu state (file-scope globals in menu.c)
 // ============================================================================
+/// Id of the pause-menu row under the cursor / keyboard focus.
 static mut hovering_pause_menu_item: c_int = PAUSE_MENU_RESUME;
+/// Where up/down navigation goes from the highlighted row. Written as a side
+/// effect of drawing that row, with hidden rows already skipped over.
 static mut next_pause_menu_item: *mut pause_menu_item_type = null_mut();
 static mut previous_pause_menu_item: *mut pause_menu_item_type = null_mut();
+/// Which screen is showing: 0 = pause menu, 1 = settings menu.
 static mut drawn_menu: c_int = 0;
+/// Opacity of the black wash drawn over the frozen game behind the menu.
 static mut pause_menu_alpha: u8 = 0;
+/// Modal dialog to run on the next iteration of [`draw_menu`], or `DIALOG_NONE`.
 static mut current_dialog_box: c_int = 0;
 static mut current_dialog_text: *const c_char = null();
+/// Level whose per-level options the level-customization subsection edits.
 static mut menu_current_level: word = 1;
+/// Set by anything that wants [`draw_menu`]'s loop to end.
 static mut need_close_menu: bool = false;
 
+/// Subsection whose settings are listed on the right, or 0 for none.
 static mut active_settings_subsection: c_int = 0;
+/// Subsection drawn in white on the left. Usually equals
+/// `active_settings_subsection`, but stays on MODS while the level-customization
+/// sub-subsection is open.
 static mut highlighted_settings_subsection: c_int = 0;
+/// Index of the first setting drawn; at most 9 rows fit on screen.
 static mut scroll_position: c_int = 0;
+/// Normalized navigation input for this iteration, cleared by
+/// [`clear_menu_controls`]. `menu_control_y` carries magnitude as well as sign:
+/// ±1 a row, ±9 a page, ±1000 all the way to the end.
 static mut menu_control_y: c_int = 0;
 static mut menu_control_x: c_int = 0;
 static mut menu_control_back: c_int = 0;
 
+/// Id of the focused settings row. An id rather than an index, so navigation
+/// has to search the active area for it.
 static mut highlighted_setting_id: c_int = SETTING_ENABLE_INFO_SCREEN;
+/// Which half of the settings screen has the focus: 0 = subsection list on the
+/// left, 1 = settings list on the right.
 static mut controlled_area: c_int = 0;
+/// Neighbours of the highlighted setting, written while drawing it.
 static mut next_setting_id: c_int = 0;
 static mut previous_setting_id: c_int = 0;
+/// Whether the highlighted setting sits on the top/bottom edge of the visible
+/// window, so that navigating past it has to scroll.
 static mut at_scroll_up_boundary: bool = false;
 static mut at_scroll_down_boundary: bool = false;
+/// Set by any edit; makes [`menu_was_closed`] write `SDLPoP.cfg`.
 static mut were_settings_changed: bool = false;
+/// Frames of redraw still owed after the last input. Two, because the menu
+/// updates and draws in one pass, so a change made while drawing row N is only
+/// visible to rows above it on the following pass.
 static mut need_full_menu_redraw_count: c_int = 0;
+/// Gate for the "use integer scaling" row: always 1, kept as a variable because
+/// `required` needs an address to point at.
 static mut integer_scaling_possible: c_int = 1;
+/// CRC-32 of the running executable, computed once by [`calculate_exe_crc`].
 static mut exe_crc: dword = 0;
 
+/// Controller edge-detection state, so that holding a button does not repeat
+/// instantly. `joy_xy_timeout_counter` is a `SDL_GetPerformanceCounter` deadline:
+/// the first repeat waits 0.3 s, subsequent ones 0.1 s.
 static mut joy_ABXY_buttons_released: bool = false;
 static mut joy_xy_released: bool = false;
 static mut joy_xy_timeout_counter: u64 = 0;
 
+/// Strip along the bottom of the settings screen holding the highlighted
+/// setting's explanation text.
 static explanation_rect: rect_type = rect_type { top: 170, left: 20, bottom: 200, right: 300 };
+/// The OK / Cancel buttons of a confirmation dialog. The `_text_` rects position
+/// the label, the `_highlight_` rects the selection bar behind it.
 static cancel_text_rect: rect_type = rect_type { top: 104, left: 162, bottom: 118, right: 212 };
 static cancel_highlight_rect: rect_type = rect_type { top: 103, left: 162, bottom: 116, right: 212 };
 static ok_text_rect: rect_type = rect_type { top: 104, left: 108, bottom: 118, right: 158 };
 static ok_highlight_rect: rect_type = rect_type { top: 103, left: 108, bottom: 116, right: 158 };
 
+/// The pause menu proper. Note there is no CHEATS row: the id exists but the
+/// table does not use it.
 const PAUSE_MENU_ITEMS_N: usize = 7;
 static mut pause_menu_items: [pause_menu_item_type; PAUSE_MENU_ITEMS_N] = [
     pause_menu_item_type { id: PAUSE_MENU_RESUME,        previous: null_mut(), next: null_mut(), required: null_mut(), text: cstr(b"RESUME") },
@@ -693,6 +854,7 @@ static mut pause_menu_items: [pause_menu_item_type; PAUSE_MENU_ITEMS_N] = [
     pause_menu_item_type { id: PAUSE_MENU_QUIT_GAME,     previous: null_mut(), next: null_mut(), required: null_mut(), text: cstr(b"QUIT GAME") },
 ];
 
+/// The subsection list down the left of the settings screen.
 const SETTINGS_MENU_ITEMS_N: usize = 6;
 static mut settings_menu_items: [pause_menu_item_type; SETTINGS_MENU_ITEMS_N] = [
     pause_menu_item_type { id: SETTINGS_MENU_GENERAL,  previous: null_mut(), next: null_mut(), required: null_mut(), text: cstr(b"GENERAL") },
@@ -706,6 +868,8 @@ static mut settings_menu_items: [pause_menu_item_type; SETTINGS_MENU_ITEMS_N] = 
 // ============================================================================
 // NAMES_LIST / KEY_VALUE_LIST tables
 // ============================================================================
+/// A `names_list_type` of the first kind: values 0..count map straight onto
+/// consecutive entries of a table of fixed-width strings.
 const fn names_list_names(data: *const [[c_char; 20]; 0], count: word) -> names_list_type {
     names_list_type {
         type_: 0,
@@ -714,6 +878,8 @@ const fn names_list_names(data: *const [[c_char; 20]; 0], count: word) -> names_
         },
     }
 }
+/// A `names_list_type` of the second kind: an explicit value-to-label table,
+/// for settings whose range is not 0-based or is only partly named (`Off` = -1).
 const fn names_list_kv(data: *mut key_value_type, count: word) -> names_list_type {
     names_list_type {
         type_: 1,
@@ -780,6 +946,8 @@ static mut off_setting_name_list: names_list_type =
 // ============================================================================
 // Settings tables
 // ============================================================================
+/// Builds one [`setting_type`], standing in for C's designated initializers.
+/// `index`, `previous` and `next` are left zero for [`init_settings_list`].
 #[allow(clippy::too_many_arguments)]
 const fn st(
     id: c_int,
@@ -810,6 +978,8 @@ const fn st(
     }
 }
 
+/// GENERAL subsection: the options that are about neither how the game looks
+/// nor how it plays.
 const GENERAL_N: usize = 8;
 static mut general_settings: [setting_type; GENERAL_N] = [
     st(SETTING_SHOW_MENU_ON_PAUSE, SETTING_STYLE_TOGGLE, 0, addr_of_mut!(enable_pause_menu) as *mut c_void, null_mut(), 0, 0, null_mut(),
@@ -838,6 +1008,8 @@ static mut general_settings: [setting_type; GENERAL_N] = [
         cstr(b"Revert all settings to the default state.")),
 ];
 
+/// VISUALS subsection: window, scaling and screen-effect options. Several of
+/// these need more than a store when changed — see [`turn_setting_on_off`].
 const VISUALS_N: usize = 8;
 static mut visuals_settings: [setting_type; VISUALS_N] = [
     st(SETTING_FULLSCREEN, SETTING_STYLE_TOGGLE, 0, addr_of_mut!(start_fullscreen) as *mut c_void, null_mut(), 0, 0, null_mut(),
@@ -866,6 +1038,9 @@ static mut visuals_settings: [setting_type; VISUALS_N] = [
         cstr(b"Darken those parts of the screen which are not near a torch.")),
 ];
 
+/// GAMEPLAY subsection: the feature switches, then the long list of individual
+/// bug fixes and enhancements. Every fix row is gated on
+/// `use_fixes_and_enhancements`, the master switch a few rows above it.
 const GAMEPLAY_N: usize = 54;
 static mut gameplay_settings: [setting_type; GAMEPLAY_N] = unsafe { [
     st(SETTING_ENABLE_CHEATS, SETTING_STYLE_TOGGLE, 0, addr_of_mut!(cheats_enabled) as *mut c_void, null_mut(), 0, 0, null_mut(),
@@ -978,6 +1153,8 @@ static mut gameplay_settings: [setting_type; GAMEPLAY_N] = unsafe { [
         cstr(b"Fix dead bodies floating in the air"), cstr(b"If the prince or a guard falls to his death onto a loose floor, the floor drops, but the body stays there in the air.")),
 ] };
 
+/// MODS subsection: the customization options a mod can override, all gated on
+/// `use_custom_options`. "Customize level..." opens the level sub-subsection.
 const MODS_N: usize = 80;
 static mut mods_settings: [setting_type; MODS_N] = unsafe { [
     st(SETTING_USE_CUSTOM_OPTIONS, SETTING_STYLE_TOGGLE, 0, addr_of_mut!(use_custom_options) as *mut c_void, null_mut(), 0, 0, null_mut(),
@@ -1142,6 +1319,10 @@ static mut mods_settings: [setting_type; MODS_N] = unsafe { [
         cstr(b"No mouse in ending"), cstr(b"Skip the mouse in the ending scene.\n(default = false)")),
 ] };
 
+/// The level-customization sub-subsection, reached from MODS.
+///
+/// Its rows have `linked = NULL` in the table because what they edit depends on
+/// `menu_current_level`; [`enter_settings_subsection`] fills the pointers in.
 const LEVEL_N: usize = 8;
 static mut level_settings: [setting_type; LEVEL_N] = [
     st(SETTING_LEVEL_SETTINGS, SETTING_STYLE_TEXT_ONLY, 0, null_mut(), addr_of_mut!(use_custom_options) as *mut c_void, 0, 0, null_mut(),
@@ -1162,6 +1343,8 @@ static mut level_settings: [setting_type; LEVEL_N] = [
         cstr(b"Seamless exit"), cstr(b"Entering this room moves the kid to the next level.\nSet to -1 to disable.")),
 ];
 
+/// CONTROLS subsection: the nine rebindable keys. All `SETTING_STYLE_KEY`, so
+/// they are edited in [`handle_setting`], not [`draw_setting`].
 const CONTROLS_N: usize = 9;
 static mut controls_settings: [setting_type; CONTROLS_N] = [
     st(SETTING_KEY_LEFT, SETTING_STYLE_KEY, SETTING_INT, addr_of_mut!(key_left) as *mut c_void, null_mut(), 0, 0, null_mut(),
@@ -1191,6 +1374,8 @@ static mut mods_settings_area: settings_area_type = settings_area_type { setting
 static mut level_settings_area: settings_area_type = settings_area_type { settings: addr_of_mut!(level_settings) as *mut setting_type, setting_count: LEVEL_N as c_int };
 static mut controls_settings_area: settings_area_type = settings_area_type { settings: addr_of_mut!(controls_settings) as *mut setting_type, setting_count: CONTROLS_N as c_int };
 
+/// The settings table belonging to a subsection id, or null if the id is not a
+/// subsection (including 0, meaning "no subsection is open").
 unsafe fn get_settings_area(menu_item_id: c_int) -> *mut settings_area_type {
     match menu_item_id {
         SETTINGS_MENU_GENERAL => addr_of_mut!(general_settings_area),
@@ -1203,30 +1388,41 @@ unsafe fn get_settings_area(menu_item_id: c_int) -> *mut settings_area_type {
     }
 }
 
+/// Links a menu-item table into a circular doubly-linked list, so up/down
+/// navigation is a pointer hop and wraps around at both ends.
 unsafe fn init_pause_menu_items(first_item: *mut pause_menu_item_type, item_count: c_int) {
-    if item_count > 0 {
-        for i in 0..item_count {
-            let item = first_item.add(i as usize);
-            (*item).previous = first_item.add(std::cmp::max(0, i - 1) as usize);
-            (*item).next = first_item.add(std::cmp::min(item_count - 1, i + 1) as usize);
-        }
-        let last_item = first_item.add((item_count - 1) as usize);
-        (*first_item).previous = last_item;
-        (*last_item).next = first_item;
+    if item_count <= 0 {
+        return;
     }
+    for i in 0..item_count {
+        let item = first_item.add(i as usize);
+        (*item).previous = first_item.add((i - 1).max(0) as usize);
+        (*item).next = first_item.add((i + 1).min(item_count - 1) as usize);
+    }
+    let last_item = first_item.add((item_count - 1) as usize);
+    (*first_item).previous = last_item;
+    (*last_item).next = first_item;
 }
 
+/// Numbers a settings table and records each row's neighbours.
+///
+/// Unlike [`init_pause_menu_items`] this list does *not* wrap: the first row is
+/// its own `previous` and the last its own `next`, so navigation stops at the
+/// ends of a subsection instead of jumping across it.
 unsafe fn init_settings_list(first_setting: *mut setting_type, setting_count: c_int) {
-    if setting_count > 0 {
-        for i in 0..setting_count {
-            let item = first_setting.add(i as usize);
-            (*item).index = i;
-            (*item).previous = (*first_setting.add(std::cmp::max(0, i - 1) as usize)).id;
-            (*item).next = (*first_setting.add(std::cmp::min(setting_count - 1, i + 1) as usize)).id;
-        }
+    if setting_count <= 0 {
+        return;
+    }
+    for i in 0..setting_count {
+        let item = first_setting.add(i as usize);
+        (*item).index = i;
+        (*item).previous = (*first_setting.add((i - 1).max(0) as usize)).id;
+        (*item).next = (*first_setting.add((i + 1).min(setting_count - 1) as usize)).id;
     }
 }
 
+/// Decodes the arrowhead images and links every menu and settings table.
+/// Called once during startup.
 #[no_mangle]
 pub unsafe extern "C" fn init_menu() {
     load_arrowhead_images();
@@ -1242,19 +1438,25 @@ pub unsafe extern "C" fn init_menu() {
     init_settings_list(addr_of_mut!(controls_settings) as *mut setting_type, CONTROLS_N as c_int);
 }
 
+/// Whether the cursor is inside `rect`, top/left inclusive, bottom/right
+/// exclusive. Operates on the already-rescaled `mouse_x`/`mouse_y`, so `rect`
+/// is in the game's own 320×200 coordinates.
 unsafe fn is_mouse_over_rect(rect: *const rect_type) -> bool {
-    mouse_x >= (*rect).left as c_int
-        && mouse_x < (*rect).right as c_int
-        && mouse_y >= (*rect).top as c_int
-        && mouse_y < (*rect).bottom as c_int
+    ((*rect).left as c_int..(*rect).right as c_int).contains(&mouse_x)
+        && ((*rect).top as c_int..(*rect).bottom as c_int).contains(&mouse_y)
 }
 
-// Maps the cursor position into a coordinate between (0,0) and (320,200).
+/// Reads the cursor and maps it into the game's 320×200 coordinate space,
+/// setting `mouse_x`, `mouse_y` and `mouse_moved`.
+///
+/// Two scalings stack up: the renderer's own scale, and the logical size, which
+/// is a whole multiple of 320×200 when 4:3 aspect-ratio correction is on. The
+/// viewport gives the black bars around the picture, which have to come off
+/// before the division. If any of that comes back as zero — which happens
+/// before the window exists — the previous position is left alone.
 unsafe fn read_mouse_state() {
-    let mut scale_x: f32 = 0.0;
-    let mut scale_y: f32 = 0.0;
     let renderer = crate::platform::sdl::shared_renderer();
-    (scale_x, scale_y) = renderer.render_get_scale(renderer_);
+    let (mut scale_x, mut scale_y) = renderer.render_get_scale(renderer_);
     let (logical_width, logical_height) = renderer.render_get_logical_size(renderer_);
     let logical_scale_x = logical_width / 320;
     let logical_scale_y = logical_height / 200;
@@ -1268,17 +1470,22 @@ unsafe fn read_mouse_state() {
     viewport.y /= logical_scale_y;
     let last_mouse_x = mouse_x;
     let last_mouse_y = mouse_y;
-    (mouse_x, mouse_y, _, _) = crate::platform::sdl::shared_input().mouse_state();
-    mouse_x = (mouse_x as f32 / scale_x - viewport.x as f32 + 0.5) as c_int;
-    mouse_y = (mouse_y as f32 / scale_y - viewport.y as f32 + 0.5) as c_int;
+    let (raw_x, raw_y, _, _) = crate::platform::sdl::shared_input().mouse_state();
+    mouse_x = (raw_x as f32 / scale_x - viewport.x as f32 + 0.5) as c_int;
+    mouse_y = (raw_y as f32 / scale_y - viewport.y as f32 + 0.5) as c_int;
     mouse_moved = last_mouse_x != mouse_x || last_mouse_y != mouse_y;
 }
 
+/// Plays a sound effect and immediately flushes it, because the menu loop does
+/// not run the game's normal per-frame sound pump.
 unsafe fn play_menu_sound(sound_id: c_int) {
     play_sound(sound_id);
     play_next_sound();
 }
 
+/// Opens a settings subsection: moves the focus to its list and, for the
+/// level-customization sub-subsection, re-aims its `linked` pointers at row
+/// `menu_current_level` of the per-level tables.
 unsafe fn enter_settings_subsection(settings_menu_id: c_int) {
     let settings_area = get_settings_area(settings_menu_id);
     if active_settings_subsection != settings_menu_id {
@@ -1292,6 +1499,8 @@ unsafe fn enter_settings_subsection(settings_menu_id: c_int) {
     controlled_area = 1;
     scroll_position = 0;
 
+    // Special case: in the level customization subsection the linked variables
+    // depend on menu_current_level, so they have to be bound now.
     if settings_menu_id == SETTINGS_MENU_LEVEL_CUSTOMIZATION {
         let lvl = menu_current_level as usize;
         for i in 0..(*settings_area).setting_count {
@@ -1310,10 +1519,13 @@ unsafe fn enter_settings_subsection(settings_menu_id: c_int) {
     }
 }
 
+/// Backs out of a settings subsection. The level-customization sub-subsection
+/// goes back to MODS rather than all the way out to the subsection list.
 unsafe fn leave_settings_subsection() {
     if active_settings_subsection == SETTINGS_MENU_LEVEL_CUSTOMIZATION {
         enter_settings_subsection(SETTINGS_MENU_MODS);
     } else {
+        // Go back to the top level of the settings menu.
         controlled_area = 0;
         hovering_pause_menu_item = active_settings_subsection;
         active_settings_subsection = 0;
@@ -1321,12 +1533,18 @@ unsafe fn leave_settings_subsection() {
     }
 }
 
+/// Returns to the top-level pause menu with RESUME highlighted.
 unsafe fn reset_paused_menu() {
     drawn_menu = 0;
     controlled_area = 0;
     hovering_pause_menu_item = PAUSE_MENU_RESUME;
 }
 
+/// Acts on a pause-menu or subsection-list row being activated.
+///
+/// The two "restart" rows do not restart anything here: they fake the
+/// corresponding cheat keypress, which the outer game loop picks up once the
+/// menu closes.
 unsafe fn pause_menu_clicked(item: *mut pause_menu_item_type) {
     play_menu_sound(soundids_sound_22_loose_shake_3 as c_int);
     match (*item).id {
@@ -1334,6 +1552,7 @@ unsafe fn pause_menu_clicked(item: *mut pause_menu_item_type) {
             need_close_menu = true;
         }
         PAUSE_MENU_SAVE_GAME => {
+            // TODO: Manual save games?
             if Kid.alive < 0 {
                 need_quick_save = 1;
             }
@@ -1370,19 +1589,53 @@ unsafe fn pause_menu_clicked(item: *mut pause_menu_item_type) {
         }
         _ => {}
     }
-    clear_menu_controls();
+    clear_menu_controls(); // prevent "click-through" because the screen changes
 }
 
+/// Whether a menu item is currently shown: an item with no `required` gate
+/// always is, otherwise the gate byte must be non-zero.
+unsafe fn menu_item_is_shown(item: *mut pause_menu_item_type) -> bool {
+    (*item).required.is_null() || *((*item).required as *const i8) != 0
+}
+
+/// Walks from `item` in one direction until it lands on a shown item.
+///
+/// Mirrors the C loop: an item with no gate at all ends the walk, so a table of
+/// entirely hidden items would spin forever — which cannot happen, because the
+/// tables always contain ungated rows.
+unsafe fn skip_hidden_items(
+    mut item: *mut pause_menu_item_type,
+    step: unsafe fn(*mut pause_menu_item_type) -> *mut pause_menu_item_type,
+) -> *mut pause_menu_item_type {
+    while !(*item).required.is_null() && *((*item).required as *const i8) == 0 {
+        item = step(item);
+    }
+    item
+}
+
+unsafe fn item_previous(item: *mut pause_menu_item_type) -> *mut pause_menu_item_type {
+    (*item).previous
+}
+
+unsafe fn item_next(item: *mut pause_menu_item_type) -> *mut pause_menu_item_type {
+    (*item).next
+}
+
+/// Draws one pause-menu row and, because update and draw are the same pass,
+/// acts on it: notices the cursor hovering it, records where navigation goes
+/// from it, and fires [`pause_menu_clicked`] when it is activated.
+///
+/// Advances `*y_offset` by one row height whether or not the item was drawn as
+/// highlighted — but a hidden item returns early and does *not* advance it, so
+/// hidden rows leave no gap.
 unsafe fn draw_pause_menu_item(
     item: *mut pause_menu_item_type,
     parent: *const rect_type,
     y_offset: *mut c_int,
     inactive_text_color: c_int,
 ) {
-    if !(*item).required.is_null() {
-        if *((*item).required as *const i8) == 0 {
-            return; // skip this item (disabled)
-        }
+    if !menu_item_is_shown(item) {
+        return; // skip this item (disabled)
     }
 
     let mut text_rect = *parent;
@@ -1400,25 +1653,9 @@ unsafe fn draw_pause_menu_item(
     }
 
     if highlighted {
-        previous_pause_menu_item = (*item).previous;
-        next_pause_menu_item = (*item).next;
-        // Skip over disabled items.
-        if !(*previous_pause_menu_item).required.is_null() {
-            while *((*previous_pause_menu_item).required as *const i8) == 0 {
-                previous_pause_menu_item = (*previous_pause_menu_item).previous;
-                if (*previous_pause_menu_item).required.is_null() {
-                    break;
-                }
-            }
-        }
-        if !(*next_pause_menu_item).required.is_null() {
-            while *((*next_pause_menu_item).required as *const i8) == 0 {
-                next_pause_menu_item = (*next_pause_menu_item).next;
-                if (*next_pause_menu_item).required.is_null() {
-                    break;
-                }
-            }
-        }
+        // Skip over hidden items (such as the CHEATS menu in non-cheat mode).
+        previous_pause_menu_item = skip_hidden_items((*item).previous, item_previous);
+        next_pause_menu_item = skip_hidden_items((*item).next, item_next);
         text_color = colorids_color_15_brightwhite as c_int;
         draw_rect_contours(&selection_box, colorids_color_7_lightgray as u8);
 
@@ -1434,9 +1671,11 @@ unsafe fn draw_pause_menu_item(
     *y_offset += 13;
 }
 
+/// Draws the top-level pause menu over a dimmed copy of the frozen game.
 unsafe fn draw_pause_menu() {
     pause_menu_alpha = 120;
     draw_rect_with_alpha(addr_of!(screen_rect), colorids_color_0_black as u8, pause_menu_alpha);
+    // Transparent, so that the text "GAME PAUSED" stays visible.
     draw_rect_with_alpha(addr_of!(rect_bottom_text), colorids_color_0_black as u8, 0);
     let pause_rect_outer = rect_type { top: 0, left: 110, bottom: 192, right: 210 };
     let mut pause_rect_inner: rect_type = core::mem::zeroed();
@@ -1458,6 +1697,15 @@ unsafe fn draw_pause_menu() {
     }
 }
 
+/// Applies a new ON/OFF value.
+///
+/// Most settings are just a byte store through `linked`, which is what the
+/// fall-through arm does. The ones listed explicitly need something to happen
+/// as well — resize the window, rebuild the lighting mask, re-point the `fixes`
+/// pointer — and several of them ignore `linked` entirely because the callee
+/// owns the variable. That is why [`confirmation_dialog_result`] can call this
+/// with a null `linked` after restoring defaults: it is using the side effects,
+/// not the store.
 unsafe fn turn_setting_on_off(setting_id: c_int, new_state: u8, linked: *mut c_void) {
     were_settings_changed = true;
     match setting_id {
@@ -1504,40 +1752,49 @@ unsafe fn turn_setting_on_off(setting_id: c_int, new_state: u8, linked: *mut c_v
     }
 }
 
+/// [`turn_setting_on_off`] with the click sound the menu plays when a toggle
+/// changes.
 unsafe fn turn_setting_on_off_with_sound(setting: *mut setting_type, new_state: u8) {
     play_menu_sound(soundids_sound_10_sword_vs_sword as c_int);
     turn_setting_on_off((*setting).id, new_state, (*setting).linked);
 }
 
+/// Reads the variable a numeric setting edits, widened to `int`. `number_type`
+/// says how wide the target really is; anything unrecognized reads as a `byte`,
+/// matching the C `default:` falling into `case SETTING_BYTE:`.
 unsafe fn get_setting_value(setting: *mut setting_type) -> c_int {
-    let mut value = 0;
-    if !(*setting).linked.is_null() {
-        value = match (*setting).number_type {
-            SETTING_SBYTE => *((*setting).linked as *const i8) as c_int,
-            SETTING_WORD => *((*setting).linked as *const u16) as c_int,
-            SETTING_SHORT => *((*setting).linked as *const i16) as c_int,
-            SETTING_INT => *((*setting).linked as *const c_int),
-            _ => *((*setting).linked as *const u8) as c_int,
-        };
+    if (*setting).linked.is_null() {
+        return 0;
     }
-    value
+    match (*setting).number_type {
+        SETTING_SBYTE => *((*setting).linked as *const i8) as c_int,
+        SETTING_WORD => *((*setting).linked as *const u16) as c_int,
+        SETTING_SHORT => *((*setting).linked as *const i16) as c_int,
+        SETTING_INT => *((*setting).linked as *const c_int),
+        _ => *((*setting).linked as *const u8) as c_int,
+    }
 }
 
+/// Writes back through `linked`, truncating to the target's real width. The
+/// caller is responsible for having range-checked against `min`/`max`.
 unsafe fn set_setting_value(setting: *mut setting_type, value: c_int) {
-    if !(*setting).linked.is_null() {
-        match (*setting).number_type {
-            SETTING_SBYTE => *((*setting).linked as *mut i8) = value as i8,
-            SETTING_WORD => *((*setting).linked as *mut u16) = value as u16,
-            SETTING_SHORT => *((*setting).linked as *mut i16) = value as i16,
-            SETTING_INT => *((*setting).linked as *mut c_int) = value,
-            _ => *((*setting).linked as *mut u8) = value as u8,
-        }
+    if (*setting).linked.is_null() {
+        return;
+    }
+    match (*setting).number_type {
+        SETTING_SBYTE => *((*setting).linked as *mut i8) = value as i8,
+        SETTING_WORD => *((*setting).linked as *mut u16) = value as u16,
+        SETTING_SHORT => *((*setting).linked as *mut i16) = value as i16,
+        SETTING_INT => *((*setting).linked as *mut c_int) = value,
+        _ => *((*setting).linked as *mut u8) = value as u8,
     }
 }
 
+/// Steps a numeric setting up, doing nothing if that would exceed `max`.
+/// The joystick threshold steps in thousands, being a raw axis value.
 unsafe fn increase_setting(setting: *mut setting_type, old_value: c_int) {
     let new_value = if (*setting).id == SETTING_JOYSTICK_THRESHOLD {
-        ((old_value / 1000) + 1) * 1000
+        ((old_value / 1000) + 1) * 1000 // Nearest higher multiple of 1000.
     } else {
         old_value + 1
     };
@@ -1547,9 +1804,10 @@ unsafe fn increase_setting(setting: *mut setting_type, old_value: c_int) {
     }
 }
 
+/// Steps a numeric setting down, doing nothing if that would go below `min`.
 unsafe fn decrease_setting(setting: *mut setting_type, old_value: c_int) {
     let new_value = if (*setting).id == SETTING_JOYSTICK_THRESHOLD {
-        (((old_value + 999) / 1000) - 1) * 1000
+        (((old_value + 999) / 1000) - 1) * 1000 // Nearest lower multiple of 1000.
     } else {
         old_value - 1
     };
@@ -1559,10 +1817,13 @@ unsafe fn decrease_setting(setting: *mut setting_type, old_value: c_int) {
     }
 }
 
+/// Draws the highlighted setting's explanation in the strip along the bottom.
 unsafe fn draw_setting_explanation(setting: *mut setting_type) {
     show_text_with_color(&explanation_rect, halign_center, valign_top, addr_of!((*setting).explanation) as *const c_char, colorids_color_7_lightgray as c_int);
 }
 
+/// Blits a decoded image (in practice, an arrowhead) onto the overlay with
+/// colour 0 keyed out, so it does not carry a black box with it.
 unsafe fn draw_image_with_blending(image: *mut image_type, xpos: c_int, ypos: c_int) {
     let src_rect = SDL_Rect { x: 0, y: 0, w: (*image).w, h: (*image).h };
     let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: (*image).w, h: (*image).h };
@@ -1573,21 +1834,25 @@ unsafe fn draw_image_with_blending(image: *mut image_type, xpos: c_int, ypos: c_
     }
 }
 
+/// Renders a numeric setting's value into `buffer` and returns it.
+///
+/// Prefers the setting's `names_list` label; failing that, the handful of
+/// settings measured in game ticks are shown as seconds, and everything else as
+/// a plain integer.
 unsafe fn print_setting_value_(setting: *mut setting_type, value: c_int, buffer: *mut c_char, buffer_size: usize) -> *mut c_char {
     let mut has_name = false;
     let list = (*setting).names_list;
     let max_len = std::cmp::min(MAX_OPTION_VALUE_NAME_LENGTH as usize, buffer_size);
     if !list.is_null() {
-        if (*list).type_ == 0 && value >= 0 && value < (*list).__bindgen_anon_1.names.count as c_int {
+        if (*list).type_ == 0 && (0..(*list).__bindgen_anon_1.names.count as c_int).contains(&value) {
             let base = (*list).__bindgen_anon_1.names.data as *const [c_char; 20];
             strncpy(buffer, base.add(value as usize) as *const c_char, max_len);
             has_name = true;
         } else if (*list).type_ == 1 {
-            let n = (*list).__bindgen_anon_1.kv_pairs.count as c_int;
-            for i in 0..n {
-                let kv = (*list).__bindgen_anon_1.kv_pairs.data.add(i as usize);
-                if value == (*kv).value {
-                    strncpy(buffer, addr_of!((*kv).key) as *const c_char, max_len);
+            for i in 0..(*list).__bindgen_anon_1.kv_pairs.count as c_int {
+                let kv_pair = (*list).__bindgen_anon_1.kv_pairs.data.add(i as usize);
+                if value == (*kv_pair).value {
+                    strncpy(buffer, addr_of!((*kv_pair).key) as *const c_char, max_len);
                     has_name = true;
                     break;
                 }
@@ -1595,12 +1860,16 @@ unsafe fn print_setting_value_(setting: *mut setting_type, value: c_int, buffer:
         }
     }
     if !has_name {
-        if (*setting).id == SETTING_START_TICKS_LEFT
-            || (*setting).id == SETTING_SHIFT_L_REDUCED_TICKS
-            || (*setting).id == SETTING_MOUSE_DELAY
-            || (*setting).id == SETTING_LOOSE_FLOOR_DELAY
-        {
+        let measured_in_ticks = matches!(
+            (*setting).id,
+            SETTING_START_TICKS_LEFT
+                | SETTING_SHIFT_L_REDUCED_TICKS
+                | SETTING_MOUSE_DELAY
+                | SETTING_LOOSE_FLOOR_DELAY
+        );
+        if measured_in_ticks {
             let seconds = (value as f32) * (1.0f32 / 12.0f32);
+            // Varargs promote float to double, so pass an f64 as C does.
             snprintf(buffer, buffer_size, cs!("%.2f"), seconds as f64);
         } else {
             snprintf(buffer, buffer_size, cs!("%d"), value);
@@ -1609,18 +1878,42 @@ unsafe fn print_setting_value_(setting: *mut setting_type, value: c_int, buffer:
     buffer
 }
 
-unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_offset: *mut c_int, inactive_text_color: c_int) {
+/// The box a settings row occupies, given the area rect and the running
+/// `y_offset`. Shared by [`draw_setting`] and [`handle_setting`] so that the
+/// hitboxes the two compute cannot drift apart.
+unsafe fn setting_rects(parent: *const rect_type, y_offset: c_int) -> (rect_type, rect_type) {
     let mut text_rect = *parent;
-    text_rect.top = text_rect.top.wrapping_add(*y_offset as c_short);
-    let mut text_color = inactive_text_color;
-    let selected_color = colorids_color_15_brightwhite as c_int;
-    let unselected_color = colorids_color_7_lightgray as c_int;
-
+    // Assigning an int to a short, as C does — narrowing, not saturating.
+    text_rect.top = text_rect.top.wrapping_add(y_offset as c_short);
     let mut setting_box = text_rect;
     setting_box.top -= 5;
     setting_box.bottom = setting_box.top + 15;
     setting_box.left -= 10;
     setting_box.right += 10;
+    (text_rect, setting_box)
+}
+
+/// Whether a settings row is greyed out: its `required` gate exists and reads
+/// zero. Unlike a hidden menu item, a disabled row is still drawn and still
+/// takes up its slot — it just cannot be edited.
+unsafe fn setting_is_disabled(setting: *mut setting_type) -> bool {
+    !(*setting).required.is_null() && *((*setting).required as *const u8) == 0
+}
+
+/// Draws one settings row and applies whatever input is aimed at it.
+///
+/// The row is only interactive while it is the highlighted one; clicking
+/// anywhere in its box makes it so. Toggles respond to Left/Right or to a click
+/// on the ON/OFF words, numbers to Left/Right or to a click on either
+/// arrowhead, and a text-only row opens its dialog.
+///
+/// `SETTING_STYLE_KEY` rows are deliberately *not* handled here — see
+/// [`handle_setting`].
+unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_offset: *mut c_int, inactive_text_color: c_int) {
+    let (mut text_rect, setting_box) = setting_rects(parent, *y_offset);
+    let mut text_color = inactive_text_color;
+    let selected_color = colorids_color_15_brightwhite as c_int;
+    let unselected_color = colorids_color_7_lightgray as c_int;
 
     if mouse_clicked && is_mouse_over_rect(&setting_box) {
         highlighted_setting_id = (*setting).id;
@@ -1648,22 +1941,20 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
         draw_setting_explanation(setting);
     }
 
-    let mut disabled = false;
-    if !(*setting).required.is_null() {
-        disabled = *((*setting).required as *const u8) == 0;
-    }
+    let disabled = setting_is_disabled(setting);
     if disabled {
         text_color = colorids_color_7_lightgray as c_int;
     }
 
     show_text_with_color(&text_rect, halign_left, valign_top, addr_of!((*setting).text) as *const c_char, text_color);
 
-    if (*setting).style as c_int == SETTING_STYLE_TOGGLE && !disabled {
-        let mut setting_enabled = true;
-        if !(*setting).linked.is_null() {
-            setting_enabled = *((*setting).linked as *const u8) != 0;
-        }
+    let style = if disabled { -1 } else { (*setting).style as c_int };
+    if style == SETTING_STYLE_TOGGLE {
+        let mut setting_enabled =
+            (*setting).linked.is_null() || *((*setting).linked as *const u8) != 0;
 
+        // Toggling the setting: either by clicking on "ON" or "OFF", or by
+        // pressing left/right.
         if highlighted_setting_id == (*setting).id {
             if mouse_clicked {
                 if !setting_enabled {
@@ -1671,6 +1962,10 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
                     on_hitbox.left = setting_box.right - 22;
                     if is_mouse_over_rect(&on_hitbox) {
                         turn_setting_on_off_with_sound(setting, 1);
+                        // Faithful to menu.c:1630: the local flag is set to the
+                        // *opposite* of what was just applied, so the row is
+                        // drawn one frame behind when toggled by mouse. Left as
+                        // is — it is what the C does.
                         setting_enabled = false;
                     }
                 } else {
@@ -1679,7 +1974,7 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
                     off_hitbox.right = setting_box.right - 22;
                     if is_mouse_over_rect(&off_hitbox) {
                         turn_setting_on_off_with_sound(setting, 0);
-                        setting_enabled = true;
+                        setting_enabled = true; // Same quirk, see above.
                     }
                 }
             } else if setting_enabled && menu_control_x < 0 {
@@ -1696,7 +1991,7 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
         show_text_with_color(&text_rect, halign_right, valign_top, cs!("ON"), on_color);
         text_rect.right -= 15;
         show_text_with_color(&text_rect, halign_right, valign_top, cs!("OFF"), off_color);
-    } else if (*setting).style as c_int == SETTING_STYLE_NUMBER && !disabled {
+    } else if style == SETTING_STYLE_NUMBER {
         let mut value = get_setting_value(setting);
         if highlighted_setting_id == (*setting).id {
             if mouse_clicked {
@@ -1712,6 +2007,8 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
                     let mut vbuf = [0 as c_char; 32];
                     let value_text = print_setting_value_(setting, value, vbuf.as_mut_ptr(), 32);
                     let value_text_width = get_line_width(value_text, strlen(value_text) as c_int);
+                    // Computed in int and narrowed on store, as C does: the
+                    // subtraction is on promoted shorts.
                     let mut left_hitbox = right_hitbox;
                     left_hitbox.left = (left_hitbox.left as c_int - (value_text_width + 10)) as c_short;
                     left_hitbox.right = (left_hitbox.right as c_int - (value_text_width + 5)) as c_short;
@@ -1736,25 +2033,30 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
             draw_image_with_blending(arrowhead_right_image, text_rect.right as c_int + 2, text_rect.top as c_int);
             draw_image_with_blending(arrowhead_left_image, text_rect.right as c_int - value_text_width - 6, text_rect.top as c_int);
         }
-    } else if (*setting).style as c_int == SETTING_STYLE_KEY && !disabled {
+    } else if style == SETTING_STYLE_KEY {
+        // Only the label is drawn here; the rebinding itself is handle_setting's.
         let value = get_setting_value(setting);
         let mut value_text = [0 as c_char; 256];
         snprintf(value_text.as_mut_ptr(), 256, cs!("%s (%d)"), crate::platform::sdl::shared_renderer().get_scancode_name(value as u32), value);
         show_text_with_color(&text_rect, 1, -1, value_text.as_ptr(), selected_color);
     } else {
-        // show text only
-        if highlighted_setting_id == (*setting).id
+        // Show text only. Such a row is a button that opens a dialog; a
+        // disabled row also lands here, and its gate check keeps it inert.
+        let openable = highlighted_setting_id == (*setting).id
             && ((*setting).required.is_null() || *((*setting).required as *const i8) != 0)
-        {
-            if pressed_enter || (mouse_clicked && is_mouse_over_rect(&setting_box)) {
-                if (*setting).id == SETTING_RESET_ALL_SETTINGS {
+            && (pressed_enter || (mouse_clicked && is_mouse_over_rect(&setting_box)));
+        if openable {
+            match (*setting).id {
+                SETTING_RESET_ALL_SETTINGS => {
                     play_menu_sound(soundids_sound_22_loose_shake_3 as c_int);
                     current_dialog_box = DIALOG_RESTORE_DEFAULT_SETTINGS;
                     current_dialog_text = cs!("Restore all settings to their default values?");
-                } else if (*setting).id == SETTING_LEVEL_SETTINGS {
+                }
+                SETTING_LEVEL_SETTINGS => {
                     play_menu_sound(soundids_sound_22_loose_shake_3 as c_int);
                     current_dialog_box = DIALOG_SELECT_LEVEL;
                 }
+                _ => {}
             }
         }
     }
@@ -1762,52 +2064,53 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
     *y_offset += 15;
 }
 
+/// Runs the key-rebinding prompt for a `SETTING_STYLE_KEY` row.
+///
+/// Split out of [`draw_setting`] and run in a second pass over the same rows so
+/// that the modal "press a key" dialog does not stop the rows below this one
+/// from being drawn first. It therefore has to reproduce [`draw_setting`]'s
+/// `y_offset` arithmetic exactly, which is what [`setting_rects`] is for.
 unsafe fn handle_setting(setting: *mut setting_type, parent: *const rect_type, y_offset: *mut c_int, _inactive_text_color: c_int) {
-    let mut text_rect = *parent;
-    text_rect.top = text_rect.top.wrapping_add(*y_offset as c_short);
+    let (_text_rect, setting_box) = setting_rects(parent, *y_offset);
 
-    let mut setting_box = text_rect;
-    setting_box.top -= 5;
-    setting_box.bottom = setting_box.top + 15;
-    setting_box.left -= 10;
-    setting_box.right += 10;
-
-    let mut disabled = false;
-    if !(*setting).required.is_null() {
-        disabled = *((*setting).required as *const u8) == 0;
-    }
-
-    if (*setting).style as c_int == SETTING_STYLE_KEY && !disabled {
-        if highlighted_setting_id == (*setting).id {
-            if pressed_enter || (mouse_clicked && is_mouse_over_rect(&setting_box)) {
-                let value_before = get_setting_value(setting);
-                redefine_key(addr_of!((*setting).text) as *const c_char, (*setting).linked as *mut c_int);
-                let value_after = get_setting_value(setting);
-                if value_before != value_after {
-                    were_settings_changed = true;
-                }
-            }
+    if (*setting).style as c_int == SETTING_STYLE_KEY
+        && !setting_is_disabled(setting)
+        && highlighted_setting_id == (*setting).id
+        && (pressed_enter || (mouse_clicked && is_mouse_over_rect(&setting_box)))
+    {
+        let value_before = get_setting_value(setting);
+        redefine_key(addr_of!((*setting).text) as *const c_char, (*setting).linked as *mut c_int);
+        let value_after = get_setting_value(setting);
+        // This should be in redefine_key()?
+        if value_before != value_after {
+            were_settings_changed = true;
         }
     }
 
     *y_offset += 15;
 }
 
+/// Scrolls the settings list by one row. Called for mouse-wheel input, and only
+/// effective while the settings list itself has the focus.
 #[no_mangle]
 pub unsafe extern "C" fn menu_scroll(y: c_int) {
     let current_settings_area = get_settings_area(active_settings_subsection);
-    if !current_settings_area.is_null() {
-        let max_scroll = std::cmp::max(0, (*current_settings_area).setting_count - 9);
-        if drawn_menu == 1 && controlled_area == 1 {
-            if y < 0 && scroll_position > 0 {
-                scroll_position -= 1;
-            } else if y > 0 && scroll_position < max_scroll {
-                scroll_position += 1;
-            }
-        }
+    if current_settings_area.is_null() || drawn_menu != 1 || controlled_area != 1 {
+        return;
+    }
+    let max_scroll = std::cmp::max(0, (*current_settings_area).setting_count - 9);
+    if y < 0 && scroll_position > 0 {
+        scroll_position -= 1;
+    } else if y > 0 && scroll_position < max_scroll {
+        scroll_position += 1;
     }
 }
 
+/// Number of settings rows that fit on screen at once.
+const VISIBLE_SETTINGS: c_int = 9;
+
+/// Draws the active subsection's settings, plus the scroll arrows and scroll
+/// bar, and then runs the key-rebinding pass over the same rows.
 unsafe fn draw_settings_area(settings_area: *mut settings_area_type) {
     if settings_area.is_null() {
         return;
@@ -1815,38 +2118,34 @@ unsafe fn draw_settings_area(settings_area: *mut settings_area_type) {
     let mut settings_area_rect = rect_type { top: 0, left: 80, bottom: 170, right: 320 };
     shrink2_rect(addr_of_mut!(settings_area_rect), addr_of!(settings_area_rect), 20, 20);
 
-    let mut start_y_offset: c_int = 0;
-
-    if active_settings_subsection == SETTINGS_MENU_LEVEL_CUSTOMIZATION {
-        start_y_offset = 15;
+    // The level-customization sub-subsection is a special case: say which level
+    // is being edited, and start drawing the rows slightly lower.
+    let start_y_offset: c_int = if active_settings_subsection == SETTINGS_MENU_LEVEL_CUSTOMIZATION {
         let mut level_text = [0 as c_char; 16];
         snprintf(level_text.as_mut_ptr(), 16, cs!("LEVEL %d"), menu_current_level as c_int);
         show_text_with_color(&settings_area_rect, halign_center, valign_top, level_text.as_ptr(), colorids_color_15_brightwhite as c_int);
-    }
+        15
+    } else {
+        0
+    };
 
-    let mut y_offset = start_y_offset;
+    // Two passes over the same window of rows: draw them all, then run the
+    // modal key-rebinding prompt, so a prompt cannot hide the rows below it.
     let mut num_drawn_settings = 0;
-    {
-        let mut i = 0;
-        while i < (*settings_area).setting_count && num_drawn_settings < 9 {
+    for pass in [
+        draw_setting as unsafe fn(*mut setting_type, *const rect_type, *mut c_int, c_int),
+        handle_setting,
+    ] {
+        let mut y_offset = start_y_offset;
+        num_drawn_settings = 0;
+        for i in 0..(*settings_area).setting_count {
+            if num_drawn_settings >= VISIBLE_SETTINGS {
+                break;
+            }
             if i >= scroll_position {
                 num_drawn_settings += 1;
-                draw_setting((*settings_area).settings.add(i as usize), &settings_area_rect, &mut y_offset, colorids_color_15_brightwhite as c_int);
+                pass((*settings_area).settings.add(i as usize), &settings_area_rect, &mut y_offset, colorids_color_15_brightwhite as c_int);
             }
-            i += 1;
-        }
-    }
-
-    y_offset = start_y_offset;
-    num_drawn_settings = 0;
-    {
-        let mut i = 0;
-        while i < (*settings_area).setting_count && num_drawn_settings < 9 {
-            if i >= scroll_position {
-                num_drawn_settings += 1;
-                handle_setting((*settings_area).settings.add(i as usize), &settings_area_rect, &mut y_offset, colorids_color_15_brightwhite as c_int);
-            }
-            i += 1;
         }
     }
 
@@ -1857,7 +2156,8 @@ unsafe fn draw_settings_area(settings_area: *mut settings_area_type) {
         draw_image_with_blending(arrowhead_down_image, 200, 151);
     }
 
-    // Draw a scroll bar if needed.
+    // Draw a scroll bar if needed. It is not clickable yet — it just shows
+    // where you are in the list.
     if num_drawn_settings < (*settings_area).setting_count {
         let scrollbar_width: c_short = 2;
         let scrollbar_rect = rect_type {
@@ -1880,6 +2180,9 @@ unsafe fn draw_settings_area(settings_area: *mut settings_area_type) {
     }
 }
 
+/// Draws the settings screen: the subsection list on the left and the active
+/// subsection's settings on the right, having first applied navigation input to
+/// whichever of the two has the focus.
 unsafe fn draw_settings_menu() {
     let settings_area = get_settings_area(active_settings_subsection);
     pause_menu_alpha = if settings_area.is_null() { 220 } else { 255 };
@@ -1902,6 +2205,8 @@ unsafe fn draw_settings_menu() {
                 hovering_item_changed = true;
             }
         } else if controlled_area == 1 {
+            // Settings area. The global holds the highlighted row's *id*, not
+            // its index, so navigation starts by searching for the index.
             let old_highlighted_setting_id = highlighted_setting_id;
 
             let current_settings_area = get_settings_area(active_settings_subsection);
@@ -1914,41 +2219,36 @@ unsafe fn draw_settings_menu() {
             }
 
             let last = (*current_settings_area).setting_count - 1;
-            let max_scroll = std::cmp::max(0, (*current_settings_area).setting_count - 9);
+            let max_scroll = std::cmp::max(0, (*current_settings_area).setting_count - VISIBLE_SETTINGS);
 
             if menu_control_y > 0 {
-                highlighted_setting_index += menu_control_y;
-                if highlighted_setting_index > last {
-                    highlighted_setting_index = last;
-                }
+                // DOWN
+                highlighted_setting_index = (highlighted_setting_index + menu_control_y).min(last);
+                // With Page Down, try to leave the selection in the same row visually.
                 if menu_control_y > 1 {
                     scroll_position += menu_control_y;
                 }
             } else if menu_control_y < 0 {
-                highlighted_setting_index += menu_control_y;
-                if highlighted_setting_index < 0 {
-                    highlighted_setting_index = 0;
-                }
+                // UP
+                highlighted_setting_index = (highlighted_setting_index + menu_control_y).max(0);
+                // With Page Up, try to leave the selection in the same row visually.
                 if menu_control_y < -1 {
                     scroll_position += menu_control_y;
                 }
             }
 
             if menu_control_y != 0 {
-                if highlighted_setting_index - 8 > scroll_position {
-                    scroll_position = highlighted_setting_index - 8;
-                }
-                if highlighted_setting_index < scroll_position {
-                    scroll_position = highlighted_setting_index;
-                }
-                if scroll_position > max_scroll {
-                    scroll_position = max_scroll;
-                }
-                if scroll_position < 0 {
-                    scroll_position = 0;
-                }
+                // Both directions are checked in both cases, so the highlighted
+                // row is scrolled back into sight even if the user had scrolled
+                // it away with the mouse wheel.
+                scroll_position = scroll_position
+                    .max(highlighted_setting_index - (VISIBLE_SETTINGS - 1))
+                    .min(highlighted_setting_index)
+                    .min(max_scroll)
+                    .max(0);
             }
 
+            // Find the id from the index again.
             highlighted_setting_id = (*(*current_settings_area).settings.add(highlighted_setting_index as usize)).id;
 
             if old_highlighted_setting_id != highlighted_setting_id {
@@ -1968,7 +2268,7 @@ unsafe fn draw_settings_menu() {
         } else {
             colorids_color_7_lightgray as c_int
         };
-        draw_pause_menu_item(addr_of_mut!(settings_menu_items[i]), &pause_rect_inner, &mut y_offset, text_color);
+        draw_pause_menu_item(item, &pause_rect_inner, &mut y_offset, text_color);
     }
 
     draw_settings_area(settings_area);
@@ -1977,6 +2277,11 @@ unsafe fn draw_settings_menu() {
 const DIALOG_BUTTON_CANCEL: c_int = 0;
 const DIALOG_BUTTON_OK: c_int = 1;
 
+/// Carries out whatever a confirmation dialog was asking about.
+///
+/// Restoring defaults needs more than `set_options_to_default()`: the settings
+/// with side effects have to be re-applied so the running game picks the new
+/// values up.
 unsafe fn confirmation_dialog_result(which_dialog: c_int, button: c_int) {
     if button == DIALOG_BUTTON_OK {
         if which_dialog == DIALOG_RESTORE_DEFAULT_SETTINGS {
@@ -1997,6 +2302,11 @@ unsafe fn confirmation_dialog_result(which_dialog: c_int, button: c_int) {
     }
 }
 
+/// Runs a modal OK/Cancel dialog, blocking until the player answers.
+///
+/// Redraws only when the highlighted button changes, hence the
+/// `old_highlighted_button` guard; the `delay(1)` keeps the spin from eating a
+/// core. Note that OK is on the *left*, so Left highlights OK and Right Cancel.
 unsafe fn draw_confirmation_dialog(which_dialog: c_int, text: *const c_char) {
     let mut highlighted_button = DIALOG_BUTTON_OK;
     let mut old_highlighted_button = -1;
@@ -2028,6 +2338,7 @@ unsafe fn draw_confirmation_dialog(which_dialog: c_int, text: *const c_char) {
         }
 
         if highlighted_button != old_highlighted_button {
+            // Need to redraw the dialog box.
             old_highlighted_button = highlighted_button;
             let renderer = crate::platform::sdl::shared_renderer();
             let clear_color = renderer.map_rgba((*current_target_surface).format, 0, 0, 0, 255);
@@ -2040,30 +2351,31 @@ unsafe fn draw_confirmation_dialog(which_dialog: c_int, text: *const c_char) {
             show_text_with_color(&rect, halign_center, valign_middle, text, colorids_color_15_brightwhite as c_int);
             clear_kbd_buf();
 
-            let highlight_rect: *const rect_type;
-            let ok_text_color;
-            let cancel_text_color;
-            if highlighted_button == DIALOG_BUTTON_OK {
-                highlight_rect = addr_of!(ok_highlight_rect);
-                ok_text_color = colorids_color_15_brightwhite as c_int;
-                cancel_text_color = colorids_color_7_lightgray as c_int;
-            } else {
-                highlight_rect = addr_of!(cancel_highlight_rect);
-                ok_text_color = colorids_color_7_lightgray as c_int;
-                cancel_text_color = colorids_color_15_brightwhite as c_int;
-            }
+            let bright = colorids_color_15_brightwhite as c_int;
+            let dim = colorids_color_7_lightgray as c_int;
+            let (highlight_rect, ok_text_color, cancel_text_color) =
+                if highlighted_button == DIALOG_BUTTON_OK {
+                    (addr_of!(ok_highlight_rect), bright, dim)
+                } else {
+                    (addr_of!(cancel_highlight_rect), dim, bright)
+                };
             draw_rect(highlight_rect, colorids_color_8_darkgray as c_int);
             show_text_with_color(addr_of!(ok_text_rect), halign_center, valign_middle, cs!("OK"), ok_text_color);
             show_text_with_color(addr_of!(cancel_text_rect), halign_center, valign_middle, cs!("Cancel"), cancel_text_color);
             update_screen();
         }
 
-        crate::platform::sdl::shared_renderer().delay(1);
+        crate::platform::sdl::shared_renderer().delay(1); // Prevent 100% cpu usage.
     }
     current_dialog_box = 0;
     clear_menu_controls();
 }
 
+/// Runs the modal "which level do you want to customize?" spinner.
+///
+/// Accepting it enters the level-customization sub-subsection, which is what
+/// binds the per-level settings to `menu_current_level`. The left-hand list
+/// stays showing MODS, because that is where backing out returns to.
 unsafe fn draw_select_level_dialog() {
     clear_menu_controls();
     let mut old_edited_level_number: c_int = -1;
@@ -2079,9 +2391,11 @@ unsafe fn draw_select_level_dialog() {
         }
 
         if menu_control_x < 0 {
-            menu_current_level = std::cmp::max(0, menu_current_level as c_int - 1) as word;
+            // menu_current_level is a word; C's MAX() sees it promoted to int,
+            // so decrementing past 0 clamps rather than wrapping to 65535.
+            menu_current_level = (menu_current_level as c_int - 1).max(0) as word;
         } else if menu_control_x > 0 {
-            menu_current_level = std::cmp::min(15, menu_current_level as c_int + 1) as word;
+            menu_current_level = (menu_current_level as c_int + 1).min(15) as word;
         } else if mouse_clicked || pressed_enter {
             enter_settings_subsection(SETTINGS_MENU_LEVEL_CUSTOMIZATION);
             highlighted_settings_subsection = SETTINGS_MENU_MODS;
@@ -2090,6 +2404,7 @@ unsafe fn draw_select_level_dialog() {
         }
 
         if menu_current_level as c_int != old_edited_level_number {
+            // Need to redraw the dialog box, in the game's larger font.
             let saved_font = textstate.ptr_font;
             textstate.ptr_font = addr_of_mut!(hc_font);
 
@@ -2115,15 +2430,31 @@ unsafe fn draw_select_level_dialog() {
             textstate.ptr_font = saved_font;
         }
 
-        crate::platform::sdl::shared_renderer().delay(1);
+        crate::platform::sdl::shared_renderer().delay(1); // Prevent 100% cpu usage.
     }
     clear_menu_controls();
 }
 
+/// Whether either of the keys that open the menu is still down.
+///
+/// Both entering and leaving the menu set `escape_key_suppressed` from this, so
+/// that the keypress which opened or closed the menu is not seen a second time
+/// by whichever side of the transition comes next.
+unsafe fn menu_open_key_is_held() -> bool {
+    let held = KEYSTATE_HELD_I as u8;
+    key_states[SDL_SCANCODE_BACKSPACE as usize] & held != 0
+        || key_states[SDL_SCANCODE_ESCAPE as usize] & held != 0
+}
+
+/// The menu's own event loop. Owns the frame from the moment the game is paused
+/// until the player resumes, quits, or triggers something the outer game loop
+/// has to handle (`process_key` returning non-zero, e.g. Ctrl+A to restart).
+///
+/// Draws onto `overlay_surface` rather than the screen, so the frozen game
+/// underneath survives to be shown through the menu's translucent backdrop.
 #[no_mangle]
 pub unsafe extern "C" fn draw_menu() {
-    escape_key_suppressed = (key_states[SDL_SCANCODE_BACKSPACE as usize] & KEYSTATE_HELD_I as u8) != 0
-        || (key_states[SDL_SCANCODE_ESCAPE as usize] & KEYSTATE_HELD_I as u8) != 0;
+    escape_key_suppressed = menu_open_key_is_held();
     let saved_target_surface = current_target_surface;
     current_target_surface = overlay_surface;
 
@@ -2132,7 +2463,7 @@ pub unsafe extern "C" fn draw_menu() {
         clear_menu_controls();
         process_events();
         if process_key() != 0 {
-            break;
+            break; // Menu was forcefully closed, for example by pressing Ctrl+A.
         }
         process_additional_menu_input();
 
@@ -2147,7 +2478,7 @@ pub unsafe extern "C" fn draw_menu() {
         }
 
         if is_menu_shown == 1 {
-            is_menu_shown = -1;
+            is_menu_shown = -1; // Reset the menu the first time it is drawn.
             need_full_menu_redraw_count = 2;
             reset_paused_menu();
         }
@@ -2157,11 +2488,11 @@ pub unsafe extern "C" fn draw_menu() {
                 if controlled_area == 1 {
                     leave_settings_subsection();
                 } else {
-                    reset_paused_menu();
+                    reset_paused_menu(); // Go back to the top level pause menu.
                     hovering_pause_menu_item = PAUSE_MENU_SETTINGS;
                 }
             } else {
-                break;
+                break; // Close the menu.
             }
         }
 
@@ -2170,8 +2501,11 @@ pub unsafe extern "C" fn draw_menu() {
         }
 
         if have_mouse_input || have_keyboard_or_controller_input {
+            // The menu is updated and drawn in the same routine, so a redraw
+            // may be needed after the first one for the change to show up.
             need_full_menu_redraw_count = 2;
         } else if need_full_menu_redraw_count == 0 {
+            // No input to process: don't redraw, and save the CPU cycles.
             crate::platform::sdl::shared_renderer().delay(1);
             continue;
         }
@@ -2194,6 +2528,9 @@ pub unsafe extern "C" fn draw_menu() {
     current_target_surface = saved_target_surface;
 }
 
+/// Wipes the normalized input globals. Called at the top of every menu
+/// iteration, and after anything that changes the screen, to stop a single
+/// click from being consumed twice.
 #[no_mangle]
 pub unsafe extern "C" fn clear_menu_controls() {
     pressed_enter = false;
@@ -2208,6 +2545,10 @@ pub unsafe extern "C" fn clear_menu_controls() {
     menu_control_scroll_y = 0;
 }
 
+/// Reads the mouse and works out which input device the player is currently
+/// using, which decides whether hovering moves the highlight and whether the
+/// cursor is shown. In fullscreen the cursor is hidden as soon as the player
+/// touches the keyboard or a controller.
 #[no_mangle]
 pub unsafe extern "C" fn process_additional_menu_input() {
     read_mouse_state();
@@ -2229,6 +2570,12 @@ pub unsafe extern "C" fn process_additional_menu_input() {
     }
 }
 
+/// Turns one keypress — or the current controller state — into the normalized
+/// `menu_control_*` / `pressed_enter` globals.
+///
+/// Returns 0 for input the menu consumed, or the scancode itself for a Ctrl
+/// combination the outer game loop should handle instead (Ctrl+A, Ctrl+R, …),
+/// having also asked the menu to close.
 #[no_mangle]
 pub unsafe extern "C" fn key_test_paused_menu(mut key: c_int) -> c_int {
     menu_control_x = 0;
@@ -2236,7 +2583,7 @@ pub unsafe extern "C" fn key_test_paused_menu(mut key: c_int) -> c_int {
     menu_control_back = 0;
 
     if mouse_button_clicked_right {
-        menu_control_back = 1;
+        menu_control_back = 1; // Can use RMB to close menus.
     }
 
     if is_joyst_mode != 0 {
@@ -2253,6 +2600,7 @@ pub unsafe extern "C" fn key_test_paused_menu(mut key: c_int) -> c_int {
             joy_y = 1;
         }
         let y_threshold = 14000;
+        // Less sensitive, to prevent accidentally changing a setting.
         let x_threshold = 26000;
         if joy_axis[SDL_CONTROLLER_AXIS_LEFTY] < -y_threshold {
             joy_y = -1;
@@ -2264,13 +2612,13 @@ pub unsafe extern "C" fn key_test_paused_menu(mut key: c_int) -> c_int {
             joy_x = 1;
         }
 
-        let mut needed_timeout_s = 0.1f32;
+        let mut needed_timeout_s = 0.1f32; // Delay for hold-down repeated input.
         if joy_x == 0 && joy_y == 0 {
             joy_xy_released = true;
             joy_xy_timeout_counter = 0;
         } else {
             if joy_xy_released {
-                needed_timeout_s = 0.3f32;
+                needed_timeout_s = 0.3f32; // The delay is longer for the first repetition.
                 joy_xy_released = false;
             }
             let renderer = crate::platform::sdl::shared_renderer();
@@ -2279,7 +2627,7 @@ pub unsafe extern "C" fn key_test_paused_menu(mut key: c_int) -> c_int {
                 menu_control_x = joy_x;
                 menu_control_y = joy_y;
                 joy_xy_timeout_counter = current_counter + (renderer.performance_frequency() as f32 * needed_timeout_s) as u64;
-                return 0;
+                return 0; // cancel other input.
             }
         }
 
@@ -2292,6 +2640,7 @@ pub unsafe extern "C" fn key_test_paused_menu(mut key: c_int) -> c_int {
             joy_ABXY_buttons_released = false;
             if joy_button_states[JOYINPUT_A as usize] & KEYSTATE_HELD_I != 0 {
                 key = SDL_SCANCODE_RETURN;
+                // Prevent 'down' input reaching the controls if the game unpauses.
                 joy_button_states[JOYINPUT_A as usize] = 0;
             } else if joy_button_states[JOYINPUT_B as usize] & KEYSTATE_HELD_I != 0 {
                 key = SDL_SCANCODE_ESCAPE;
@@ -2299,7 +2648,8 @@ pub unsafe extern "C" fn key_test_paused_menu(mut key: c_int) -> c_int {
         }
     }
 
-    // remap
+    // Remap the player's own bindings onto the scancodes handled below. These
+    // are runtime globals, so this stays an if/else chain rather than a match.
     if key == key_up {
         key = SDL_SCANCODE_UP;
     } else if key == key_down {
@@ -2314,37 +2664,34 @@ pub unsafe extern "C" fn key_test_paused_menu(mut key: c_int) -> c_int {
         key = SDL_SCANCODE_ESCAPE;
     }
 
-    if key == SDL_SCANCODE_UP {
-        menu_control_y = -1;
-    } else if key == SDL_SCANCODE_DOWN {
-        menu_control_y = 1;
-    } else if key == SDL_SCANCODE_PAGEUP {
-        menu_control_y = -9;
-    } else if key == SDL_SCANCODE_PAGEDOWN {
-        menu_control_y = 9;
-    } else if key == SDL_SCANCODE_HOME {
-        menu_control_y = -1000;
-    } else if key == SDL_SCANCODE_END {
-        menu_control_y = 1000;
-    } else if key == SDL_SCANCODE_RIGHT {
-        menu_control_x = 1;
-    } else if key == SDL_SCANCODE_LEFT {
-        menu_control_x = -1;
-    } else if key == SDL_SCANCODE_RETURN || key == SDL_SCANCODE_SPACE {
-        pressed_enter = true;
-    } else if key == SDL_SCANCODE_ESCAPE || key == SDL_SCANCODE_BACKSPACE {
-        menu_control_back = 1;
-    } else if key == SDL_SCANCODE_F6 || key == (SDL_SCANCODE_F6 | WITH_SHIFT) {
-        if Kid.alive < 0 {
-            need_quick_save = 1;
+    const SHIFT_F6: c_int = SDL_SCANCODE_F6 | WITH_SHIFT;
+    const SHIFT_F9: c_int = SDL_SCANCODE_F9 | WITH_SHIFT;
+    match key {
+        SDL_SCANCODE_UP => menu_control_y = -1,
+        SDL_SCANCODE_DOWN => menu_control_y = 1,
+        SDL_SCANCODE_PAGEUP => menu_control_y = -9,
+        SDL_SCANCODE_PAGEDOWN => menu_control_y = 9,
+        SDL_SCANCODE_HOME => menu_control_y = -1000,
+        SDL_SCANCODE_END => menu_control_y = 1000,
+        SDL_SCANCODE_RIGHT => menu_control_x = 1,
+        SDL_SCANCODE_LEFT => menu_control_x = -1,
+        SDL_SCANCODE_RETURN | SDL_SCANCODE_SPACE => pressed_enter = true,
+        SDL_SCANCODE_ESCAPE | SDL_SCANCODE_BACKSPACE => menu_control_back = 1,
+        SDL_SCANCODE_F6 | SHIFT_F6 => {
+            if Kid.alive < 0 {
+                need_quick_save = 1;
+            }
+            need_close_menu = true;
         }
-        need_close_menu = true;
-    } else if key == SDL_SCANCODE_F9 || key == (SDL_SCANCODE_F9 | WITH_SHIFT) {
-        need_quick_load = 1;
-        need_close_menu = true;
-    } else if key & WITH_CTRL != 0 {
-        need_close_menu = true;
-        return key;
+        SDL_SCANCODE_F9 | SHIFT_F9 => {
+            need_quick_load = 1;
+            need_close_menu = true;
+        }
+        _ if key & WITH_CTRL != 0 => {
+            need_close_menu = true;
+            return key; // Allow Ctrl+R, etc.
+        }
+        _ => {}
     }
     0
 }
@@ -2360,12 +2707,17 @@ extern "C" {
     fn process_rw_read(rw: *mut SDL_RWops, data: *mut c_void, data_size: usize) -> c_int;
 }
 
+/// Reads or writes one global, whichever `process_func` does, and bails out of
+/// the enclosing function on failure. The two `process_ingame_settings_*`
+/// functions are therefore a literal field-order description of `SDLPoP.cfg`,
+/// used for both directions.
 macro_rules! process {
     ($rw:expr, $func:expr, $x:expr) => {
         if $func($rw, addr_of_mut!($x) as *mut c_void, std::mem::size_of_val(&$x)) == 0 { return; }
     }
 }
 
+/// The settings that belong to the player and survive switching mods.
 unsafe fn process_ingame_settings_user_managed(rw: *mut SDL_RWops, process_func: rw_process_func_type) {
     process!(rw, process_func, enable_pause_menu);
     process!(rw, process_func, enable_info_screen);
@@ -2394,6 +2746,8 @@ unsafe fn process_ingame_settings_user_managed(rw: *mut SDL_RWops, process_func:
     process!(rw, process_func, key_esc);
 }
 
+/// The settings a mod is entitled to override, and which are therefore
+/// discarded when the loaded levelset changes.
 unsafe fn process_ingame_settings_mod_managed(rw: *mut SDL_RWops, process_func: rw_process_func_type) {
     process!(rw, process_func, enable_copyprot);
     process!(rw, process_func, enable_quicksave);
@@ -2404,29 +2758,36 @@ unsafe fn process_ingame_settings_mod_managed(rw: *mut SDL_RWops, process_func: 
     process!(rw, process_func, custom_saved);
 }
 
-unsafe fn crc32c(message: *mut u8, mut size: usize) -> u32 {
+/// CRC-32, used only to fingerprint the executable.
+///
+/// Adapted from <https://web.archive.org/web/20190108202303/http://www.hackersdelight.org/hdcodetxt/crc.c.txt>.
+/// The lookup table is built on first use; entry 1 doubles as the "have I built
+/// it yet" flag, which is safe because a real table can never have a zero there.
+unsafe fn crc32c(message: *mut u8, size: usize) -> u32 {
     static mut table: [u32; 256] = [0u32; 256];
     if table[1] == 0 {
         for byte in 0u32..=255 {
             let mut crc = byte;
-            for _ in (0i32..=7).rev() {
+            for _ in 0..8 {
+                // mask is all-ones when the low bit is set, all-zeroes when not.
                 let mask = (0u32).wrapping_sub(crc & 1);
                 crc = (crc >> 1) ^ (0xEDB88320u32 & mask);
             }
             table[byte as usize] = crc;
         }
     }
-    let mut i: usize = 0;
     let mut crc: u32 = 0xFFFFFFFF;
-    while size > 0 {
-        size -= 1;
+    for i in 0..size {
         let byte = *message.add(i) as u32;
         crc = (crc >> 8) ^ table[((crc ^ byte) & 0xFF) as usize];
-        i += 1;
     }
     !crc
 }
 
+/// Fingerprints the running executable, once per run.
+///
+/// `SDLPoP.cfg` records this so that a rebuilt binary invalidates the saved
+/// settings, which saves having to keep the file format backward compatible.
 unsafe fn calculate_exe_crc() {
     if exe_crc == 0 {
         let exe_file = fopen(*g_argv.add(0), cs!("rb"));
@@ -2451,6 +2812,8 @@ unsafe fn calculate_exe_crc() {
     }
 }
 
+/// Writes `SDLPoP.cfg`: the executable's CRC, the levelset name, then the
+/// user-managed and mod-managed settings blocks.
 #[no_mangle]
 pub unsafe extern "C" fn save_ingame_settings() {
     let mut __lf = [0u8; POP_MAX_PATH];
@@ -2471,6 +2834,13 @@ pub unsafe extern "C" fn save_ingame_settings() {
     }
 }
 
+/// Loads `SDLPoP.cfg` over the settings already read from `SDLPoP.ini`.
+///
+/// Two things can stop it. If the INI is the newer file the player has been
+/// hand-editing it, so the INI wins and the CFG is ignored entirely. And if the
+/// CFG's recorded executable CRC does not match this binary, the whole file is
+/// treated as stale. The mod-managed block is additionally skipped when the
+/// levelset name in the file is not the one currently loaded.
 #[no_mangle]
 pub unsafe extern "C" fn load_ingame_settings() {
     let mut __cfg_lf = [0u8; POP_MAX_PATH];
@@ -2479,12 +2849,15 @@ pub unsafe extern "C" fn load_ingame_settings() {
     let ini_filename = locate_file_(cs!("SDLPoP.ini"), __ini_lf.as_mut_ptr() as *mut c_char, POP_MAX_PATH as c_int);
     let mut st_ini: stat_t = std::mem::zeroed();
     let mut st_cfg: stat_t = std::mem::zeroed();
-    if stat(cfg_filename, &mut st_cfg) == 0 && stat(ini_filename, &mut st_ini) == 0 {
-        if st_ini.st_mtim[0] > st_cfg.st_mtim[0]
-            || (st_ini.st_mtim[0] == st_cfg.st_mtim[0] && st_ini.st_mtim[1] > st_cfg.st_mtim[1])
-        {
-            return;
-        }
+    // menu.c:2430 compares st_mtime, which is st_mtim.tv_sec — whole seconds,
+    // no nanosecond tiebreaker. Keeping that: with a tiebreaker, an INI and CFG
+    // written within the same second would resolve differently here than in C.
+    if stat(cfg_filename, &mut st_cfg) == 0
+        && stat(ini_filename, &mut st_ini) == 0
+        && st_ini.st_mtim[0] > st_cfg.st_mtim[0]
+    {
+        // SDLPoP.ini is newer than SDLPoP.cfg: just go with the .ini config.
+        return;
     }
     let renderer = crate::platform::sdl::shared_renderer();
     let rw = renderer.rw_from_file(std::ffi::CStr::from_ptr(cfg_filename), std::ffi::CStr::from_ptr(cs!("rb")));
@@ -2497,7 +2870,8 @@ pub unsafe extern "C" fn load_ingame_settings() {
             let mut cfg_levelset_name = [0u8; 256];
             renderer.rw_read(rw, &mut cfg_levelset_name_length as *mut u8 as *mut c_void, 1, 1);
             renderer.rw_read(rw, cfg_levelset_name.as_mut_ptr() as *mut c_void, cfg_levelset_name_length as usize, 1);
-            process_ingame_settings_user_managed(rw, process_rw_read);
+            process_ingame_settings_user_managed(rw, process_rw_read); // Load the settings.
+            // Discard the mod-managed block when switching to a different mod.
             if strncmp(levelset_name.as_ptr(), cfg_levelset_name.as_ptr() as *const c_char, 256) == 0 {
                 process_ingame_settings_mod_managed(rw, process_rw_read);
             }
@@ -2506,13 +2880,13 @@ pub unsafe extern "C" fn load_ingame_settings() {
     }
 }
 
+/// Unpauses the game after the menu closes: persists any changed settings and,
+/// in fullscreen, hides the cursor again since it was only needed in the menu.
 #[no_mangle]
 pub unsafe extern "C" fn menu_was_closed() {
     is_paused = 0;
     is_menu_shown = 0;
-    escape_key_suppressed =
-        ((key_states[SDL_SCANCODE_BACKSPACE as usize] as u32) & KEYSTATE_HELD) != 0
-        || ((key_states[SDL_SCANCODE_ESCAPE as usize] as u32) & KEYSTATE_HELD) != 0;
+    escape_key_suppressed = menu_open_key_is_held();
     if were_settings_changed {
         save_ingame_settings();
         were_settings_changed = false;
