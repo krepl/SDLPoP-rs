@@ -19,7 +19,6 @@ extern "C" {
     fn realloc(ptr: *mut c_void, size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
     fn memset(s: *mut c_void, c: c_int, n: usize) -> *mut c_void;
-    fn printf(fmt: *const c_char, ...) -> c_int;
 
     // opl3_chip is opaque to us; we only pass a pointer to correctly-sized storage.
     fn OPL3_Reset(chip: *mut c_void, samplerate: u32);
@@ -252,28 +251,28 @@ unsafe fn parse_midi(midi: *mut MidiRawChunk, mut pm: *mut ParsedMidi) -> bool {
     {
         let ct = (*midi).chunk_type;
         if ct != *b"MThd" {
-            printf(b"Warning: Tried to play a midi sound without the 'MThd' chunk header.\n\0".as_ptr() as *const c_char);
+            crate::c_log("Warning: Tried to play a midi sound without the 'MThd' chunk header.\n");
             return false;
         }
     }
     if u32::from_be((*midi).chunk_length) != 6 {
-        printf(
-            b"Warning: Midi file with an invalid header length (expected 6, is %d)\n\0".as_ptr() as *const c_char,
-            u32::from_be((*midi).chunk_length) as c_int,
-        );
+        crate::c_log(&format!(
+            "Warning: Midi file with an invalid header length (expected 6, is {})\n",
+            u32::from_be((*midi).chunk_length) as c_int
+        ));
         return false;
     }
     let midi_format: u16 = u16::from_be((*midi).format);
     if midi_format >= 2 {
-        printf(
-            b"Warning: Unsupported midi format %d (only type 0 or 1 files are supported)\n\0".as_ptr() as *const c_char,
-            midi_format as c_int,
-        );
+        crate::c_log(&format!(
+            "Warning: Unsupported midi format {} (only type 0 or 1 files are supported)\n",
+            midi_format as c_int
+        ));
         return false;
     }
     let num_tracks: u16 = u16::from_be((*midi).num_tracks);
     if num_tracks < 1 {
-        printf(b"Warning: Midi sound does not have any tracks.\n\0".as_ptr() as *const c_char);
+        crate::c_log("Warning: Midi sound does not have any tracks.\n");
         return false;
     }
     let mut division: c_int = u16::from_be((*midi).time_division) as c_int;
@@ -294,7 +293,7 @@ unsafe fn parse_midi(midi: *mut MidiRawChunk, mut pm: *mut ParsedMidi) -> bool {
         {
             let ct = (*track_chunk).chunk_type;
             if ct != *b"MTrk" {
-                printf(b"Warning: midi track without 'MTrk' chunk header.\n\0".as_ptr() as *const c_char);
+                crate::c_log("Warning: midi track without 'MTrk' chunk header.\n");
                 free((*pm).tracks as *mut c_void);
                 memset(addr_of_mut!(pm) as *mut c_void, 0, core::mem::size_of::<*mut ParsedMidi>());
                 return false;
@@ -309,7 +308,7 @@ unsafe fn parse_midi(midi: *mut MidiRawChunk, mut pm: *mut ParsedMidi) -> bool {
             let new_track_events =
                 realloc((*track).events as *mut c_void, (*track).num_events as usize * core::mem::size_of::<MidiEvent>());
             if new_track_events.is_null() {
-                printf(b"parse_midi: realloc failed!\0".as_ptr() as *const c_char);
+                crate::c_log("parse_midi: realloc failed!");
                 quit(1);
             }
             (*track).events = new_track_events as *mut MidiEvent;
@@ -361,12 +360,12 @@ unsafe fn parse_midi(midi: *mut MidiRawChunk, mut pm: *mut ParsedMidi) -> bool {
                             buffer_position = buffer_position.add((*event).body.meta.length as usize);
                         }
                         _ => {
-                            printf(
-                                b"Warning: unknown midi event type 0x%02x (track %d, event %d)\n\0".as_ptr() as *const c_char,
+                            crate::c_log(&format!(
+                                "Warning: unknown midi event type 0x{:02x} (track {}, event {})\n",
                                 (*event).event_type as c_int,
                                 track_index,
-                                (*track).num_events - 1,
-                            );
+                                (*track).num_events - 1
+                            ));
                             free_parsed_midi(pm);
                             return false;
                         }
@@ -377,10 +376,10 @@ unsafe fn parse_midi(midi: *mut MidiRawChunk, mut pm: *mut ParsedMidi) -> bool {
                 break;
             }
             if buffer_position >= next_track_chunk as *mut u8 {
-                printf(
-                    b"Error parsing MIDI events (track %d)\n\0".as_ptr() as *const c_char,
-                    track_index,
-                );
+                crate::c_log(&format!(
+                    "Error parsing MIDI events (track {})\n",
+                    track_index
+                ));
                 free_parsed_midi(pm);
                 return false;
             }
@@ -520,7 +519,7 @@ unsafe fn midi_note_on(event: *mut MidiEvent) {
             carrier_volume -= 64;
             opl_write_reg_masked(0x40u16 + opl_reg_pair_offset(voice as u8, 1), carrier_volume as u8, 0x3F);
         } else {
-            printf(b"skipping note, not enough OPL voices\n\0".as_ptr() as *const c_char);
+            crate::c_log("skipping note, not enough OPL voices\n");
         }
     }
 }
@@ -665,12 +664,12 @@ pub unsafe extern "C" fn midi_callback(_userdata: *mut c_void, stream: *mut u8, 
                     i += 1;
                 }
                 if first_next_pause_tick == i64::MAX {
-                    printf(b"MIDI: Couldn't figure out how long to delay (this is a bug)\n\0".as_ptr() as *const c_char);
+                    crate::c_log("MIDI: Couldn't figure out how long to delay (this is a bug)\n");
                     quit(1);
                 }
                 ticks_to_next_pause = (first_next_pause_tick - midi_current_pos) as c_int;
                 if ticks_to_next_pause < 0 {
-                    printf(b"Tried to delay a negative amount of time (this is a bug)\n\0".as_ptr() as *const c_char);
+                    crate::c_log("Tried to delay a negative amount of time (this is a bug)\n");
                     quit(1);
                 }
             }
@@ -706,13 +705,13 @@ pub unsafe extern "C" fn init_midi() {
     let dathandle: *mut dat_type = open_dat(b"PRINCE.DAT\0".as_ptr() as *const c_char, 0);
     instruments_data = load_from_opendats_alloc(1, b"bin\0".as_ptr() as *const c_char, null_mut(), &mut size);
     if instruments_data.is_null() {
-        printf(b"Missing MIDI instruments data (resource 1)\n\0".as_ptr() as *const c_char);
+        crate::c_log("Missing MIDI instruments data (resource 1)\n");
     } else {
         num_instruments = *(instruments_data as *mut u8) as c_int;
         if size == 1 + num_instruments * core::mem::size_of::<InstrumentT>() as c_int {
             instruments = (instruments_data as *mut u8).add(1) as *mut InstrumentT;
         } else {
-            printf(b"MIDI instruments data (resource 1) is not the expected size\n\0".as_ptr() as *const c_char);
+            crate::c_log("MIDI instruments data (resource 1) is not the expected size\n");
             num_instruments = 1;
         }
     }
@@ -736,7 +735,7 @@ pub unsafe extern "C" fn play_midi_sound(buffer: *mut sound_buffer_type) {
     // (midi_raw_chunk_type*) &buffer->midi : sound_buffer_type is packed { byte type; union {...}; }
     let midi: *mut MidiRawChunk = (buffer as *mut u8).add(1) as *mut MidiRawChunk;
     if !parse_midi(midi, addr_of_mut!(parsed_midi)) {
-        printf(b"Error reading MIDI music\n\0".as_ptr() as *const c_char);
+        crate::c_log("Error reading MIDI music\n");
         return;
     }
 
