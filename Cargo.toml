@@ -29,6 +29,6 @@ web-sys = { version = "0.3", features = [
     "Window", "Document", "HtmlCanvasElement", "CanvasRenderingContext2d",
     "ImageData", "AudioContext", "AudioBuffer", "AudioBufferSourceNode",
     "ScriptProcessorNode", "AudioContextOptions", "Performance",
-    "Storage", "KeyboardEvent", "MouseEvent",
+    "Storage", "KeyboardEvent", "MouseEvent", "console",
 ] }
 console_error_panic_hook = "0.1"
