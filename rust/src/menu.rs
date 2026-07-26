@@ -85,7 +85,6 @@ use crate::platform::{InputSource, Renderer};
 // SDL / libc externs not present in bindings.rs
 // ============================================================================
 extern "C" {
-    fn snprintf(s: *mut c_char, n: usize, format: *const c_char, ...) -> c_int;
     fn strlen(s: *const c_char) -> usize;
     fn strncpy(dst: *mut c_char, src: *const c_char, n: usize) -> *mut c_char;
     fn strnlen(s: *const c_char, maxlen: usize) -> usize;
@@ -93,8 +92,6 @@ extern "C" {
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
     fn ftell(stream: *mut FILE) -> std::os::raw::c_long;
-    fn fprintf(stream: *mut FILE, fmt: *const c_char, ...) -> c_int;
-    static mut stderr: *mut FILE;
 
     // glibc stat (matches seg009.rs declaration).
     fn stat(path: *const c_char, buf: *mut stat_t) -> c_int;
@@ -1869,10 +1866,10 @@ unsafe fn print_setting_value_(setting: *mut setting_type, value: c_int, buffer:
         );
         if measured_in_ticks {
             let seconds = (value as f32) * (1.0f32 / 12.0f32);
-            // Varargs promote float to double, so pass an f64 as C does.
-            snprintf(buffer, buffer_size, cs!("%.2f"), seconds as f64);
+            // C promotes the float to double before formatting, so format an f64.
+            crate::write_c_str_truncating(buffer, buffer_size, &format!("{:.2}", seconds as f64));
         } else {
-            snprintf(buffer, buffer_size, cs!("%d"), value);
+            crate::write_c_str_truncating(buffer, buffer_size, &format!("{}", value));
         }
     }
     buffer
@@ -2037,7 +2034,9 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
         // Only the label is drawn here; the rebinding itself is handle_setting's.
         let value = get_setting_value(setting);
         let mut value_text = [0 as c_char; 256];
-        snprintf(value_text.as_mut_ptr(), 256, cs!("%s (%d)"), crate::platform::sdl::shared_renderer().get_scancode_name(value as u32), value);
+        let scancode_name = crate::platform::sdl::shared_renderer().get_scancode_name(value as u32);
+        let scancode_name = std::ffi::CStr::from_ptr(scancode_name).to_string_lossy();
+        crate::write_c_str_truncating(value_text.as_mut_ptr(), 256, &format!("{} ({})", scancode_name, value));
         show_text_with_color(&text_rect, 1, -1, value_text.as_ptr(), selected_color);
     } else {
         // Show text only. Such a row is a button that opens a dialog; a
@@ -2122,7 +2121,7 @@ unsafe fn draw_settings_area(settings_area: *mut settings_area_type) {
     // is being edited, and start drawing the rows slightly lower.
     let start_y_offset: c_int = if active_settings_subsection == SETTINGS_MENU_LEVEL_CUSTOMIZATION {
         let mut level_text = [0 as c_char; 16];
-        snprintf(level_text.as_mut_ptr(), 16, cs!("LEVEL %d"), menu_current_level as c_int);
+        crate::write_c_str_truncating(level_text.as_mut_ptr(), 16, &format!("LEVEL {}", menu_current_level as c_int));
         show_text_with_color(&settings_area_rect, halign_center, valign_top, level_text.as_ptr(), colorids_color_15_brightwhite as c_int);
         15
     } else {
@@ -2421,7 +2420,7 @@ unsafe fn draw_select_level_dialog() {
             clear_kbd_buf();
             let input_rect = rect_type { top: 104, left: 64, bottom: 118, right: 256 };
             let mut level_text = [0 as c_char; 8];
-            snprintf(level_text.as_mut_ptr(), 8, cs!("%d"), menu_current_level as c_int);
+            crate::write_c_str_truncating(level_text.as_mut_ptr(), 8, &format!("{}", menu_current_level as c_int));
             show_text_with_color(&input_rect, halign_center, valign_middle, level_text.as_ptr(), colorids_color_15_brightwhite as c_int);
             draw_image_with_blending(arrowhead_right_image, 175, input_rect.top as c_int + 3);
             draw_image_with_blending(arrowhead_left_image, 145 - 3, input_rect.top as c_int + 3);
@@ -2799,7 +2798,7 @@ unsafe fn calculate_exe_crc() {
                 let buffer = malloc(size) as *mut u8;
                 let bytes = fread(buffer as *mut c_void, 1, size, exe_file);
                 let actual_size = if bytes != size {
-                    fprintf(stderr, cs!("exec changed size during CRC32!?\n"));
+                    crate::c_log_err("exec changed size during CRC32!?\n");
                     bytes
                 } else {
                     size
