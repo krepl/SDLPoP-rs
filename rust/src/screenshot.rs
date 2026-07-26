@@ -51,12 +51,14 @@ use super::*;
 use crate::platform::Renderer;
 
 extern "C" {
-    fn snprintf(buf: *mut c_char, size: usize, fmt: *const c_char, ...) -> c_int;
-    fn printf(fmt: *const c_char, ...) -> c_int;
-    fn fprintf(stream: *mut FILE, fmt: *const c_char, ...) -> c_int;
     fn mkdir(path: *const c_char, mode: c_uint) -> c_int;
     fn exit(code: c_int) -> !;
-    static mut stderr: *mut FILE;
+}
+
+/// Reads a NUL-terminated C string for interpolation into a `format!` — the
+/// stand-in for a `%s` argument in the C source.
+unsafe fn c_str(p: *const c_char) -> String {
+    std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
 }
 
 // File-scope globals (defined in screenshot.c, not exported via data.h).
@@ -132,13 +134,9 @@ fn rect(top: c_int, left: c_int, bottom: c_int, right: c_int) -> rect_type {
 /// the result did not fit. `func` stands in for C's `__func__`.
 macro_rules! snprintf_check {
     ($func:literal, $dst:expr, $size:expr, $($arg:tt)*) => {{
-        let len = snprintf($dst, $size as usize, $($arg)*);
+        let len = crate::write_c_str_truncating($dst, $size as usize, &format!($($arg)*));
         if len < 0 || len >= $size as c_int {
-            fprintf(
-                stderr,
-                b"%s: buffer truncation detected!\n\0".as_ptr() as *const c_char,
-                concat!($func, "\0").as_ptr() as *const c_char,
-            );
+            crate::c_log_err(&format!("{}: buffer truncation detected!\n", $func));
             quit(2);
         }
     }};
@@ -162,8 +160,8 @@ unsafe fn make_screenshot_filename() {
         "make_screenshot_filename",
         screenshots_folder.as_mut_ptr(),
         POP_MAX_PATH,
-        b"%s\0".as_ptr() as *const c_char,
-        located
+        "{}",
+        c_str(located)
     );
     // Create the folder if it doesn't exist yet:
     mkdir(screenshots_folder.as_ptr() as *const c_char, 0o700);
@@ -173,8 +171,8 @@ unsafe fn make_screenshot_filename() {
             "make_screenshot_filename",
             screenshot_filename.as_mut_ptr(),
             POP_MAX_PATH,
-            b"%s/screenshot_%03d.png\0".as_ptr() as *const c_char,
-            screenshots_folder.as_ptr(),
+            "{}/screenshot_{:03}.png",
+            c_str(screenshots_folder.as_ptr()),
             screenshot_index
         );
         if !file_exists(screenshot_filename.as_ptr() as *const c_char) {
@@ -189,29 +187,27 @@ unsafe fn make_screenshot_filename() {
 unsafe fn show_result(result: c_int, what: *const c_char) {
     let mut sprintf_temp = [0 as c_char; 100];
     if result == 0 {
-        printf(
-            b"Saved %s to \"%s\".\n\0".as_ptr() as *const c_char,
-            what,
-            screenshot_filename.as_ptr(),
-        );
-        snprintf(
+        crate::c_log(&format!(
+            "Saved {} to \"{}\".\n",
+            c_str(what),
+            c_str(screenshot_filename.as_ptr()),
+        ));
+        crate::write_c_str_truncating(
             sprintf_temp.as_mut_ptr(),
             100,
-            b"Saved %s\0".as_ptr() as *const c_char,
-            what,
+            &format!("Saved {}", c_str(what)),
         );
     } else {
-        printf(
-            b"Could not save %s to \"%s\". Error: %s\n\0".as_ptr() as *const c_char,
-            what,
-            screenshot_filename.as_ptr(),
-            crate::platform::sdl::shared_renderer().get_error(),
-        );
-        snprintf(
+        crate::c_log(&format!(
+            "Could not save {} to \"{}\". Error: {}\n",
+            c_str(what),
+            c_str(screenshot_filename.as_ptr()),
+            c_str(crate::platform::sdl::shared_renderer().get_error()),
+        ));
+        crate::write_c_str_truncating(
             sprintf_temp.as_mut_ptr(),
             100,
-            b"Could not save %s\0".as_ptr() as *const c_char,
-            what,
+            &format!("Could not save {}", c_str(what)),
         );
     }
     display_text_bottom(sprintf_temp.as_ptr());
@@ -279,11 +275,10 @@ unsafe fn switch_to_room(room: c_int) {
 /// length `snprintf` *would* have written, so it can end up past the text that
 /// actually fits; callers guard the next iteration against the buffer size.
 unsafe fn append_event_number(events: &mut [c_char], events_pos: &mut c_int, event: c_int) -> bool {
-    let len = snprintf(
+    let len = crate::write_c_str_truncating(
         events.as_mut_ptr().add(*events_pos as usize),
         events.len() - *events_pos as usize,
-        b"%d \0".as_ptr() as *const c_char,
-        event + EVENT_OFFSET,
+        &format!("{} ", event + EVENT_OFFSET),
     );
     if len < 0 {
         return false; // snprintf might return -1 if the buffer is too small.
@@ -439,11 +434,10 @@ unsafe fn draw_extras() {
                 pot_types[potion_type as usize]
             } else {
                 // Unknown potion: just print the number.
-                snprintf(
+                crate::write_c_str_truncating(
                     temp_text.as_mut_ptr(),
                     4,
-                    b"%d\0".as_ptr() as *const c_char,
-                    potion_type,
+                    &format!("{}", potion_type),
                 );
                 (
                     colorids_color_15_brightwhite as c_int,
@@ -528,12 +522,7 @@ unsafe fn draw_extras() {
             // as the size, `number` being an unused local. Reproduced as-is: the
             // effect is that the number is truncated to three digits, and it also
             // clobbers the start of whatever the reverse-lookup left in `events`.
-            snprintf(
-                events.as_mut_ptr(),
-                4,
-                b"%d\0".as_ptr() as *const c_char,
-                modifier,
-            );
+            crate::write_c_str_truncating(events.as_mut_ptr(), 4, &format!("{}", modifier));
             let number_rect = rect(y, x + 32, y + 63, x + 64);
             show_text_with_color(
                 &number_rect,
@@ -712,11 +701,10 @@ unsafe fn draw_extras() {
                     let center_y = 96 + dy[direction] * 85;
                     let text_rect = rect(center_y - 6, center_x - 10, center_y + 6, center_x + 10);
                     let mut room_num = [0 as c_char; 4];
-                    snprintf(
+                    crate::write_c_str_truncating(
                         room_num.as_mut_ptr(),
                         4,
-                        b"%d\0".as_ptr() as *const c_char,
-                        other_room,
+                        &format!("{}", other_room),
                     );
                     method_5_rect(&text_rect, 0, colorids_color_4_red as byte);
                     show_text_with_color(
@@ -769,12 +757,10 @@ unsafe fn draw_extras() {
 
             let event_rect = rect(y + 2, screen_x - 16 - 10, y + 63, screen_x + 16 + 10);
             let mut guard_info = [0 as c_char; 20];
-            snprintf(
+            crate::write_c_str_truncating(
                 guard_info.as_mut_ptr(),
                 20,
-                b"s%d h%d\0".as_ptr() as *const c_char,
-                guard_skill as c_int,
-                guardhp_max as c_int,
+                &format!("s{} h{}", guard_skill as c_int, guardhp_max as c_int),
             );
             show_text_with_color(
                 &event_rect,
@@ -789,12 +775,7 @@ unsafe fn draw_extras() {
 
     // room number
     let mut room_num = [0 as c_char; 6];
-    snprintf(
-        room_num.as_mut_ptr(),
-        6,
-        b"%d\0".as_ptr() as *const c_char,
-        drawn_room as c_int,
-    );
+    crate::write_c_str_truncating(room_num.as_mut_ptr(), 6, &format!("{}", drawn_room as c_int));
     let text_rect = rect(10, 10, 21, 30);
     method_5_rect(&text_rect, 0, colorids_color_8_darkgray as byte);
     show_text_with_color(
@@ -860,12 +841,9 @@ pub unsafe extern "C" fn save_level_screenshot(want_extras: bool) {
                 xpos[other_room as usize] = xpos[room as usize] + dx[direction];
                 ypos[other_room as usize] = ypos[room as usize] + dy[direction];
                 processed[other_room as usize] = true;
-                printf(
-                    b"Adding room %d to map.\n\0".as_ptr() as *const c_char,
-                    other_room,
-                );
+                crate::c_log(&format!("Adding room {} to map.\n", other_room));
                 if queue_end >= NUMBER_OF_ROOMS {
-                    printf(b"Queue overflow!\n\0".as_ptr() as *const c_char);
+                    crate::c_log("Queue overflow!\n");
                     break;
                 }
                 queue[queue_end as usize] = other_room;
@@ -906,22 +884,18 @@ pub unsafe extern "C" fn save_level_screenshot(want_extras: bool) {
             let x = xpos[room as usize] - min_x;
             if !(0..MAX_MAP_SIZE).contains(&x) || !(0..MAX_MAP_SIZE).contains(&y) {
                 // Probably impossible...
-                printf(
-                    b"Warning: room %d was mapped outside the map: x = %d, y = %d.\n\0".as_ptr()
-                        as *const c_char,
-                    room,
-                    x,
-                    y,
-                );
+                crate::c_log(&format!(
+                    "Warning: room {} was mapped outside the map: x = {}, y = {}.\n",
+                    room, x, y,
+                ));
                 break 'again;
             }
             if map[y as usize][x as usize] != 0 {
-                printf(
-                    b"Warning: room %d was mapped to the same place as room %d!\n\0".as_ptr()
-                        as *const c_char,
+                crate::c_log(&format!(
+                    "Warning: room {} was mapped to the same place as room {}!\n",
                     room,
                     map[y as usize][x as usize],
-                );
+                ));
                 // Try to find some other place for this room:
                 // Put this room to the bottom of the map.
                 xpos[room as usize] = clash_x;
@@ -1060,9 +1034,8 @@ pub unsafe extern "C" fn init_screenshot() {
     if !screenshot_param.is_null() {
         // We require megahit+levelnumber.
         if start_level < 0 {
-            printf(
-                b"You must supply a level number if you want to make an automatic screenshot!\n\0"
-                    .as_ptr() as *const c_char,
+            crate::c_log(
+                "You must supply a level number if you want to make an automatic screenshot!\n",
             );
             exit(1);
         } else {
