@@ -432,6 +432,35 @@ pub unsafe extern "C" fn fileno(_stream: *mut c_void) -> c_int {
     -1
 }
 
+/// Generic in-place sort driven by a C comparator callback, operating on raw
+/// `size`-byte elements (insertion sort -- simple and correct; `qsort`'s only caller in
+/// this codebase sorts a small in-memory list, so this isn't a hot path).
+#[no_mangle]
+pub unsafe extern "C" fn qsort(
+    base: *mut c_void,
+    nmemb: usize,
+    size: usize,
+    compar: Option<unsafe extern "C" fn(*const c_void, *const c_void) -> c_int>,
+) {
+    let Some(compar) = compar else { return };
+    let base = base as *mut u8;
+    let mut tmp = vec![0u8; size];
+    for i in 1..nmemb {
+        let item = base.add(i * size);
+        std::ptr::copy_nonoverlapping(item, tmp.as_mut_ptr(), size);
+        let mut j = i;
+        while j > 0 {
+            let prev = base.add((j - 1) * size);
+            if compar(prev as *const c_void, tmp.as_ptr() as *const c_void) <= 0 {
+                break;
+            }
+            std::ptr::copy_nonoverlapping(prev, base.add(j * size), size);
+            j -= 1;
+        }
+        std::ptr::copy_nonoverlapping(tmp.as_ptr(), base.add(j * size), size);
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn __errno_location() -> *mut c_int {
     static mut ERRNO: c_int = 0;
