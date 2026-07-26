@@ -106,12 +106,8 @@ extern "C" {
     fn strcasecmp(a: *const c_char, b: *const c_char) -> c_int;
     fn strncasecmp(a: *const c_char, b: *const c_char, n: usize) -> c_int;
     fn strerror(errnum: c_int) -> *mut c_char;
-    fn snprintf(buf: *mut c_char, size: usize, fmt: *const c_char, ...) -> c_int;
-    fn printf(fmt: *const c_char, ...) -> c_int;
-    fn fprintf(stream: *mut FILE, fmt: *const c_char, ...) -> c_int;
-    fn puts(s: *const c_char) -> c_int;
-    fn fscanf(stream: *mut FILE, fmt: *const c_char, ...) -> c_int;
     fn feof(stream: *mut FILE) -> c_int;
+    fn fgetc(stream: *mut FILE) -> c_int;
     fn fileno(stream: *mut FILE) -> c_int;
     fn time(t: *mut c_long) -> c_long;
     fn exit(code: c_int) -> !;
@@ -119,7 +115,6 @@ extern "C" {
     fn stat(path: *const c_char, buf: *mut stat_t) -> c_int;
     fn fstat(fd: c_int, buf: *mut stat_t) -> c_int;
     fn __errno_location() -> *mut c_int;
-    static mut stderr: *mut FILE;
     // POSIX directory listing
     fn opendir(name: *const c_char) -> *mut c_void;
     fn readdir(dirp: *mut c_void) -> *mut dirent;
@@ -579,12 +574,37 @@ fn MIN_i(a: c_int, b: c_int) -> c_int { if a < b { a } else { b } }
 #[inline]
 fn MAX_i(a: c_int, b: c_int) -> c_int { if a > b { a } else { b } }
 
+/// Renders a NUL-terminated C string the way `printf("%s", p)` would, so the
+/// `format!` calls that replaced this file's `printf`/`snprintf` calls produce
+/// byte-identical output -- including glibc's `(null)` for a null pointer.
+#[inline]
+unsafe fn cstr(p: *const c_char) -> String {
+    if p.is_null() {
+        "(null)".to_string()
+    } else {
+        std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+    }
+}
+
+/// `EOF`, and a sentinel distinct from it for "no pushed-back character" --
+/// both used by the hand-rolled `fscanf` stand-in in [`load_sound_names`].
+const EOF_CH: c_int = -1;
+const NO_PENDING: c_int = -2;
+
+/// C's `isspace` for the default locale, which is what `scanf`'s whitespace
+/// directives use. (Rust's `is_ascii_whitespace` omits the vertical tab.)
+#[inline]
+fn is_c_space(c: c_int) -> bool {
+    matches!(c as u8, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
+}
+
 // snprintf_check macro (from common.h). On truncation: print and quit(2).
+// Takes Rust `format!` arguments rather than a C format string + varargs.
 macro_rules! snprintf_check {
-    ($dst:expr, $size:expr, $fmt:expr $(, $arg:expr)* $(,)?) => {{
-        let __len = snprintf($dst, $size as usize, $fmt $(, $arg)*);
+    ($dst:expr, $size:expr, $($arg:tt)*) => {{
+        let __len = crate::write_c_str_truncating($dst, $size as usize, &format!($($arg)*));
         if __len < 0 || __len >= ($size as c_int) {
-            fprintf(stderr, cs!("%s: buffer truncation detected!\n"), cs!("seg009"));
+            crate::c_log_err("seg009: buffer truncation detected!\n");
             quit(2);
         }
     }};
@@ -714,7 +734,7 @@ include!("seg009_hc_font_data.rs");
 #[no_mangle]
 pub unsafe extern "C" fn sdlperror(header: *const c_char) {
     let error = crate::platform::sdl::shared_renderer().get_error();
-    printf(cs!("%s: %s\n"), header, error);
+    crate::c_log(&format!("{}: {}\n", cstr(header), cstr(error)));
 }
 
 /// Fills `exe_dir` with the directory part of `argv[0]`; idempotent.
@@ -728,8 +748,8 @@ unsafe fn find_exe_dir() {
     snprintf_check!(
         exe_dir.as_mut_ptr(),
         core::mem::size_of_val(&exe_dir),
-        cs!("%s"),
-        *g_argv.offset(0)
+        "{}",
+        cstr(*g_argv.offset(0))
     );
     let mut last_slash: *mut c_char = null_mut();
     let mut pos = exe_dir.as_mut_ptr();
@@ -757,7 +777,7 @@ unsafe fn find_home_dir() {
         return;
     }
     let home_path = getenv(cs!("HOME"));
-    snprintf_check!(home_dir.as_mut_ptr(), POP_MAX_PATH - 1, cs!("%s/.%s"), home_path, cs!("SDLPoP"));
+    snprintf_check!(home_dir.as_mut_ptr(), POP_MAX_PATH - 1, "{}/.{}", cstr(home_path), "SDLPoP");
     if file_exists(home_dir.as_ptr()) {
         found_home_dir = true;
     }
@@ -768,7 +788,7 @@ unsafe fn find_share_dir() {
     if found_share_dir {
         return;
     }
-    snprintf_check!(share_dir.as_mut_ptr(), POP_MAX_PATH - 1, cs!("%s/%s"), cs!("/usr/share"), cs!("SDLPoP"));
+    snprintf_check!(share_dir.as_mut_ptr(), POP_MAX_PATH - 1, "{}/{}", "/usr/share", "SDLPoP");
     if file_exists(share_dir.as_ptr()) {
         found_share_dir = true;
     }
@@ -799,9 +819,14 @@ unsafe fn search_dirs() -> [*mut c_char; 3] {
 /// If nothing matches, `dst` is left holding the *last* candidate tried
 /// (`exe_dir`), which is what makes the caller's subsequent `fopen` fail with a
 /// useful path in the error message rather than with an empty string.
-unsafe fn find_first_file_match(dst: *mut c_char, size: c_int, format: *const c_char, filename: *const c_char) -> *const c_char {
+///
+/// `middle` is what C passed as a format string: the two call sites use
+/// `"%s/%s"` and `"%s/data/%s"`, i.e. the only variable part is the text
+/// between the directory and the filename, so it is passed as that text (`"/"`
+/// or `"/data/"`) instead of a `printf` format.
+unsafe fn find_first_file_match(dst: *mut c_char, size: c_int, middle: &str, filename: *const c_char) -> *const c_char {
     for dir in search_dirs() {
-        snprintf_check!(dst, size, format, dir, filename);
+        snprintf_check!(dst, size, "{}{}{}", cstr(dir), middle, cstr(filename));
         if file_exists(dst) {
             break;
         }
@@ -822,7 +847,7 @@ pub unsafe extern "C" fn locate_save_file_(filename: *const c_char, dst: *mut c_
         let mut path_stat: stat_t = core::mem::zeroed();
         let result = stat(dir, &mut path_stat);
         if result == 0 && S_ISDIR(path_stat.st_mode) && access(dir, W_OK) == 0 {
-            snprintf_check!(dst, size, cs!("%s/%s"), dir, filename);
+            snprintf_check!(dst, size, "{}/{}", cstr(dir), cstr(filename));
             break;
         }
     }
@@ -840,7 +865,7 @@ pub unsafe extern "C" fn locate_file_(filename: *const c_char, path_buffer: *mut
     if file_exists(filename) {
         filename
     } else {
-        find_first_file_match(path_buffer, buffer_size, cs!("%s/%s"), filename)
+        find_first_file_match(path_buffer, buffer_size, "/", filename)
     }
 }
 
@@ -1055,9 +1080,9 @@ unsafe fn open_dat_from_root_or_data_dir(filename: *const c_char) -> *mut FILE {
     // if failed, try if the DAT file can be opened in the data/ directory, instead of the main folder
     if fp.is_null() {
         let mut data_path = [0 as c_char; POP_MAX_PATH];
-        snprintf_check!(data_path.as_mut_ptr(), POP_MAX_PATH, cs!("data/%s"), filename);
+        snprintf_check!(data_path.as_mut_ptr(), POP_MAX_PATH, "data/{}", cstr(filename));
         if !file_exists(data_path.as_ptr()) {
-            find_first_file_match(data_path.as_mut_ptr(), POP_MAX_PATH as c_int, cs!("%s/data/%s"), filename);
+            find_first_file_match(data_path.as_mut_ptr(), POP_MAX_PATH as c_int, "/data/", filename);
         }
         // verify that this is a regular file and not a directory (otherwise, don't open)
         let mut path_stat: stat_t = core::mem::zeroed();
@@ -1098,7 +1123,7 @@ pub unsafe extern "C" fn open_dat(filename: *const c_char, mut optional: c_int) 
         if !skip_mod_data_files && !(always_use_original_graphics != 0 && optional == 'G' as c_int) {
             // before checking the root directory, first try mods/MODNAME/
             let mut filename_mod = [0 as c_char; POP_MAX_PATH];
-            snprintf_check!(filename_mod.as_mut_ptr(), POP_MAX_PATH, cs!("%s/%s"), mod_data_path.as_ptr(), filename);
+            snprintf_check!(filename_mod.as_mut_ptr(), POP_MAX_PATH, "{}/{}", cstr(mod_data_path.as_ptr()), cstr(filename));
             fp = fopen(filename_mod.as_ptr(), cs!("rb"));
         }
         if fp.is_null() && !skip_normal_data_files {
@@ -1107,7 +1132,7 @@ pub unsafe extern "C" fn open_dat(filename: *const c_char, mut optional: c_int) 
     }
 
     let pointer = calloc(1, core::mem::size_of::<dat_type>()) as *mut dat_type;
-    snprintf_check!(core::ptr::addr_of_mut!((*pointer).filename) as *mut c_char, 256, cs!("%s"), filename);
+    snprintf_check!(core::ptr::addr_of_mut!((*pointer).filename) as *mut c_char, 256, "{}", cstr(filename));
     (*pointer).next_dat = dat_chain_ptr;
     dat_chain_ptr = pointer;
 
@@ -1167,14 +1192,14 @@ unsafe fn complain_if_no_fallback_folder(pointer: *mut dat_type, filename: *cons
         filename_no_ext[len - 4] = 0;
     }
     let mut foldername = [0 as c_char; POP_MAX_PATH];
-    snprintf_check!(foldername.as_mut_ptr(), POP_MAX_PATH, cs!("data/%s"), filename_no_ext.as_ptr());
+    snprintf_check!(foldername.as_mut_ptr(), POP_MAX_PATH, "data/{}", cstr(filename_no_ext.as_ptr()));
     let mut located = [0 as c_char; POP_MAX_PATH];
     let data_path = locate_file_(foldername.as_ptr(), located.as_mut_ptr(), POP_MAX_PATH as c_int);
     let mut path_stat: stat_t = core::mem::zeroed();
     let result = stat(data_path, &mut path_stat);
     if result != 0 || !S_ISDIR(path_stat.st_mode) {
         let mut error_message = [0 as c_char; 256];
-        snprintf_check!(error_message.as_mut_ptr(), 256, cs!("Cannot find a required data file: %s or folder: %s\nPress any key to quit."), filename, foldername.as_ptr());
+        snprintf_check!(error_message.as_mut_ptr(), 256, "Cannot find a required data file: {} or folder: {}\nPress any key to quit.", cstr(filename), cstr(foldername.as_ptr()));
         // otherwise showmessage will crash
         if !onscreen_surface_.is_null() && !copyprot_dialog.is_null() {
             showmessage(error_message.as_mut_ptr(), 1, key_test_quit as *mut c_void);
@@ -1213,13 +1238,13 @@ pub unsafe extern "C" fn set_loaded_palette(palette_ptr: *mut dat_pal_type) {
 pub unsafe extern "C" fn load_sprites_from_file(resource: c_int, palette_bits: c_int, quit_on_error: c_int) -> *mut chtab_type {
     let shpl = load_from_opendats_alloc(resource, cs!("pal"), null_mut(), null_mut()) as *mut dat_shpl_type;
     if shpl.is_null() {
-        printf(cs!("Can't load sprites from resource %d.\n"), resource);
+        crate::c_log(&format!("Can't load sprites from resource {}.\n", resource));
         if quit_on_error != 0 {
             // Unfortunately we don't know at this point which data file is missing, so we use the
             // name of the last opened DAT file. It's also possible that the DAT file exists and it
             // just doesn't contain the needed resource.
             let mut error_message = [0 as c_char; 256];
-            snprintf_check!(error_message.as_mut_ptr(), 256, cs!("Can't load sprites from resource %d.\nThe last opened data file is: %s\nPress any key to quit."), resource, core::ptr::addr_of!((*dat_chain_ptr).filename) as *const c_char);
+            snprintf_check!(error_message.as_mut_ptr(), 256, "Can't load sprites from resource {}.\nThe last opened data file is: {}\nPress any key to quit.", resource, cstr(core::ptr::addr_of!((*dat_chain_ptr).filename) as *const c_char));
             showmessage(error_message.as_mut_ptr(), 1, key_test_quit as *mut c_void);
             quit(1);
         }
@@ -1671,7 +1696,7 @@ pub unsafe extern "C" fn load_image(resource_id: c_int, pal: *mut dat_pal_type) 
             }
             let image = crate::platform::sdl::shared_renderer().img_load_rw(rw, 0);
             if image.is_null() {
-                printf(cs!("load_image: IMG_Load_RW: %s\n"), IMG_GetError());
+                crate::c_log(&format!("load_image: IMG_Load_RW: {}\n", cstr(IMG_GetError())));
             }
             if crate::platform::sdl::shared_renderer().rw_close(rw) != 0 {
                 sdlperror(cs!("load_image: SDL_RWclose"));
@@ -2075,7 +2100,7 @@ unsafe fn draw_text(rect_ptr: *const rect_type, x_align: c_int, y_align: c_int, 
             break;
         }
         if (num_lines as usize) >= MAX_LINES {
-            printf(cs!("draw_text(): Too many lines!\n"));
+            crate::c_log("draw_text(): Too many lines!\n");
             quit(1);
         }
         line_starts[num_lines as usize] = line_start;
@@ -2331,7 +2356,7 @@ pub unsafe extern "C" fn dialog_method_2_frame(dialog: *mut dialog_type) {
 #[no_mangle]
 pub unsafe extern "C" fn show_dialog(text: *const c_char) {
     let mut string = [0 as c_char; 256];
-    snprintf(string.as_mut_ptr(), 256, cs!("%s\n\nPress any key to continue."), text);
+    crate::write_c_str_truncating(string.as_mut_ptr(), 256, &format!("{}\n\nPress any key to continue.", cstr(text)));
     showmessage(string.as_mut_ptr(), 1, key_test_quit as *mut c_void);
 }
 
@@ -2880,7 +2905,7 @@ pub unsafe extern "C" fn init_digi() {
     let version = SDL_version { major: vmajor, minor: vminor, patch: vpatch };
     if version.major <= 2 && version.minor <= 0 && version.patch <= 3 {
         desired_audioformat = AUDIO_U8;
-        printf(cs!("Your SDL.dll is older than 2.0.4. Using 8-bit audio format to work around resampling bug."));
+        crate::c_log("Your SDL.dll is older than 2.0.4. Using 8-bit audio format to work around resampling bug.");
     } else {
         desired_audioformat = AUDIO_S16SYS;
     }
@@ -2921,10 +2946,96 @@ pub unsafe extern "C" fn load_sound_names() {
         return;
     }
     sound_names = calloc(core::mem::size_of::<*mut c_char>() * max_sound_id as usize, 1) as *mut *mut c_char;
+    // Hand-rolled stand-in for C's `fscanf(fp, "%d=%255s\n", &index, name)`.
+    // `pending` is the one-character pushback that `scanf` performs internally
+    // (and that the trailing whitespace directive relies on).
+    let mut pending: c_int = NO_PENDING;
     while feof(fp) == 0 {
         let mut index: c_int = 0;
         let mut name = [0 as c_char; POP_MAX_PATH];
-        if fscanf(fp, cs!("%d=%255s\n"), &mut index, name.as_mut_ptr()) != 2 {
+        macro_rules! next_ch {
+            () => {{
+                if pending != NO_PENDING {
+                    let __c = pending;
+                    pending = NO_PENDING;
+                    __c
+                } else {
+                    fgetc(fp)
+                }
+            }};
+        }
+        // Returns the number of items converted, exactly as fscanf would.
+        let mut matched: c_int = 0;
+        'scan: {
+            // "%d": skip leading whitespace, then optional sign and digits.
+            let mut c = next_ch!();
+            while c != EOF_CH && is_c_space(c) {
+                c = next_ch!();
+            }
+            if c == EOF_CH {
+                break 'scan;
+            }
+            let negative = c == b'-' as c_int;
+            if negative || c == b'+' as c_int {
+                c = next_ch!();
+            }
+            let mut value: c_int = 0;
+            let mut digits = 0;
+            while c != EOF_CH && (c as u8).is_ascii_digit() {
+                value = value.wrapping_mul(10).wrapping_add((c as u8 - b'0') as c_int);
+                digits += 1;
+                c = next_ch!();
+            }
+            if digits == 0 {
+                if c != EOF_CH {
+                    pending = c;
+                }
+                break 'scan;
+            }
+            index = if negative { -value } else { value };
+            matched = 1;
+            // "=": a literal directive, so no whitespace is skipped first.
+            if c == EOF_CH {
+                break 'scan;
+            }
+            if c != b'=' as c_int {
+                pending = c;
+                break 'scan;
+            }
+            // "%255s": skip leading whitespace, then up to 255 non-whitespace chars.
+            let mut c = next_ch!();
+            while c != EOF_CH && is_c_space(c) {
+                c = next_ch!();
+            }
+            if c == EOF_CH {
+                break 'scan;
+            }
+            let mut len = 0usize;
+            loop {
+                if c == EOF_CH {
+                    break;
+                }
+                if is_c_space(c) || len == 255 {
+                    pending = c;
+                    break;
+                }
+                name[len] = c as c_char;
+                len += 1;
+                c = next_ch!();
+            }
+            name[len] = 0;
+            matched = 2;
+            // Trailing "\n": a whitespace directive -- consume any run of
+            // whitespace and push back the first character that follows.
+            let mut c = next_ch!();
+            while c != EOF_CH && is_c_space(c) {
+                c = next_ch!();
+            }
+            if c != EOF_CH {
+                pending = c;
+            }
+        }
+        if matched != 2 {
             perror(names_path);
             continue;
         }
@@ -2962,11 +3073,11 @@ pub unsafe extern "C" fn load_sound(index: c_int) -> *mut sound_buffer_type {
                 let mut fp: *mut FILE = null_mut();
                 let mut filename = [0 as c_char; POP_MAX_PATH];
                 if !skip_mod_data_files {
-                    snprintf_check!(filename.as_mut_ptr(), POP_MAX_PATH, cs!("%s/music/%s.ogg"), mod_data_path.as_ptr(), sound_name(index));
+                    snprintf_check!(filename.as_mut_ptr(), POP_MAX_PATH, "{}/music/{}.ogg", cstr(mod_data_path.as_ptr()), cstr(sound_name(index)));
                     fp = fopen(filename.as_ptr(), cs!("rb"));
                 }
                 if fp.is_null() && !skip_normal_data_files {
-                    snprintf_check!(filename.as_mut_ptr(), POP_MAX_PATH, cs!("data/music/%s.ogg"), sound_name(index));
+                    snprintf_check!(filename.as_mut_ptr(), POP_MAX_PATH, "data/music/{}.ogg", cstr(sound_name(index)));
                     let mut __lf = [0 as c_char; POP_MAX_PATH];
                     fp = fopen(locate_file_(filename.as_ptr(), __lf.as_mut_ptr(), POP_MAX_PATH as c_int), cs!("rb"));
                 }
@@ -2990,7 +3101,7 @@ pub unsafe extern "C" fn load_sound(index: c_int) -> *mut sound_buffer_type {
                 let decoder = match decoder_box {
                     Some(b) => Box::into_raw(b),
                     None => {
-                        printf(cs!("Error creating decoder from file \"%s\"!\n"), filename.as_ptr());
+                        crate::c_log(&format!("Error creating decoder from file \"{}\"!\n", cstr(filename.as_ptr())));
                         free(file_contents as *mut c_void);
                         break 'do_once;
                     }
@@ -3013,7 +3124,7 @@ pub unsafe extern "C" fn load_sound(index: c_int) -> *mut sound_buffer_type {
         result = converted;
     }
     if result.is_null() && !skip_normal_data_files {
-        fprintf(stderr, cs!("Failed to load sound %d '%s'\n"), index, sound_name(index));
+        crate::c_log_err(&format!("Failed to load sound {} '{}'\n", index, cstr(sound_name(index))));
     }
     result
 }
@@ -3094,12 +3205,12 @@ unsafe fn determine_wave_version(buffer: *mut sound_buffer_type, waveinfo: *mut 
         }
         // ambiguous
         3 => {
-            printf(cs!("Warning: Ambiguous wave version.\n"));
+            crate::c_log("Warning: Ambiguous wave version.\n");
             false
         }
         // case 0, unknown
         _ => {
-            printf(cs!("Warning: Can't determine wave version.\n"));
+            crate::c_log("Warning: Can't determine wave version.\n");
             false
         }
     }
@@ -3181,7 +3292,7 @@ unsafe fn play_digi_sound(buffer: *mut sound_buffer_type) {
     }
     stop_digi();
     if ((*buffer).type_ & 7) != sound_type_sound_digi_converted as byte {
-        printf(cs!("Tried to play unconverted digi sound.\n"));
+        crate::c_log("Tried to play unconverted digi sound.\n");
         return;
     }
     let converted = core::ptr::addr_of!((*buffer).__bindgen_anon_1) as *const converted_audio_type;
@@ -3220,7 +3331,7 @@ pub unsafe extern "C" fn play_sound_from_buffer(buffer: *mut sound_buffer_type) 
         return;
     }
     if buffer.is_null() {
-        printf(cs!("Tried to play NULL sound.\n"));
+        crate::c_log("Tried to play NULL sound.\n");
         return;
     }
     match ((*buffer).type_ & 7) as u32 {
@@ -3237,7 +3348,7 @@ pub unsafe extern "C" fn play_sound_from_buffer(buffer: *mut sound_buffer_type) 
             play_ogg_sound(buffer);
         }
         _ => {
-            printf(cs!("Tried to play unimplemented sound type %d.\n"), (*buffer).type_ as c_int);
+            crate::c_log(&format!("Tried to play unimplemented sound type {}.\n", (*buffer).type_ as c_int));
             quit(1);
         }
     }
@@ -3391,7 +3502,7 @@ unsafe fn load_from_opendats_metadata(
                     } else if fseek(fp, swaple32((*entry).offset) as c_long, SEEK_SET) != 0
                         || fread(checksum as *mut c_void, 1, 1, fp) != 1
                     {
-                        printf(cs!("Cannot seek or cannot read checksum: "));
+                        crate::c_log("Cannot seek or cannot read checksum: ");
                         perror(core::ptr::addr_of!((*pointer).filename) as *const c_char);
                         fp = null_mut();
                     }
@@ -3408,7 +3519,7 @@ unsafe fn load_from_opendats_metadata(
             if len >= 5 && filename_no_ext[len - 4] == '.' as c_char {
                 filename_no_ext[len - 4] = 0;
             }
-            snprintf_check!(image_filename.as_mut_ptr(), POP_MAX_PATH, cs!("data/%s/res%d.%s"), filename_no_ext.as_ptr(), resource_id, extension);
+            snprintf_check!(image_filename.as_mut_ptr(), POP_MAX_PATH, "data/{}/res{}.{}", cstr(filename_no_ext.as_ptr()), resource_id, cstr(extension));
             // Opens a path after running it through the search-directory list.
             let open_located = |path: *const c_char| -> *mut FILE {
                 let mut located = [0 as c_char; POP_MAX_PATH];
@@ -3420,7 +3531,7 @@ unsafe fn load_from_opendats_metadata(
                 // before checking the root directory, first try mods/MODNAME/
                 if !skip_mod_data_files {
                     let mut image_filename_mod = [0 as c_char; POP_MAX_PATH];
-                    snprintf_check!(image_filename_mod.as_mut_ptr(), POP_MAX_PATH, cs!("%s/%s"), mod_data_path.as_ptr(), image_filename.as_ptr());
+                    snprintf_check!(image_filename_mod.as_mut_ptr(), POP_MAX_PATH, "{}/{}", cstr(mod_data_path.as_ptr()), cstr(image_filename.as_ptr()));
                     fp = open_located(image_filename_mod.as_ptr());
                 }
                 if fp.is_null() && !skip_normal_data_files {
@@ -3433,7 +3544,7 @@ unsafe fn load_from_opendats_metadata(
                     *result = data_location_data_directory;
                     *size = buf.st_size as c_int;
                 } else {
-                    printf(cs!("Cannot fstat: "));
+                    crate::c_log("Cannot fstat: ");
                     perror(image_filename.as_ptr());
                     fclose(fp);
                     fp = null_mut();
@@ -3497,7 +3608,7 @@ pub unsafe extern "C" fn load_from_opendats_alloc(resource: c_int, extension: *c
     }
     let mut area = malloc(size as usize);
     if fread(area, size as usize, 1, fp) != 1 {
-        fprintf(stderr, cs!("%s: %s, resource %d, size %d, failed: %s\n"), cs!("load_from_opendats_alloc"), core::ptr::addr_of!((*pointer).filename) as *const c_char, resource, size, strerror(errno()));
+        crate::c_log_err(&format!("{}: {}, resource {}, size {}, failed: {}\n", "load_from_opendats_alloc", cstr(core::ptr::addr_of!((*pointer).filename) as *const c_char), resource, size, cstr(strerror(errno()))));
         free(area);
         area = null_mut();
     }
@@ -3524,7 +3635,7 @@ pub unsafe extern "C" fn load_from_opendats_to_area(resource: c_int, area: *mut 
         return 0;
     }
     if fread(area, MIN_i(size, length) as usize, 1, fp) != 1 {
-        fprintf(stderr, cs!("%s: %s, resource %d, size %d, failed: %s\n"), cs!("load_from_opendats_to_area"), core::ptr::addr_of!((*pointer).filename) as *const c_char, resource, size, strerror(errno()));
+        crate::c_log_err(&format!("{}: {}, resource {}, size {}, failed: {}\n", "load_from_opendats_to_area", cstr(core::ptr::addr_of!((*pointer).filename) as *const c_char), resource, size, cstr(strerror(errno()))));
         memset(area, 0, MIN_i(size, length) as usize);
     }
     if result == data_location_data_directory {
@@ -3715,7 +3826,7 @@ pub unsafe extern "C" fn draw_rect_with_alpha(rect: *const rect_type, color: byt
 #[no_mangle]
 pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte) {
     if (*(*current_target_surface).format).BitsPerPixel != 32 {
-        printf(cs!("draw_rect_contours: not implemented for %d bit surfaces\n"), (*(*current_target_surface).format).BitsPerPixel as c_int);
+        crate::c_log(&format!("draw_rect_contours: not implemented for {} bit surfaces\n", (*(*current_target_surface).format).BitsPerPixel as c_int));
         return;
     }
     let mut dest_rect: SDL_Rect = core::mem::zeroed();
@@ -3761,7 +3872,7 @@ pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte)
 /// key" style effects.
 unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, image: *mut SDL_Surface, src_rect: *mut SDL_Rect) {
     if (*dest_rect).w != (*src_rect).w || (*dest_rect).h != (*src_rect).h {
-        printf(cs!("blit_xor: dest_rect and src_rect have different sizes\n"));
+        crate::c_log("blit_xor: dest_rect and src_rect have different sizes\n");
         quit(1);
     }
     let helper_surface = crate::platform::sdl::shared_renderer().create_surface((*dest_rect).w, (*dest_rect).h, 24, Rmsk, Gmsk, Bmsk, 0);
@@ -3862,7 +3973,7 @@ unsafe fn draw_colored_torch(color: c_int, image: *mut SDL_Surface, xpos: c_int,
 #[no_mangle]
 pub unsafe extern "C" fn method_6_blit_img_to_scr(image: *mut image_type, xpos: c_int, ypos: c_int, blit: c_int) -> *mut image_type {
     if image.is_null() {
-        printf(cs!("method_6_blit_img_to_scr: image == NULL\n"));
+        crate::c_log("method_6_blit_img_to_scr: image == NULL\n");
         return null_mut();
     }
 
@@ -4038,7 +4149,7 @@ pub unsafe extern "C" fn set_gr_mode(_grmode: byte) {
     }
     if enable_controller_rumble != 0 {
         if crate::platform::sdl::shared_renderer().sdl_init_subsystem(SDL_INIT_HAPTIC) != 0 {
-            printf(cs!("Warning: Haptic subsystem unavailable, ignoring enable_controller_rumble = true\n"));
+            crate::c_log("Warning: Haptic subsystem unavailable, ignoring enable_controller_rumble = true\n");
         }
     }
 
@@ -4165,9 +4276,9 @@ unsafe fn draw_overlay() {
         if overlay == Overlay::LevelTimer {
             let mut timer_text = [0 as c_char; 32];
             if rem_min < 0 {
-                snprintf(timer_text.as_mut_ptr(), 32, cs!("%02d:%02d:%02d"), -((rem_min as c_int) + 1), (719 - rem_tick as c_int) / 12, (719 - rem_tick as c_int) % 12);
+                crate::write_c_str_truncating(timer_text.as_mut_ptr(), 32, &format!("{:02}:{:02}:{:02}", -((rem_min as c_int) + 1), (719 - rem_tick as c_int) / 12, (719 - rem_tick as c_int) % 12));
             } else {
-                snprintf(timer_text.as_mut_ptr(), 32, cs!("%02d:%02d:%02d"), rem_min as c_int - 1, rem_tick as c_int / 12, rem_tick as c_int % 12);
+                crate::write_c_str_truncating(timer_text.as_mut_ptr(), 32, &format!("{:02}:{:02}:{:02}", rem_min as c_int - 1, rem_tick as c_int / 12, rem_tick as c_int % 12));
             }
             let expected_numeric_chars = 6;
             let extra_numeric_chars = MAX_i(0, strnlen(timer_text.as_ptr(), 32) as c_int - 8);
@@ -4181,7 +4292,7 @@ unsafe fn draw_overlay() {
             // During playback, display the number of ticks since start.
             if replaying != 0 {
                 let mut ticks_text = [0 as c_char; 12];
-                snprintf(ticks_text.as_mut_ptr(), 12, cs!("T: %d"), curr_tick);
+                crate::write_c_str_truncating(ticks_text.as_mut_ptr(), 12, &format!("T: {}", curr_tick));
                 let mut ticks_box_rect = timer_box_rect;
                 ticks_box_rect.top += 12;
                 ticks_box_rect.bottom += 12;
@@ -4200,7 +4311,7 @@ unsafe fn draw_overlay() {
             // Feather timer
             let mut timer_text = [0 as c_char; 32];
             let ticks_per_sec = get_ticks_per_sec(timerids_timer_1 as c_int) as c_int;
-            snprintf(timer_text.as_mut_ptr(), 32, cs!("%02d:%02d"), is_feather_fall as c_int / ticks_per_sec, is_feather_fall as c_int % ticks_per_sec);
+            crate::write_c_str_truncating(timer_text.as_mut_ptr(), 32, &format!("{:02}:{:02}", is_feather_fall as c_int / ticks_per_sec, is_feather_fall as c_int % ticks_per_sec));
             let expected_numeric_chars = 6;
             let extra_numeric_chars = MAX_i(0, strnlen(timer_text.as_ptr(), 32) as c_int - 8);
             let line_width = 5 + (expected_numeric_chars + extra_numeric_chars) * 9;
