@@ -17,10 +17,6 @@ extern "C" {
     fn fputc(c: c_int, stream: *mut FILE) -> c_int;
     fn fputs(s: *const c_char, stream: *mut FILE) -> c_int;
     fn rewind(stream: *mut FILE);
-    fn snprintf(buf: *mut c_char, size: usize, fmt: *const c_char, ...) -> c_int;
-    fn printf(fmt: *const c_char, ...) -> c_int;
-    fn fprintf(stream: *mut FILE, fmt: *const c_char, ...) -> c_int;
-    fn putchar(c: c_int) -> c_int;
     // Real libc signature is `time_t`-width (`c_long`), matching seg009.rs's own
     // `time` declaration -- these must agree exactly, not just be "close enough": wasm's
     // linker enforces identical import signatures for the same symbol, unlike native ELF
@@ -45,7 +41,6 @@ extern "C" {
     fn chdir(path: *const c_char) -> c_int;
     fn mkdir(path: *const c_char, mode: u32) -> c_int;
     fn stat(path: *const c_char, buf: *mut stat_t) -> c_int;
-    static mut stderr: *mut FILE;
 }
 use crate::platform::Renderer;
 
@@ -97,12 +92,20 @@ macro_rules! cs {
     };
 }
 
+/// Borrow a C string as `&str`, mapping null to `""` and invalid UTF-8 lossily.
+unsafe fn cstr(p: *const c_char) -> std::borrow::Cow<'static, str> {
+    if p.is_null() {
+        return std::borrow::Cow::Borrowed("");
+    }
+    std::ffi::CStr::from_ptr(p).to_string_lossy()
+}
+
 // snprintf_check (from common.h): bail out with quit(2) on truncation.
 macro_rules! snprintf_check {
     ($dst:expr, $size:expr, $($arg:tt)*) => {{
-        let __len = snprintf($dst, $size, $($arg)*);
+        let __len = crate::write_c_str_truncating($dst, $size, &format!($($arg)*));
         if __len < 0 || __len >= ($size) as c_int {
-            fprintf(stderr, cs!("%s: buffer truncation detected!\n"), cs!("replay"));
+            crate::c_log_err("replay: buffer truncation detected!\n");
             quit(2);
         }
     }};
@@ -150,11 +153,10 @@ unsafe fn implementation_name() -> *const c_char {
     static mut BUF: [c_char; 64] = [0; 64];
     static mut INIT: bool = false;
     if !INIT {
-        snprintf(
+        crate::write_c_str_truncating(
             BUF.as_mut_ptr(),
             64,
-            cs!("SDLPoP v%s"),
-            SDLPOP_VERSION.as_ptr() as *const c_char,
+            &format!("SDLPoP v{}", cstr(SDLPOP_VERSION.as_ptr() as *const c_char)),
         );
         INIT = true;
     }
@@ -199,7 +201,8 @@ macro_rules! fread_check {
                 snprintf_check!(
                     $err,
                     REPLAY_HEADER_ERROR_MESSAGE_MAX,
-                    cs!(concat!($name, " missing -- not a valid replay file!"))
+                    "{}",
+                    concat!($name, " missing -- not a valid replay file!")
                 );
             }
             return 0; // incompatible file
@@ -223,7 +226,7 @@ unsafe fn read_replay_header(
             snprintf_check!(
                 error_message,
                 REPLAY_HEADER_ERROR_MESSAGE_MAX,
-                cs!("not a valid replay file!")
+                "not a valid replay file!"
             );
         }
         return 0; // incompatible, magic number not correct!
@@ -277,8 +280,8 @@ unsafe fn read_replay_header(
             snprintf_check!(
                 error_message,
                 REPLAY_HEADER_ERROR_MESSAGE_MAX,
-                cs!("replay created with \"%s\"...\nIncompatible replay class identifier! (expected %d, found %d)"),
-                addr_of!((*header).implementation_name) as *const c_char,
+                "replay created with \"{}\"...\nIncompatible replay class identifier! (expected {}, found {})",
+                cstr(addr_of!((*header).implementation_name) as *const c_char),
                 replay_format_class as c_int,
                 class_ as c_int
             );
@@ -292,8 +295,8 @@ unsafe fn read_replay_header(
             snprintf_check!(
                 error_message,
                 REPLAY_HEADER_ERROR_MESSAGE_MAX,
-                cs!("replay created with \"%s\"...\nReplay format version too old! (minimum %d, found %d)"),
-                addr_of!((*header).implementation_name) as *const c_char,
+                "replay created with \"{}\"...\nReplay format version too old! (minimum {}, found {})",
+                cstr(addr_of!((*header).implementation_name) as *const c_char),
                 REPLAY_FORMAT_MIN_VERSION as c_int,
                 version_number as c_int
             );
@@ -307,8 +310,8 @@ unsafe fn read_replay_header(
             snprintf_check!(
                 error_message,
                 REPLAY_HEADER_ERROR_MESSAGE_MAX,
-                cs!("replay created with \"%s\"...\nReplay deprecation number too new! (max %d, found %d)"),
-                addr_of!((*header).implementation_name) as *const c_char,
+                "replay created with \"{}\"...\nReplay deprecation number too new! (max {}, found {})",
+                cstr(addr_of!((*header).implementation_name) as *const c_char),
                 REPLAY_FORMAT_DEPRECATION_NUMBER,
                 deprecation_number as c_int
             );
@@ -321,25 +324,25 @@ unsafe fn read_replay_header(
     if is_validate_mode != 0 {
         static mut is_replay_info_printed: byte = 0;
         if is_replay_info_printed == 0 {
-            printf(
-                cs!("\nReplay created with %s.\n"),
-                addr_of!((*header).implementation_name) as *const c_char,
-            );
-            printf(
-                cs!("Format: class identifier %d, version number %d, deprecation number %d.\n"),
+            crate::c_log(&format!(
+                "\nReplay created with {}.\n",
+                cstr(addr_of!((*header).implementation_name) as *const c_char),
+            ));
+            crate::c_log(&format!(
+                "Format: class identifier {}, version number {}, deprecation number {}.\n",
                 class_ as c_int,
                 version_number as c_int,
                 deprecation_number as c_int,
-            );
+            ));
             if (*header).levelset_name[0] == 0 {
-                printf(cs!("Levelset: original Prince of Persia.\n"));
+                crate::c_log("Levelset: original Prince of Persia.\n");
             } else {
-                printf(
-                    cs!("Levelset: %s.\n"),
-                    addr_of!((*header).levelset_name) as *const c_char,
-                );
+                crate::c_log(&format!(
+                    "Levelset: {}.\n",
+                    cstr(addr_of!((*header).levelset_name) as *const c_char),
+                ));
             }
-            putchar(b'\n' as c_int);
+            crate::c_log("\n");
             is_replay_info_printed = 1; // do this only once
         }
     }
@@ -386,7 +389,7 @@ unsafe fn list_replay_files() {
                 max_replay_files as usize * size_of::<replay_info_type>(),
             );
             if new_replay_list.is_null() {
-                printf(cs!("list_replay_files: realloc failed!"));
+                crate::c_log("list_replay_files: realloc failed!");
                 quit(1);
             }
             replay_list = new_replay_list as *mut replay_info_type;
@@ -397,9 +400,9 @@ unsafe fn list_replay_files() {
         snprintf_check!(
             addr_of_mut!((*replay_info).filename) as *mut c_char,
             POP_MAX_PATH as usize,
-            cs!("%s/%s"),
-            addr_of!(replays_folder) as *const c_char,
-            get_current_filename_from_directory_listing(directory_listing)
+            "{}/{}",
+            cstr(addr_of!(replays_folder) as *const c_char),
+            cstr(get_current_filename_from_directory_listing(directory_listing))
         );
 
         // get the creation time
@@ -437,7 +440,7 @@ unsafe fn list_replay_files() {
 }
 
 unsafe fn open_replay_file(filename: *const c_char) -> byte {
-    printf(cs!("Opening replay file: %s\n"), filename);
+    crate::c_log(&format!("Opening replay file: {}\n", cstr(filename)));
     if replay_file_open != 0 {
         fclose(replay_fp);
     }
@@ -491,10 +494,10 @@ pub unsafe extern "C" fn start_with_replay_file(filename: *const c_char) {
             snprintf_check!(
                 error_message.as_mut_ptr(),
                 REPLAY_HEADER_ERROR_MESSAGE_MAX,
-                cs!("Error opening replay file: %s\n"),
-                header_error_message.as_ptr()
+                "Error opening replay file: {}\n",
+                cstr(header_error_message.as_ptr())
             );
-            fprintf(stderr, cs!("%s"), error_message.as_ptr());
+            crate::c_log_err(&cstr(error_message.as_ptr()));
             fclose(replay_fp);
             replay_fp = null_mut();
             replay_file_open = 0;
@@ -781,7 +784,7 @@ pub unsafe extern "C" fn replay_restore_level() {
 
 unsafe extern "C" fn process_to_buffer(data: *mut c_void, data_size: usize) -> c_int {
     if savestate_offset as usize + data_size > MAX_SAVESTATE_SIZE {
-        printf(cs!("Saving savestate to memory failed: buffer is overflowing!\n"));
+        crate::c_log("Saving savestate to memory failed: buffer is overflowing!\n");
         return 0;
     }
     memcpy(
@@ -974,21 +977,24 @@ unsafe fn restore_normal_options() {
 
 unsafe fn print_remaining_time() {
     if rem_min > 0 {
-        printf(
-            cs!("Remaining time: %d min, %d sec, %d ticks. "),
+        crate::c_log(&format!(
+            "Remaining time: {} min, {} sec, {} ticks. ",
             rem_min as c_int - 1,
             rem_tick as c_int / 12,
             rem_tick as c_int % 12,
-        );
+        ));
     } else {
-        printf(
-            cs!("Elapsed time:   %d min, %d sec, %d ticks. "),
+        crate::c_log(&format!(
+            "Elapsed time:   {} min, {} sec, {} ticks. ",
             -(rem_min as c_int + 1),
             (719 - rem_tick as c_int) / 12,
             (719 - rem_tick as c_int) % 12,
-        );
+        ));
     }
-    printf(cs!("(rem_min=%d, rem_tick=%d)\n"), rem_min as c_int, rem_tick as c_int);
+    crate::c_log(&format!(
+        "(rem_min={}, rem_tick={})\n",
+        rem_min as c_int, rem_tick as c_int
+    ));
 }
 
 #[no_mangle]
@@ -1018,41 +1024,40 @@ pub unsafe extern "C" fn end_replay() {
         restore_normal_options();
         start_game();
     } else {
-        printf(
-            cs!("\nReplay ended in level %d, room %d.\n"),
-            current_level as c_int,
-            drawn_room as c_int,
-        );
+        crate::c_log(&format!(
+            "\nReplay ended in level {}, room {}.\n",
+            current_level as c_int, drawn_room as c_int,
+        ));
 
         if Kid.alive < 0 {
-            printf(cs!("Kid is alive.\n"));
+            crate::c_log("Kid is alive.\n");
         } else if text_time_total == 288 && text_time_remaining <= 1 {
-            printf(cs!("Kid is dead. (Did not press button to continue.)\n"));
+            crate::c_log("Kid is dead. (Did not press button to continue.)\n");
         } else {
-            printf(cs!("Kid is dead.\n"));
+            crate::c_log("Kid is dead.\n");
         }
 
         print_remaining_time();
 
         let minute_ticks = curr_tick % 720;
-        printf(
-            cs!("Play duration:  %d min, %d sec, %d ticks. (curr_tick=%d)\n\n"),
+        crate::c_log(&format!(
+            "Play duration:  {} min, {} sec, {} ticks. (curr_tick={})\n\n",
             (curr_tick / 720) as c_int,
             (minute_ticks / 12) as c_int,
             (minute_ticks % 12) as c_int,
             curr_tick as c_int,
-        );
+        ));
 
         if num_replay_ticks != curr_tick {
-            printf(
-                cs!("WARNING: Play duration does not match replay length. (%d ticks)\n"),
+            crate::c_log(&format!(
+                "WARNING: Play duration does not match replay length. ({} ticks)\n",
                 num_replay_ticks as c_int,
-            );
+            ));
         } else {
-            printf(
-                cs!("Play duration matches replay length. (%d ticks)\n"),
+            crate::c_log(&format!(
+                "Play duration matches replay length. ({} ticks)\n",
                 num_replay_ticks as c_int,
-            );
+            ));
         }
         exit(0);
     }
@@ -1070,11 +1075,10 @@ pub unsafe extern "C" fn do_replay_move() {
         seed_was_init = 1;
 
         if is_validate_mode != 0 {
-            printf(
-                cs!("Replay started in level %d, room %d.\n"),
-                current_level as c_int,
-                drawn_room as c_int,
-            );
+            crate::c_log(&format!(
+                "Replay started in level {}, room {}.\n",
+                current_level as c_int, drawn_room as c_int,
+            ));
             print_remaining_time();
             skipping_replay = 1;
             replay_seek_target = replay_seek_targets_replay_seek_2_end as byte;
@@ -1182,9 +1186,9 @@ pub unsafe extern "C" fn save_recorded_replay_dialog() -> c_int {
     snprintf_check!(
         full_filename.as_mut_ptr(),
         POP_MAX_PATH as usize,
-        cs!("%s/%s.p1r"),
-        addr_of!(replays_folder) as *const c_char,
-        input_filename.as_ptr()
+        "{}/{}.p1r",
+        cstr(addr_of!(replays_folder) as *const c_char),
+        cstr(input_filename.as_ptr())
     );
 
     // create the "replays" folder if it does not exist already
@@ -1308,7 +1312,10 @@ pub unsafe extern "C" fn load_replay() -> c_int {
         let err = error_message.as_mut_ptr();
         let ok = read_replay_header(addr_of_mut!(header), replay_fp, err);
         if ok == 0 {
-            printf(cs!("Error loading replay: %s!\n"), error_message.as_ptr());
+            crate::c_log(&format!(
+                "Error loading replay: {}!\n",
+                cstr(error_message.as_ptr())
+            ));
             fclose(replay_fp);
             replay_fp = null_mut();
             replay_file_open = 0;
