@@ -175,6 +175,29 @@ mod wasm_entry {
             .expect("put_image_data failed");
         web_sys::console::log_1(&"drew test pattern".into());
     }
+
+    /// Exploratory Phase B milestone: actually call `pop_main()`, with no real
+    /// `WasmRenderer`/`WasmInput`/`WasmAudio`/`WasmFiles` implementation behind it yet --
+    /// used to empirically discover exactly what real platform surface `pop_main`'s startup
+    /// path needs, one `unimplemented!()` panic at a time, rather than guessing the full
+    /// Worker/message-protocol design up front. Not part of the real game-loading path.
+    #[wasm_bindgen]
+    pub fn run_game() {
+        console_error_panic_hook::set_once();
+        unsafe {
+            crate::g_argc = 1;
+            static mut ARGV0: [std::os::raw::c_char; 7] = [
+                b'p' as _, b'r' as _, b'i' as _, b'n' as _, b'c' as _, b'e' as _, 0,
+            ];
+            static mut ARGV: [*mut std::os::raw::c_char; 1] = [std::ptr::null_mut()];
+            #[allow(static_mut_refs)]
+            {
+                ARGV[0] = ARGV0.as_mut_ptr();
+                crate::g_argv = ARGV.as_mut_ptr();
+            }
+            crate::pop_main();
+        }
+    }
 }
 
 // Shared support for tests that touch real files on disk (quicksave, hall-of-fame,
