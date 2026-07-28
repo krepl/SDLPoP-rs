@@ -70,6 +70,7 @@
 
 use std::os::raw::{c_int, c_short};
 use super::*;
+use crate::platform::Renderer;
 use crate::state::State;
 
 // seqtbl is defined in seqtbl.c with no header; declare it directly.
@@ -1534,8 +1535,9 @@ unsafe fn set_char_collision_impl(state: &mut State) {
         *state.char_width_half() = 0;
         *state.char_height()     = 0;
     } else {
-        *state.char_width_half() = (((*image).w as i32 + 1) / 2) as u16;
-        *state.char_height()     = (*image).h as u16;
+        let (image_w, image_h) = crate::platform::sdl::shared_renderer().surface_size(image);
+        *state.char_width_half() = ((image_w as i32 + 1) / 2) as u16;
+        *state.char_height()     = image_h as u16;
     }
     *state.char_x_left() = (*state.obj_x() as i32 / 2 + 58) as i16;
     if state.Char().direction >= directions_dir_0_right as i8 {
