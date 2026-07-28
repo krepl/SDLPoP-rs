@@ -162,11 +162,12 @@ pub unsafe extern "C" fn redraw_lighting() {
         let y = (tile_pos / 10) as c_int * 63 + 22;
 
         // Align the center of lighting mask to the center of the flame.
+        let (mask_w, mask_h) = crate::platform::sdl::shared_renderer().surface_size(lighting_mask);
         let mut dest_rect = SDL_Rect {
-            x: x - (*lighting_mask).w / 2,
-            y: y - (*lighting_mask).h / 2,
-            w: (*lighting_mask).w,
-            h: (*lighting_mask).h,
+            x: x - mask_w / 2,
+            y: y - mask_h / 2,
+            w: mask_w,
+            h: mask_h,
         };
 
         let result = SDL_BlitSurface(
