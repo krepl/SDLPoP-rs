@@ -50,7 +50,52 @@ C/D.
 
 ---
 
-## Phase A — Surface/PixelFormat encapsulation + pixel-parity test harness (do first)
+## Phase A — Surface/PixelFormat encapsulation + pixel-parity test harness — ✅ DONE
+
+**Complete** (commits `707382e` through `6d7cb45`). Five new `Renderer` accessor methods
+(`surface_size`/`surface_pitch`/`surface_pixels`/`surface_format_info`/`surface_palette`,
+plus a `format: u32` field added to `PixelFormatInfo` mid-phase for
+`SDL_ISPIXELFORMAT_INDEXED`) replaced every direct `SDL_Surface`/`SDL_PixelFormat` field
+access outside `platform/*.rs` — confirmed by a crate-wide grep sweep with zero hits left
+(the only remaining matches are `SDL_Rect`, a plain data struct never in scope for this
+phase). Migrated files: `lighting.rs`, `menu.rs`, `seg008.rs`, `seg009.rs` (the bulk — ~60
+sites), and `seg006.rs` (2 sites, missed from the original file batch, caught by the final
+sweep). `midi.rs` had zero real hits (its one grep match was a MIDI file header's own
+`.format` field, unrelated to SDL).
+
+`WasmRenderer` is a real implementation, not a stub, for everything Phase A needed: a
+`Vec<u8>`-backed `WasmSurface` store handling `create_surface`, the five accessors,
+lock/unlock, `map_rgb`/`map_rgba`, `fill_rect`, `blit`/`blit_scaled` (color-key aware),
+`set_color_key`/`set_blend_mode`/`set_alpha_mod`,
+`set_palette`/`set_palette_colors`/`set_surface_palette`, and
+`convert_surface`/`convert_surface_format`. `surface_palette` allocates a genuine
+heap-allocated `SDL_Palette` (not opaque) because `seg009.rs` reads `.ncolors` off it
+directly — a real, load-bearing exception to "fully opaque," discovered while building the
+test harness. Window/init lifecycle, real audio, and input/controllers are still
+`unimplemented!()` — correctly out of Phase A's scope.
+
+**Pixel-parity test harness** (`rust/src/platform/pixel_parity_tests.rs`) runs identical
+`Renderer`-trait call sequences against `SdlRenderer` (real SDL2, headless via
+`SDL_VIDEODRIVER=dummy`) and `WasmRenderer`, natively, no wasm32 target or browser needed.
+`platform::wasm` is now also compiled on native under `cargo test` (not normal native
+builds) specifically to make this possible. Two real bugs were caught building this
+infrastructure, not hypothetical: (1) `SDL_BlitSurface` between two 8bpp indexed surfaces
+with *different* palettes does palette-aware RGB color-matching, not a raw index copy —
+found because the test's destination surface's palette wasn't synced with the source's,
+mirroring exactly what real SDLPoP always does correctly (keep blitted surfaces' palettes in
+sync) and what a naive future migration could get wrong; (2) a hand-built test
+`SDL_PixelFormat` needed correctly-computed `Rshift`/`Gshift`/`Bshift`/`Ashift` fields, not
+just masks, for real `SDL_MapRGBA` to work. Also needed a `Mutex` to serialize the two tests
+touching the shared `SdlRenderer` singleton — `cargo test`'s default parallelism segfaulted
+without it.
+
+**Verification throughout:** native build/test/harness reconfirmed green after every merge —
+0 warnings, 68/68 tests (66 pre-existing + 2 pixel-parity), 30/30 replays. `wasm32-unknown-
+unknown` `cargo check` and full link both still succeed.
+
+**Considered and deferred (not done, not blocking):** the "future consideration" section
+below (adopting `pixels`/`softbuffer` + `winit` for presentation) remains exactly that — a
+future consideration, not started.
 
 **Why first:** required regardless of the web target (native's own `SDL_Surface` access is
 already scattered outside `platform/sdl.rs`, which was always the Step C goal, just not
