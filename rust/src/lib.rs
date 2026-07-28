@@ -119,6 +119,64 @@ pub mod state;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_libc;
 
+/// Browser entry point (Phase 2 exploratory milestone). `main()` in `main.rs` is the
+/// wasm module's `main` export, but wasm-bindgen's JS glue doesn't call it automatically
+/// -- `#[wasm_bindgen(start)]` is what the generated JS actually invokes right after
+/// instantiation. Deliberately NOT calling `pop_main()` yet: that's real game-loop/asset-
+/// loading logic that will hit real, unresolved architecture questions (a blocking C-style
+/// game loop vs. the browser's non-blocking event loop; synchronous DAT-file loading vs.
+/// `fetch`'s async API) -- this first entry point exists only to prove the wasm-bindgen /
+/// canvas JS pipeline itself works, isolated from those questions.
+#[cfg(target_arch = "wasm32")]
+mod wasm_entry {
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen(start)]
+    pub fn start() {
+        console_error_panic_hook::set_once();
+        web_sys::console::log_1(&"SDLPoP wasm module loaded".into());
+    }
+
+    /// Draws a small test pattern directly to the page's `<canvas id="screen">`, bypassing
+    /// all game logic -- exercises the same `CanvasRenderingContext2d`/`ImageData` calls a
+    /// real `WasmRenderer::present` will need, without needing any of the rest of the
+    /// engine running yet.
+    #[wasm_bindgen]
+    pub fn draw_test_pattern() {
+        let window = web_sys::window().expect("no global window");
+        let document = window.document().expect("no document");
+        let canvas = document
+            .get_element_by_id("screen")
+            .expect("no #screen canvas")
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("#screen is not a canvas");
+        let ctx = canvas
+            .get_context("2d")
+            .expect("no 2d context")
+            .expect("no 2d context")
+            .dyn_into::<web_sys::CanvasRenderingContext2d>()
+            .expect("not a 2d context");
+
+        let (w, h) = (320u32, 200u32);
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                pixels[i] = (x * 255 / w) as u8; // R: horizontal gradient
+                pixels[i + 1] = (y * 255 / h) as u8; // G: vertical gradient
+                pixels[i + 2] = 128; // B: constant
+                pixels[i + 3] = 255; // A: opaque
+            }
+        }
+        let image_data =
+            web_sys::ImageData::new_with_u8_clamped_array_and_sh(wasm_bindgen::Clamped(&pixels), w, h)
+                .expect("failed to build ImageData");
+        ctx.put_image_data(&image_data, 0.0, 0.0)
+            .expect("put_image_data failed");
+        web_sys::console::log_1(&"drew test pattern".into());
+    }
+}
+
 // Shared support for tests that touch real files on disk (quicksave, hall-of-fame,
 // long-term save). `getenv`/`setenv` are process-global, not thread-local, and `cargo
 // test` runs tests in parallel threads by default, so any test that sets SDLPOP_SAVE_PATH

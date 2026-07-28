@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SDLPoP wasm (exploratory)</title>
+<style>
+  body { background: #222; color: #eee; font-family: monospace; }
+  canvas { image-rendering: pixelated; border: 1px solid #555; }
+</style>
+</head>
+<body>
+<h3>SDLPoP wasm milestone — exploratory, not a real game yet</h3>
+<canvas id="screen" width="320" height="200"></canvas>
+<p>Open devtools console for log output.</p>
+<script type="module">
+  import init, { draw_test_pattern } from './pkg/sdlpop.js';
+  await init();
+  draw_test_pattern();
+</script>
+</body>
+</html>
