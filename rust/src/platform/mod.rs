@@ -30,8 +30,14 @@
 pub mod backend;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod sdl;
-#[cfg(target_arch = "wasm32")]
+// Also compiled on native under `cargo test` (not in normal native builds) so the
+// pixel-parity test harness (Phase A, `docs/plans/13-platform-architecture-unification.md`)
+// can run WasmRenderer's logic directly, no wasm32 target or browser needed -- it's plain
+// portable Rust with no wasm-only crate dependencies.
+#[cfg(any(target_arch = "wasm32", test))]
 pub mod wasm;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pixel_parity_tests;
 
 // All ~224 real call sites reach the active backend through `crate::platform::sdl::
 // shared_renderer()`/`shared_audio()`/`shared_input()` -- a hardcoded module path, not a
@@ -49,6 +55,21 @@ use std::os::raw::c_int;
 
 use crate::{SDL_Color, SDL_PixelFormat, SDL_RWops, SDL_Rect, SDL_Surface};
 
+/// Plain-data copy of the `SDL_PixelFormat` fields game logic actually reads (Phase A of
+/// `docs/plans/13-platform-architecture-unification.md`) -- returned by
+/// `Renderer::surface_format_info` instead of exposing `.format` for direct dereference.
+/// `WasmRenderer` can populate this without needing a real `SDL_Palette`-shaped allocation
+/// for anything except the actual indexed-color entries (see `surface_palette`).
+#[derive(Clone, Copy, Debug)]
+pub struct PixelFormatInfo {
+    pub bits_per_pixel: u8,
+    pub bytes_per_pixel: u8,
+    pub rmask: u32,
+    pub gmask: u32,
+    pub bmask: u32,
+    pub amask: u32,
+}
+
 pub trait Renderer {
     /// Full `SDL_CreateRGBSurface` signature (depth + RGBA masks), not just
     /// width/height -- callers need both the 8bpp-indexed surfaces most of the game
@@ -56,6 +77,20 @@ pub trait Renderer {
     /// masks (`lighting.rs`'s 32bpp overlay).
     unsafe fn create_surface(&mut self, width: c_int, height: c_int, depth: c_int, rmask: u32, gmask: u32, bmask: u32, amask: u32) -> *mut SDL_Surface;
     unsafe fn free_surface(&mut self, surf: *mut SDL_Surface);
+    /// Replaces direct `(*surf).w`/`.h` field reads (Phase A). Pure accessor, no
+    /// C-visible side effect either way.
+    unsafe fn surface_size(&mut self, surf: *mut SDL_Surface) -> (c_int, c_int);
+    /// Replaces direct `(*surf).pitch` field reads.
+    unsafe fn surface_pitch(&mut self, surf: *mut SDL_Surface) -> c_int;
+    /// Replaces direct `(*surf).pixels` field reads. Raw pointer, same as everything else
+    /// in this trait -- callers already do their own per-row pointer arithmetic using
+    /// `surface_pitch`, so this stays low-level rather than wrapping a safe slice.
+    unsafe fn surface_pixels(&mut self, surf: *mut SDL_Surface) -> *mut std::os::raw::c_void;
+    /// Replaces direct `(*(*surf).format).BitsPerPixel`/`.Rmask`/etc. field reads.
+    unsafe fn surface_format_info(&mut self, surf: *mut SDL_Surface) -> PixelFormatInfo;
+    /// Replaces direct `(*(*surf).format).palette` field reads -- stays a raw handle,
+    /// same reasoning as `set_palette_colors` already taking one.
+    unsafe fn surface_palette(&mut self, surf: *mut SDL_Surface) -> *mut crate::SDL_Palette;
     /// Loads an image (PNG via SDL2_image today) from an in-memory buffer -- the
     /// `IMG_Load_RW`-over-`SDL_RWFromConstMem` path `load_image` (seg009.rs) uses for
     /// sprite data -- or a file path (the window icon / lighting mask, both `IMG_Load`

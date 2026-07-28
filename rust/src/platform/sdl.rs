@@ -70,6 +70,34 @@ impl Renderer for SdlRenderer {
         sdl2::sys::SDL_FreeSurface(as_sys_surface(surf));
     }
 
+    unsafe fn surface_size(&mut self, surf: *mut SDL_Surface) -> (c_int, c_int) {
+        ((*surf).w, (*surf).h)
+    }
+
+    unsafe fn surface_pitch(&mut self, surf: *mut SDL_Surface) -> c_int {
+        (*surf).pitch
+    }
+
+    unsafe fn surface_pixels(&mut self, surf: *mut SDL_Surface) -> *mut std::os::raw::c_void {
+        (*surf).pixels
+    }
+
+    unsafe fn surface_format_info(&mut self, surf: *mut SDL_Surface) -> crate::platform::PixelFormatInfo {
+        let format = (*surf).format;
+        crate::platform::PixelFormatInfo {
+            bits_per_pixel: (*format).BitsPerPixel,
+            bytes_per_pixel: (*format).BytesPerPixel,
+            rmask: (*format).Rmask,
+            gmask: (*format).Gmask,
+            bmask: (*format).Bmask,
+            amask: (*format).Amask,
+        }
+    }
+
+    unsafe fn surface_palette(&mut self, surf: *mut SDL_Surface) -> *mut crate::SDL_Palette {
+        (*(*surf).format).palette
+    }
+
     unsafe fn load_image_from_memory(&mut self, bytes: &[u8]) -> *mut SDL_Surface {
         // `sdl2::image::LoadSurface` only exposes `from_file`/`from_xpm_array`; the crate
         // has no safe load-from-memory-buffer wrapper (matches IMG_Load_RW), so this is
