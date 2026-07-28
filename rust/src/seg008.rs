@@ -1331,7 +1331,8 @@ pub unsafe extern "C" fn add_backtable(chtab_id: c_short, id: c_int, xh: i8, xl:
     item.id = (id - 1) as u8;
     let image = get_image(chtab_id, id - 1);
     if image.is_null() { return 0; }
-    item.y = (ybottom - (*image).h as c_int + 1) as c_short;
+    let (_, image_height) = crate::platform::sdl::shared_renderer().surface_size(image);
+    item.y = (ybottom - image_height + 1) as c_short;
     item.blit = blit;
     if draw_mode != 0 {
         draw_back_fore(0, index as c_int);
@@ -1358,7 +1359,8 @@ pub unsafe extern "C" fn add_foretable(chtab_id: c_short, id: c_int, xh: i8, xl:
     item.id = (id - 1) as u8;
     let image = get_image(chtab_id, id - 1);
     if image.is_null() { return 0; }
-    item.y = (ybottom - (*image).h as c_int + 1) as c_short;
+    let (_, image_height) = crate::platform::sdl::shared_renderer().surface_size(image);
+    item.y = (ybottom - image_height + 1) as c_short;
     item.blit = blit;
     if draw_mode != 0 {
         draw_back_fore(1, index as c_int);
@@ -1390,7 +1392,8 @@ pub unsafe extern "C" fn add_midtable(chtab_id: c_short, id: c_int, xh: i8, xl: 
     item.id = (id - 1) as u8;
     let image = get_image(chtab_id, id - 1);
     if image.is_null() { return 0; }
-    item.y = (ybottom - (*image).h as c_int + 1) as c_short;
+    let (_, image_height) = crate::platform::sdl::shared_renderer().surface_size(image);
+    item.y = (ybottom - image_height + 1) as c_short;
     if obj_direction == directions_dir_0_right as i8 && chtab_flip_clip[chtab_id as usize] != 0 {
         blit += 0x80;
     }
@@ -1500,11 +1503,11 @@ pub unsafe extern "C" fn draw_back_fore(which_table: c_int, index: c_int) {
 /// ordering is preserved.
 fn hflip(input: *mut SDL_Surface) -> *mut SDL_Surface {
     unsafe {
-        let width = (*input).w;
-        let height = (*input).h;
         let renderer = crate::platform::sdl::shared_renderer();
+        let (width, height) = renderer.surface_size(input);
         let output = renderer.convert_surface(input, (*input).format, 0);
-        renderer.set_surface_palette(output, (*(*input).format).palette);
+        let palette = renderer.surface_palette(input);
+        renderer.set_surface_palette(output, palette);
         if output.is_null() {
             sdlperror(b"hflip: SDL_ConvertSurface\0".as_ptr() as *const c_char);
             quit(1);
@@ -1562,18 +1565,20 @@ pub unsafe extern "C" fn draw_mid(index: c_int) {
     }
 
     let image = if blit_flip {
-        xpos -= (*mask).w as c_int;
+        let (mask_width, _) = crate::platform::sdl::shared_renderer().surface_size(mask);
+        xpos -= mask_width;
         hflip(mask)
     } else {
         mask
     };
 
     if entry.peel != 0 {
+        let (image_width, image_height) = crate::platform::sdl::shared_renderer().surface_size(image);
         add_peel(
             round_xpos_to_byte(xpos, 0),
-            round_xpos_to_byte((*image).w as c_int + xpos, 1),
+            round_xpos_to_byte(image_width + xpos, 1),
             ypos,
-            (*image).h as c_int,
+            image_height,
         );
     }
     draw_image(image, mask, xpos, ypos, blit);
@@ -1615,11 +1620,12 @@ pub unsafe extern "C" fn draw_image(image: *mut image_type, mask: *mut image_typ
         }
     }
     if need_drects != 0 {
+        let (image_width, image_height) = crate::platform::sdl::shared_renderer().surface_size(image);
         let rect = rect_type {
             left: xpos as c_short,
-            right: (xpos + (*image).w as c_int) as c_short,
+            right: (xpos + image_width) as c_short,
             top: ypos as c_short,
-            bottom: (ypos + (*image).h as c_int) as c_short,
+            bottom: (ypos + image_height) as c_short,
         };
         add_drect(&rect as *const rect_type as *mut rect_type);
     }
