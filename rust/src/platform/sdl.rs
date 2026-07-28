@@ -91,6 +91,7 @@ impl Renderer for SdlRenderer {
             gmask: (*format).Gmask,
             bmask: (*format).Bmask,
             amask: (*format).Amask,
+            format: (*format).format,
         }
     }
 

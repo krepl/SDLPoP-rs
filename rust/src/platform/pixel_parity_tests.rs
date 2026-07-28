@@ -75,6 +75,9 @@ unsafe fn draw_test_scene<R: Renderer>(r: &mut R) -> Vec<u8> {
     let fmt = r.surface_format_info(dst);
     assert_eq!(fmt.bits_per_pixel, 8);
     assert_eq!(fmt.bytes_per_pixel, 1);
+    // `SDL_ISPIXELFORMAT_INDEXED`-style callers (seg009.rs) read this raw enum value
+    // directly -- real SDL_PIXELFORMAT_INDEX8, not a value we invented.
+    assert_eq!(fmt.format, 0x13000801, "8bpp surface's format enum should be SDL_PIXELFORMAT_INDEX8");
 
     let pixels_ptr = r.surface_pixels(dst) as *const u8;
     let pixels = std::slice::from_raw_parts(pixels_ptr, (pitch * h) as usize).to_vec();

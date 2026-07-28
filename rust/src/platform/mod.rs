@@ -68,6 +68,10 @@ pub struct PixelFormatInfo {
     pub gmask: u32,
     pub bmask: u32,
     pub amask: u32,
+    /// The raw `SDL_PixelFormatEnum` value (`(*format).format`) -- kept separate from the
+    /// mask/depth fields above since it's an opaque enum, not a component derived from
+    /// them. Needed for `SDL_ISPIXELFORMAT_INDEXED`-style checks (`seg009.rs`).
+    pub format: u32,
 }
 
 pub trait Renderer {

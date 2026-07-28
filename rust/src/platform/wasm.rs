@@ -191,6 +191,12 @@ impl Renderer for WasmRenderer {
             gmask: s.gmask,
             bmask: s.bmask,
             amask: s.amask,
+            // Real SDL_PIXELFORMAT_INDEX8/ARGB8888 enum values -- only the "is this
+            // indexed?" bit-pattern actually gets read anywhere (SDL_ISPIXELFORMAT_INDEXED
+            // in seg009.rs), so reusing SDL's real constants for the two depths this
+            // codebase actually creates is simpler and more honest than hand-encoding the
+            // SDL_PIXELTYPE/ORDER/LAYOUT bit-packing macro ourselves.
+            format: if s.bits_per_pixel == 8 { 0x13000801 } else { 0x16362004 },
         }
     }
 

@@ -4014,7 +4014,7 @@ pub unsafe extern "C" fn method_6_blit_img_to_scr(image: *mut image_type, xpos: 
     crate::platform::sdl::shared_renderer().set_alpha_mod(image, 255);
 
     let transparent = blit != blitters_blitters_0_no_transp as c_int;
-    if SDL_ISPIXELFORMAT_INDEXED((*(*image).format).format) {
+    if SDL_ISPIXELFORMAT_INDEXED(crate::platform::sdl::shared_renderer().surface_format_info(image).format) {
         crate::platform::sdl::shared_renderer().set_color_key(image, transparent, 0);
     } else {
         let mode = if transparent { SDL_BLENDMODE_BLEND } else { SDL_BLENDMODE_NONE };
