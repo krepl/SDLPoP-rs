@@ -60,10 +60,15 @@ use crate::platform::{InputSource, Renderer};
 // ---------------------------------------------------------------------------
 // SDL / libc externs (not in bindings.rs)
 // ---------------------------------------------------------------------------
+// setjmp/longjmp are native-only (see start_game's doc comment below for the wasm32
+// alternative -- a panic-based retry loop, since wasm32 has no non-local jump primitive).
+#[cfg(not(target_arch = "wasm32"))]
 extern "C" {
     fn setjmp(env: *mut u8) -> c_int;
     fn longjmp(env: *mut u8, val: c_int) -> !;
+}
 
+extern "C" {
     fn mkdir(path: *const c_char, mode: u32) -> c_int;
     fn strcmp(a: *const c_char, b: *const c_char) -> c_int;
     fn strrchr(s: *const c_char, c: c_int) -> *mut c_char;
@@ -184,6 +189,7 @@ static mut level_var_palettes: *mut byte = null_mut();
 // data:02C2
 static mut first_start: word = 1;
 // data:4C38
+#[cfg(not(target_arch = "wasm32"))]
 static mut setjmp_buf: [u8; 200] = [0u8; 200];
 
 static mut last_transition_counter: u64 = 0;
@@ -510,15 +516,23 @@ pub unsafe extern "C" fn init_game_main() {
 /// `start_game` from the top with `first_start` already zero — so the second call from the
 /// restored frame takes the `if` branch and proceeds normally.
 ///
-/// **Do not restructure this.** There is no safe Rust equivalent: the jump lands in the middle of
-/// a call stack that is never unwound, so no combination of loops, closures or `?` reproduces it
-/// without changing which frames get discarded.
+/// **Do not restructure the native path.** There is no safe Rust equivalent to a real
+/// non-local jump: it lands in the middle of a call stack that is never unwound, so no
+/// combination of loops, closures or `?` reproduces it without changing which frames get
+/// discarded. The native implementation below is untouched from the original port.
+///
+/// wasm32 has no `setjmp`/`longjmp` at all (see `wasm_libc.rs`), so it uses a different but
+/// behaviorally equivalent mechanism: Rust's own unwinding. The *outer* call (`first_start !=
+/// 0`) wraps [`start_game_body`] in a `catch_unwind` retry loop instead of calling `setjmp`;
+/// every *inner* call (one of the ~12 restart call sites, arbitrarily deep in the stack) tears
+/// down the screen/sounds exactly like native does, then panics with a [`RestartGameSignal`]
+/// marker instead of calling `longjmp` -- caught by the outer loop, which reruns the body,
+/// exactly mirroring "resume execution right after the landing pad." No other restart call
+/// site needs to change: they already just call `start_game()` again, which is what drives
+/// both branches on either target.
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn start_game() {
-    // USE_COPYPROT
-    let mut entry_used = [0u16; 40];
-    let mut letts_used = [0u8; 26];
-
     // Prevent filling of stack.
     if first_start != 0 {
         first_start = 0;
@@ -529,14 +543,52 @@ pub unsafe extern "C" fn start_game() {
         clear_screen_and_sounds();
         longjmp(setjmp_buf.as_mut_ptr(), -1);
     }
+    start_game_body();
+}
+
+/// Marker type panicked with by wasm32's `start_game` when a nested call wants to restart --
+/// caught by the outer call's `catch_unwind`, never allowed to escape it. Carries no data;
+/// its identity (via `downcast_ref`) is the whole signal.
+#[cfg(target_arch = "wasm32")]
+pub(crate) struct RestartGameSignal;
+
+#[cfg(target_arch = "wasm32")]
+#[no_mangle]
+pub unsafe extern "C" fn start_game() {
+    if first_start != 0 {
+        first_start = 0;
+        loop {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| start_game_body())) {
+                Ok(()) => return,
+                Err(payload) => {
+                    if payload.downcast_ref::<RestartGameSignal>().is_some() {
+                        continue;
+                    }
+                    // A real panic/bug, not a restart request -- propagate it.
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        }
+    } else {
+        draw_rect(addr_of!(screen_rect), colorids_color_0_black as c_int);
+        show_quotes();
+        clear_screen_and_sounds();
+        std::panic::panic_any(RestartGameSignal);
+    }
+}
+
+/// The actual "start (or restart) the game" logic -- identical on every target. Landed on
+/// (native: via the `setjmp` fallthrough; wasm32: via the `catch_unwind` loop) once per
+/// restart, so `entry_used`/`letts_used` are declared fresh here rather than by the caller.
+unsafe fn start_game_body() {
+    // USE_COPYPROT
+    let mut entry_used = [0u16; 40];
+    let mut letts_used = [0u8; 26];
+
     release_title_images();
     free_optsnd_chtab();
 
     // USE_COPYPROT
-    // These two must be cleared HERE, after the landing pad, not at their declaration: on a
-    // restart, execution resumes at the setjmp above with the stack frame's locals still holding
-    // the previous deal, so a declaration-site initialiser would never re-run. C's memsets sit at
-    // exactly this point for the same reason.
     entry_used.fill(0);
     letts_used.fill(0);
 

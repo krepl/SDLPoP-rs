@@ -10,12 +10,13 @@
 //! (they still link real glibc, unchanged).
 //!
 //! Scope: the memory/string/parsing functions below are real, correct implementations --
-//! not stubs -- since they're simple enough to not need an actual libc. Three groups are
-//! deliberately left as stubs, documented at each definition, because they need a real
-//! design decision rather than a mechanical shim:
-//! - `setjmp`/`longjmp`: wasm32 has no non-local jump primitive; `seg000.rs`'s restart-game
-//!   mechanism needs restructuring (e.g. a retry loop wrapping `catch_unwind`) to work at
-//!   all here, which is a real, separate change to core control flow, not a shim.
+//! not stubs -- since they're simple enough to not need an actual libc. `setjmp`/`longjmp`
+//! are declared `extern "C"` in `seg000.rs` for the *native* target only -- wasm32 has no
+//! non-local jump primitive, so `seg000.rs`'s `start_game` uses a `catch_unwind`-based retry
+//! loop for wasm32 instead of calling them at all (Phase B,
+//! `docs/plans/13-platform-architecture-unification.md`); no shim for them exists or is
+//! needed here. Two groups are deliberately left as stubs, documented at each definition,
+//! because they need a real design decision rather than a mechanical shim:
 //! - POSIX directory listing (`opendir`/`readdir`/`closedir`) and file stats
 //!   (`stat`/`fstat`/`access`/`chdir`/`mkdir`/`fileno`): these exist to scan `mods/`/`data/`
 //!   on a real filesystem. A browser has no such thing -- this needs to route through the
@@ -360,25 +361,6 @@ pub unsafe extern "C" fn difftime(time1: i64, time0: i64) -> f64 {
 #[no_mangle]
 pub unsafe extern "C" fn exit(_code: c_int) -> ! {
     std::process::abort()
-}
-
-// ============================================================================
-// Deferred: non-local jump. `seg000.rs`'s restart-game loop calls these unconditionally
-// on every `start_game()` invocation, so the symbols must exist to link at all, but true
-// setjmp/longjmp semantics (a single call site returning twice, popping arbitrary stack
-// frames) have no wasm32 equivalent without restructuring that loop into something like a
-// `catch_unwind`-wrapped retry loop -- a real change to core control flow, not a shim.
-// These panic if actually reached at runtime; not yet exercised by a real boot attempt.
-// ============================================================================
-
-#[no_mangle]
-pub unsafe extern "C" fn setjmp(_env: *mut u8) -> c_int {
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn longjmp(_env: *mut u8, _val: c_int) -> ! {
-    panic!("longjmp: not implemented for wasm32 -- seg000.rs's restart-game loop needs restructuring for this target, see rust/src/wasm_libc.rs")
 }
 
 // ============================================================================
