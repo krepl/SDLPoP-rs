@@ -1822,9 +1822,11 @@ unsafe fn draw_setting_explanation(setting: *mut setting_type) {
 /// Blits a decoded image (in practice, an arrowhead) onto the overlay with
 /// colour 0 keyed out, so it does not carry a black box with it.
 unsafe fn draw_image_with_blending(image: *mut image_type, xpos: c_int, ypos: c_int) {
-    let src_rect = SDL_Rect { x: 0, y: 0, w: (*image).w, h: (*image).h };
-    let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: (*image).w, h: (*image).h };
-    crate::platform::sdl::shared_renderer().set_color_key(image, true, 0);
+    let renderer = crate::platform::sdl::shared_renderer();
+    let (image_w, image_h) = renderer.surface_size(image);
+    let src_rect = SDL_Rect { x: 0, y: 0, w: image_w, h: image_h };
+    let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: image_w, h: image_h };
+    renderer.set_color_key(image, true, 0);
     if SDL_BlitSurface(image, &src_rect, current_target_surface, &mut dest_rect) != 0 {
         sdlperror(cs!("SDL_BlitSurface"));
         quit(1);
