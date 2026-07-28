@@ -1645,9 +1645,11 @@ pub unsafe extern "C" fn decode_image(image_data: *mut image_data_type, pal: *mu
     if crate::platform::sdl::shared_renderer().lock_surface(image) != 0 {
         sdlperror(cs!("decode_image: SDL_LockSurface"));
     }
+    let image_pixels = crate::platform::sdl::shared_renderer().surface_pixels(image) as *mut byte;
+    let image_pitch = crate::platform::sdl::shared_renderer().surface_pitch(image);
     for y in 0..height {
         memcpy(
-            ((*image).pixels as *mut byte).offset((y * (*image).pitch) as isize) as *mut c_void,
+            image_pixels.offset((y * image_pitch) as isize) as *mut c_void,
             image_8bpp.offset((y * width) as isize) as *const c_void,
             width as usize,
         );
@@ -1667,7 +1669,8 @@ pub unsafe extern "C" fn decode_image(image_data: *mut image_data_type, pal: *mu
     }
     // Colour 0 is the transparent background everywhere in the game's art.
     colors[0] = SDL_Color { r: 0, g: 0, b: 0, a: SDL_ALPHA_TRANSPARENT };
-    crate::platform::sdl::shared_renderer().set_palette_colors((*(*image).format).palette, colors.as_ptr(), 0, 16);
+    let image_palette = crate::platform::sdl::shared_renderer().surface_palette(image);
+    crate::platform::sdl::shared_renderer().set_palette_colors(image_palette, colors.as_ptr(), 0, 16);
     image
 }
 
@@ -1843,7 +1846,11 @@ pub unsafe extern "C" fn flip_screen(surface: *mut surface_type) {
             sdlperror(cs!("flip_screen: SDL_LockSurface"));
             quit(1);
         }
-        flip_not_ega((*surface).pixels as *mut byte, (*surface).h, (*surface).pitch);
+        let renderer = crate::platform::sdl::shared_renderer();
+        let surface_pixels = renderer.surface_pixels(surface) as *mut byte;
+        let (_, surface_h) = renderer.surface_size(surface);
+        let surface_pitch = renderer.surface_pitch(surface);
+        flip_not_ega(surface_pixels, surface_h, surface_pitch);
         crate::platform::sdl::shared_renderer().unlock_surface(surface);
     }
 }
@@ -1959,7 +1966,7 @@ unsafe fn get_char_width(character: byte) -> c_int {
         let images = core::ptr::addr_of!((*(*font).chtab).images) as *const *mut image_type;
         let image = *images.add((character - (*font).first_char) as usize);
         if !image.is_null() {
-            width += (*image).w;
+            width += crate::platform::sdl::shared_renderer().surface_size(image).0;
             if width != 0 {
                 width += (*font).space_between_chars as c_int;
             }
@@ -2042,7 +2049,7 @@ pub unsafe extern "C" fn draw_text_character(character: byte) -> c_int {
                 textstate.textblit as c_int,
                 textstate.textcolor as byte,
             );
-            width = (*font).space_between_chars as c_int + (*image).w;
+            width = (*font).space_between_chars as c_int + crate::platform::sdl::shared_renderer().surface_size(image).0;
         }
     }
     textstate.current_x = (textstate.current_x as c_int + width) as c_short;
@@ -3708,8 +3715,7 @@ pub unsafe extern "C" fn method_1_blit_rect(target_surface: *mut surface_type, s
 // seg009 method_3_blit_mono
 #[no_mangle]
 pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int, ypos: c_int, _blitter: c_int, color: byte) -> *mut image_type {
-    let w = (*image).w;
-    let h = (*image).h;
+    let (w, h) = crate::platform::sdl::shared_renderer().surface_size(image);
     if crate::platform::sdl::shared_renderer().set_color_key(image, true, 0) != 0 {
         sdlperror(cs!("method_3_blit_mono: SDL_SetColorKey"));
         quit(1);
@@ -3725,9 +3731,10 @@ pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int,
 
     let (pr, pg, pb) = palette_rgb8(color);
     let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, pr, pg, pb) & 0xFFFFFF;
-    let stride = (*colored_image).pitch;
+    let stride = crate::platform::sdl::shared_renderer().surface_pitch(colored_image);
+    let colored_pixels = crate::platform::sdl::shared_renderer().surface_pixels(colored_image) as *mut byte;
     for y in 0..h {
-        let mut pixel_ptr = ((*colored_image).pixels as *mut byte).offset((stride * y) as isize) as *mut u32;
+        let mut pixel_ptr = colored_pixels.offset((stride * y) as isize) as *mut u32;
         for _x in 0..w {
             *pixel_ptr = (*pixel_ptr & 0xFF000000) | rgb_color;
             pixel_ptr = pixel_ptr.add(1);
@@ -3735,8 +3742,9 @@ pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int,
     }
     crate::platform::sdl::shared_renderer().unlock_surface(colored_image);
 
-    let src_rect = SDL_Rect { x: 0, y: 0, w: (*image).w, h: (*image).h };
-    let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: (*image).w, h: (*image).h };
+    let (image_w, image_h) = crate::platform::sdl::shared_renderer().surface_size(image);
+    let src_rect = SDL_Rect { x: 0, y: 0, w: image_w, h: image_h };
+    let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: image_w, h: image_h };
 
     crate::platform::sdl::shared_renderer().set_blend_mode(colored_image, SDL_BLENDMODE_BLEND);
     crate::platform::sdl::shared_renderer().set_blend_mode(current_target_surface, SDL_BLENDMODE_BLEND);
@@ -3766,7 +3774,9 @@ unsafe fn RGB24_bug_check() -> bool {
         if crate::platform::sdl::shared_renderer().lock_surface(test_surface) != 0 {
             sdlperror(cs!("SDL_LockSurface in RGB24_bug_check"));
         }
-        RGB24_bug_affected = (*((*test_surface).pixels as *const u32) & (*(*test_surface).format).Rmask) == 0;
+        let test_pixels = crate::platform::sdl::shared_renderer().surface_pixels(test_surface);
+        let test_rmask = crate::platform::sdl::shared_renderer().surface_format_info(test_surface).rmask;
+        RGB24_bug_affected = (*(test_pixels as *const u32) & test_rmask) == 0;
         crate::platform::sdl::shared_renderer().unlock_surface(test_surface);
         crate::platform::sdl::shared_renderer().free_surface(test_surface);
         RGB24_bug_checked = true;
@@ -3777,7 +3787,7 @@ unsafe fn RGB24_bug_check() -> bool {
 /// `SDL_FillRect` with the 24-bit channel order pre-swapped on affected SDL
 /// builds. See [`RGB24_bug_check`].
 unsafe fn safe_fill_rect(dst: *mut SDL_Surface, rect: *const SDL_Rect, mut color: u32) -> c_int {
-    if (*(*dst).format).BitsPerPixel == 24 && RGB24_bug_check() {
+    if crate::platform::sdl::shared_renderer().surface_format_info(dst).bits_per_pixel == 24 && RGB24_bug_check() {
         color = ((color & 0xFF) << 16) | (color & 0xFF00) | ((color & 0xFF0000) >> 16);
     }
     crate::platform::sdl::shared_renderer().fill_rect(dst, rect, color)
@@ -3825,8 +3835,8 @@ pub unsafe extern "C" fn draw_rect_with_alpha(rect: *const rect_type, color: byt
 // seg009 draw_rect_contours
 #[no_mangle]
 pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte) {
-    if (*(*current_target_surface).format).BitsPerPixel != 32 {
-        crate::c_log(&format!("draw_rect_contours: not implemented for {} bit surfaces\n", (*(*current_target_surface).format).BitsPerPixel as c_int));
+    if crate::platform::sdl::shared_renderer().surface_format_info(current_target_surface).bits_per_pixel != 32 {
+        crate::c_log(&format!("draw_rect_contours: not implemented for {} bit surfaces\n", crate::platform::sdl::shared_renderer().surface_format_info(current_target_surface).bits_per_pixel as c_int));
         return;
     }
     let mut dest_rect: SDL_Rect = core::mem::zeroed();
@@ -3837,13 +3847,14 @@ pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte)
         sdlperror(cs!("draw_rect_contours: SDL_LockSurface"));
         quit(1);
     }
-    let bytes_per_pixel = (*(*current_target_surface).format).BytesPerPixel as c_int;
-    let pitch = (*current_target_surface).pitch;
-    let pixels = (*current_target_surface).pixels as *mut byte;
-    let xmin = MIN_i(dest_rect.x, (*current_target_surface).w);
-    let xmax = MIN_i(dest_rect.x + dest_rect.w, (*current_target_surface).w);
-    let ymin = MIN_i(dest_rect.y, (*current_target_surface).h);
-    let ymax = MIN_i(dest_rect.y + dest_rect.h, (*current_target_surface).h);
+    let bytes_per_pixel = crate::platform::sdl::shared_renderer().surface_format_info(current_target_surface).bytes_per_pixel as c_int;
+    let pitch = crate::platform::sdl::shared_renderer().surface_pitch(current_target_surface);
+    let pixels = crate::platform::sdl::shared_renderer().surface_pixels(current_target_surface) as *mut byte;
+    let (target_w, target_h) = crate::platform::sdl::shared_renderer().surface_size(current_target_surface);
+    let xmin = MIN_i(dest_rect.x, target_w);
+    let xmax = MIN_i(dest_rect.x + dest_rect.w, target_w);
+    let ymin = MIN_i(dest_rect.y, target_h);
+    let ymax = MIN_i(dest_rect.y + dest_rect.h, target_h);
     let mut row = pixels.offset((ymin * pitch) as isize);
     let mut pixel = row.offset((xmin * bytes_per_pixel) as isize) as *mut u32;
     for _x in xmin..xmax {
@@ -3899,9 +3910,10 @@ unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, i
         sdlperror(cs!("blit_xor: SDL_LockSurface"));
         quit(1);
     }
-    let size = (*helper_surface).h * (*helper_surface).pitch;
-    let mut p_src = (*image_24).pixels as *mut byte;
-    let mut p_dest = (*helper_surface).pixels as *mut byte;
+    let renderer = crate::platform::sdl::shared_renderer();
+    let size = renderer.surface_size(helper_surface).1 * renderer.surface_pitch(helper_surface);
+    let mut p_src = renderer.surface_pixels(image_24) as *mut byte;
+    let mut p_dest = renderer.surface_pixels(helper_surface) as *mut byte;
 
     // Xor the old area with the image.
     for _i in 0..size {
@@ -3939,16 +3951,16 @@ unsafe fn draw_colored_torch(color: c_int, image: *mut SDL_Surface, xpos: c_int,
         quit(1);
     }
 
-    let w = (*colored_image).w;
-    let h = (*colored_image).h;
+    let (w, h) = crate::platform::sdl::shared_renderer().surface_size(colored_image);
     let iRed = ((color >> 4) & 3) * 85;
     let iGreen = ((color >> 2) & 3) * 85;
     let iBlue = ((color >> 0) & 3) * 85;
     let old_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, 0xFC, 0x84, 0x00) & 0xFFFFFF;
     let new_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, iRed as u8, iGreen as u8, iBlue as u8) & 0xFFFFFF;
-    let stride = (*colored_image).pitch;
+    let stride = crate::platform::sdl::shared_renderer().surface_pitch(colored_image);
+    let colored_pixels = crate::platform::sdl::shared_renderer().surface_pixels(colored_image) as *mut byte;
     for y in 0..h {
-        let mut pixel_ptr = ((*colored_image).pixels as *mut byte).offset((stride * y) as isize) as *mut u32;
+        let mut pixel_ptr = colored_pixels.offset((stride * y) as isize) as *mut u32;
         for _x in 0..w {
             if (*pixel_ptr & 0xFFFFFF) == old_color {
                 *pixel_ptr = (*pixel_ptr & 0xFF000000) | new_color;
@@ -3982,8 +3994,9 @@ pub unsafe extern "C" fn method_6_blit_img_to_scr(image: *mut image_type, xpos: 
         return image;
     }
 
-    let mut src_rect = SDL_Rect { x: 0, y: 0, w: (*image).w, h: (*image).h };
-    let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: (*image).w, h: (*image).h };
+    let (image_w, image_h) = crate::platform::sdl::shared_renderer().surface_size(image);
+    let mut src_rect = SDL_Rect { x: 0, y: 0, w: image_w, h: image_h };
+    let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: image_w, h: image_h };
 
     if blit == blitters_blitters_3_xor as c_int {
         blit_xor(current_target_surface, &mut dest_rect, image, &mut src_rect);
@@ -4343,7 +4356,9 @@ pub unsafe extern "C" fn update_screen() {
     if scaling_type == 1 {
         // Make "fuzzy pixels" like DOSBox does.
         if is_renderer_targettexture_supported {
-            crate::platform::sdl::shared_renderer().update_texture(texture_sharp, core::ptr::null(), (*surface).pixels, (*surface).pitch);
+            let surface_pixels = crate::platform::sdl::shared_renderer().surface_pixels(surface);
+            let surface_pitch = crate::platform::sdl::shared_renderer().surface_pitch(surface);
+            crate::platform::sdl::shared_renderer().update_texture(texture_sharp, core::ptr::null(), surface_pixels, surface_pitch);
             set_scale_quality_linear(true);
             crate::platform::sdl::shared_renderer().set_render_target(renderer_, target_texture);
             set_scale_quality_linear(false);
@@ -4353,10 +4368,14 @@ pub unsafe extern "C" fn update_screen() {
         } else {
             SDL_BlitScaled(surface, core::ptr::null(), onscreen_surface_2x, null_mut());
             surface = onscreen_surface_2x;
-            crate::platform::sdl::shared_renderer().update_texture(target_texture, core::ptr::null(), (*surface).pixels, (*surface).pitch);
+            let surface_pixels = crate::platform::sdl::shared_renderer().surface_pixels(surface);
+            let surface_pitch = crate::platform::sdl::shared_renderer().surface_pitch(surface);
+            crate::platform::sdl::shared_renderer().update_texture(target_texture, core::ptr::null(), surface_pixels, surface_pitch);
         }
     } else {
-        crate::platform::sdl::shared_renderer().update_texture(target_texture, core::ptr::null(), (*surface).pixels, (*surface).pitch);
+        let surface_pixels = crate::platform::sdl::shared_renderer().surface_pixels(surface);
+        let surface_pitch = crate::platform::sdl::shared_renderer().surface_pitch(surface);
+        crate::platform::sdl::shared_renderer().update_texture(target_texture, core::ptr::null(), surface_pixels, surface_pitch);
     }
     crate::platform::sdl::shared_renderer().render_clear(renderer_);
     crate::platform::sdl::shared_renderer().render_copy(renderer_, target_texture, core::ptr::null(), core::ptr::null());
@@ -5005,8 +5024,9 @@ pub unsafe extern "C" fn set_bg_attr(vga_pal_index: c_int, hc_pal_index: c_int) 
             quit(1);
         }
         let mut rect = SDL_Rect { x: 0, y: 0, w: 0, h: 0 };
-        rect.w = (*offscreen_surface).w;
-        rect.h = (*offscreen_surface).h;
+        let (offscreen_w, offscreen_h) = crate::platform::sdl::shared_renderer().surface_size(offscreen_surface);
+        rect.w = offscreen_w;
+        rect.h = offscreen_h;
         let (pr, pg, pb) = palette_rgb8(hc_pal_index as byte);
         let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*onscreen_surface_).format, pr, pg, pb);
         // First clear the screen with the color of the flash.
@@ -5173,7 +5193,7 @@ pub unsafe extern "C" fn fade_in_frame(palette_buffer: *mut palette_fade_type) -
         set_pal_arr(row.start as c_int, 0x10, (core::ptr::addr_of!((*palette_buffer).faded_pal) as *const rgb_type).add(row.start));
     }
 
-    let h = (*offscreen_surface).h;
+    let h = crate::platform::sdl::shared_renderer().surface_size(offscreen_surface).1;
     if crate::platform::sdl::shared_renderer().lock_surface(onscreen_surface_) != 0 {
         sdlperror(cs!("fade_in_frame: SDL_LockSurface"));
         quit(1);
@@ -5182,12 +5202,14 @@ pub unsafe extern "C" fn fade_in_frame(palette_buffer: *mut palette_fade_type) -
         sdlperror(cs!("fade_in_frame: SDL_LockSurface"));
         quit(1);
     }
-    let on_stride = (*onscreen_surface_).pitch;
-    let off_stride = (*offscreen_surface).pitch;
+    let on_stride = crate::platform::sdl::shared_renderer().surface_pitch(onscreen_surface_);
+    let off_stride = crate::platform::sdl::shared_renderer().surface_pitch(offscreen_surface);
+    let on_pixels = crate::platform::sdl::shared_renderer().surface_pixels(onscreen_surface_) as *mut byte;
+    let off_pixels = crate::platform::sdl::shared_renderer().surface_pixels(offscreen_surface) as *mut byte;
     let fade_pos = (*palette_buffer).fade_pos as c_int;
     for y in 0..h {
-        let mut on_pixel_ptr = ((*onscreen_surface_).pixels as *mut byte).offset((on_stride * y) as isize);
-        let mut off_pixel_ptr = ((*offscreen_surface).pixels as *mut byte).offset((off_stride * y) as isize);
+        let mut on_pixel_ptr = on_pixels.offset((on_stride * y) as isize);
+        let mut off_pixel_ptr = off_pixels.offset((off_stride * y) as isize);
         for _x in 0..on_stride {
             let mut v = *off_pixel_ptr as c_int - fade_pos * 4;
             if v < 0 {
@@ -5284,7 +5306,7 @@ pub unsafe extern "C" fn fade_out_frame(palette_buffer: *mut palette_fade_type) 
         set_pal_arr(row.start as c_int, 0x10, (core::ptr::addr_of!((*palette_buffer).faded_pal) as *const rgb_type).add(row.start));
     }
 
-    let h = (*offscreen_surface).h;
+    let h = crate::platform::sdl::shared_renderer().surface_size(offscreen_surface).1;
     if crate::platform::sdl::shared_renderer().lock_surface(onscreen_surface_) != 0 {
         sdlperror(cs!("fade_out_frame: SDL_LockSurface"));
         quit(1);
@@ -5293,12 +5315,14 @@ pub unsafe extern "C" fn fade_out_frame(palette_buffer: *mut palette_fade_type) 
         sdlperror(cs!("fade_out_frame: SDL_LockSurface"));
         quit(1);
     }
-    let on_stride = (*onscreen_surface_).pitch;
-    let off_stride = (*offscreen_surface).pitch;
+    let on_stride = crate::platform::sdl::shared_renderer().surface_pitch(onscreen_surface_);
+    let off_stride = crate::platform::sdl::shared_renderer().surface_pitch(offscreen_surface);
+    let on_pixels = crate::platform::sdl::shared_renderer().surface_pixels(onscreen_surface_) as *mut byte;
+    let off_pixels = crate::platform::sdl::shared_renderer().surface_pixels(offscreen_surface) as *mut byte;
     let fade_pos = (*palette_buffer).fade_pos as c_int;
     for y in 0..h {
-        let mut on_pixel_ptr = ((*onscreen_surface_).pixels as *mut byte).offset((on_stride * y) as isize);
-        let mut off_pixel_ptr = ((*offscreen_surface).pixels as *mut byte).offset((off_stride * y) as isize);
+        let mut on_pixel_ptr = on_pixels.offset((on_stride * y) as isize);
+        let mut off_pixel_ptr = off_pixels.offset((off_stride * y) as isize);
         for _x in 0..on_stride {
             let mut v = *off_pixel_ptr as c_int - fade_pos * 4;
             if v < 0 {
@@ -5365,7 +5389,7 @@ pub unsafe extern "C" fn set_chtab_palette(chtab: *mut chtab_type, mut colors: *
         if current_image.is_null() {
             continue;
         }
-        let current_palette = (*(*current_image).format).palette;
+        let current_palette = crate::platform::sdl::shared_renderer().surface_palette(current_image);
         if current_palette.is_null() {
             continue;
         }
