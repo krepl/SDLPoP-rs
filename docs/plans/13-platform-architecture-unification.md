@@ -162,33 +162,80 @@ as a separate pass at the end.
 
 ---
 
-## Phase B — Game loop unification
+## Phase B — Game loop compatibility, via a Web Worker (revised design)
 
-**Why this shape:** this is the "genuine separation of simulation logic from presentation"
-work the refactor plan (`lucky-crafting-pebble.md`) already identified and deliberately
-deferred as "a real, legitimate redesign... revisit only as its own deliberate initiative."
-The WASM blocking-loop problem is exactly the forcing function that now justifies it.
+**Original design, superseded:** the plan originally called for extracting the per-tick body
+of the game loop into a single callable `advance_one_frame(state) -> LoopSignal` unit, driven
+by a blocking loop natively and by `requestAnimationFrame` on web. Research before starting
+implementation (see below) found this to be a genuinely large, high-risk refactor — bigger
+than initially scoped and not worth doing for what it actually buys.
 
-**Design:** extract the per-tick body of the game loop (currently inside `pop_main`'s call
-chain, ultimately `play_level_2` in `seg003.rs`) into a single callable unit — something like
-`advance_one_frame(state) -> LoopSignal` where `LoopSignal` is `Continue`/`RestartLevel`/
-`Quit`/etc. Native's entry point drives it in a loop with the same pacing as today
-(`Renderer::delay`, unchanged observable timing). Web exposes a `#[wasm_bindgen] fn tick()`
-that calls it once; JS drives repeated calls via `requestAnimationFrame` (or a fixed-interval
-timer matching the original tick rate — confirm the exact original timing model during
-implementation, not assumed here).
+**What the research found:**
+- `start_game()`'s restart mechanism (`seg000.rs`, the codebase's one `setjmp`/one `longjmp`
+  call site) is invoked from **12 different call sites** across 5 files (`seg000.rs`,
+  `seg001.rs`, `seg003.rs`, `seg006.rs`, `replay.rs`) — process_key, level-end handling, demo
+  timeout, hall-of-fame, clock expiry, replay end/cycling. Converting that stack-unwind into
+  explicit signal-propagation would mean touching every function between each of those 12
+  sites and `pop_main` — 20-40+ functions of real control-flow surgery.
+- Beyond that, there are **~8 other blocking-wait call sites** that would need the same
+  treatment for genuine non-blocking compatibility: a 100ms stall in `redraw_screen_impl`
+  (`seg003.rs:355`), a spin in `transition_ltr` (`seg000.rs:2684`), a nested pause loop in
+  `do_paused` (`seg000.rs:2251-2257`), `wait_for_sounds_to_finish` (`seg000.rs:2533-2539`),
+  both fade routines (`seg009.rs:5120-5124`, `5236-5240`), `do_wait` (`seg009.rs:4965`), and
+  the sound-finish wait in `play_level_impl` (`seg003.rs:161-163`).
+- This is comparable in size to Phase A (~80 sites across 6 files) but *riskier* — it touches
+  actual timing/control-flow logic, not just data-access relocation, which is exactly the
+  class of change most likely to introduce subtle, harness-invisible-until-triggered
+  regressions.
 
-**Open design question to resolve during this phase, not before:** how `setjmp`/`longjmp`'s
-restart mechanism (`seg000.rs`'s `start_game`, currently an unresolved wasm32 gap —
-`wasm_libc.rs`'s `longjmp` just panics) interacts with this. There's a real chance this phase
-*resolves* that gap for free: if the outer loop becomes a plain re-callable function instead
-of an infinite loop restarted via a non-local jump, "restart" might become just "reset the
-relevant state and return `LoopSignal::RestartLevel`" instead of a stack-unwinding jump —
-worth exploring explicitly as part of this phase's design, not deferring further.
+**Revised design: run the existing (unchanged) blocking loop inside a Web Worker.** A Worker
+has its own independent event loop — blocking it does not freeze the browser tab, which was
+the actual, sole motivating problem. Consequences:
+- `play_level_2`, every nested pause/wait loop, the whole call chain from `pop_main` down —
+  **stays completely unchanged.** Zero gameplay logic touched, zero risk to timing-sensitive
+  behavior the differential-trace harness cares about.
+- All real code changes are confined to the `Platform` trait boundary, already isolated by
+  design: `WasmRenderer::present()` posts a finished frame to the main thread (Workers have
+  no DOM/canvas access) instead of drawing directly; `WasmInput` receives events via
+  message-passing instead of a direct browser API; `WasmAudio` posts PCM buffers. `WasmFiles`
+  gets *simpler* than Phase C originally planned: synchronous `XMLHttpRequest` is explicitly
+  permitted inside Workers (unlike the main thread, where it's deprecated/discouraged), so
+  the async-preload-then-serve-synchronously design may not be needed at all — worth
+  revisiting Phase C's plan once this lands.
+- `setjmp`/`longjmp` still needs a real fix (this part of the original plan stands), but it
+  turns out much smaller in isolation than assumed: it's exactly one `longjmp` call site, and
+  the fix does **not** require touching any of the 12 restart call sites. Wrap just the outer
+  `start_game()`-calling loop (`init_game_main`, `seg000.rs`) in `catch_unwind`, and make
+  wasm's `longjmp` shim (`wasm_libc.rs`) panic with a distinguishable marker type that
+  wrapper catches and turns into a retry. Contained to `seg000.rs` + `wasm_libc.rs`, gated
+  `#[cfg(target_arch = "wasm32")]` — native keeps using real libc `setjmp`/`longjmp`,
+  completely untouched.
 
-**Exit criteria:** one `advance_one_frame`-equivalent function exists; native and web both
-drive it without maintaining separate copies of tick logic; the `setjmp`/`longjmp` wasm32 gap
-is either resolved or has a concretely updated plan (not left as a silent panic).
+**Known tradeoff, accepted for a first working version:** without `SharedArrayBuffer` (which
+needs COOP/COEP cross-origin-isolation HTTP headers — a real deployment constraint), there's
+no efficient blocking-sleep primitive available inside a Worker for frame pacing, so
+`Renderer::delay` falls back to a busy-spin (checking wall-clock time in a tight loop) rather
+than a real sleep — costs CPU/battery on that one background thread while a level is running,
+not correctness. Real efficient sleep via `Atomics.wait` is a deferred future refinement, same
+spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
+
+**Scope for this phase:**
+1. `setjmp`/`longjmp` fix (`seg000.rs` + `wasm_libc.rs`, wasm32-only).
+2. `WasmRenderer::present()` — post the finished frame buffer to the main thread.
+3. `WasmInput` — receive key/mouse state via a message queue populated by the main thread.
+4. `WasmAudio` — post PCM buffers for the main thread to play.
+5. JS harness: a dedicated worker script loading the wasm module and relaying messages;
+   `web/index.html` updated to spawn the worker, paint received frames to the canvas, forward
+   input events, and play received audio.
+6. Enough of `sdl_init`/`create_window`/`create_renderer`/window-lifecycle stubs to get
+   `pop_main()` actually running inside the worker without hitting `unimplemented!()` on the
+   startup path — scope this empirically (run it, see what it hits next) rather than trying
+   to predict the full startup call graph up front.
+
+**Exit criteria:** the `setjmp`/`longjmp` gap is resolved (or has a concretely updated plan,
+not a silent panic); a real frame produced by actual gameplay code (not the Phase-2-milestone
+test gradient) reaches the browser canvas via the Worker, driven by the genuinely unmodified
+game loop.
 
 ---
 
