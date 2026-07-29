@@ -113,6 +113,36 @@ unsafe fn surf_mut<'a>(surf: *mut SDL_Surface) -> &'a mut WasmSurface {
         .expect("WasmRenderer: unknown surface handle")
 }
 
+// ============================================================================
+// SDL_RWops store. Same opaque-handle pattern as surfaces (nothing dereferences
+// SDL_RWops fields directly anywhere in the crate, confirmed by grep). Backed by the same
+// virtual filesystem as `wasm_libc.rs`'s `fopen`-family functions (`rw_from_file` is the
+// only real file-backed caller, `SDLPoP.cfg` in menu.rs) -- one filesystem, not two.
+// ============================================================================
+
+struct WasmRw {
+    data: Vec<u8>,
+    pos: usize,
+    write_back_path: Option<String>,
+}
+
+fn rw_handles() -> &'static mut HashMap<usize, WasmRw> {
+    static mut RW_HANDLES: Option<HashMap<usize, WasmRw>> = None;
+    unsafe {
+        #[allow(static_mut_refs)]
+        RW_HANDLES.get_or_insert_with(HashMap::new)
+    }
+}
+
+fn next_rw_id() -> usize {
+    static mut NEXT_ID: usize = 1;
+    unsafe {
+        let id = NEXT_ID;
+        NEXT_ID += 1;
+        id
+    }
+}
+
 fn shift_for(mask: u32) -> u32 {
     if mask == 0 { 0 } else { mask.trailing_zeros() }
 }
@@ -355,20 +385,50 @@ impl Renderer for WasmRenderer {
     unsafe fn delay(&mut self, _ms: u32) {
         unimplemented!("WasmRenderer::delay")
     }
-    unsafe fn rw_from_mem(&mut self, _buf: *mut std::os::raw::c_void, _size: c_int) -> *mut SDL_RWops {
-        unimplemented!("WasmRenderer::rw_from_mem")
+    unsafe fn rw_from_mem(&mut self, buf: *mut std::os::raw::c_void, size: c_int) -> *mut SDL_RWops {
+        let data = std::slice::from_raw_parts(buf as *const u8, size.max(0) as usize).to_vec();
+        let id = next_rw_id();
+        rw_handles().insert(id, WasmRw { data, pos: 0, write_back_path: None });
+        id as *mut SDL_RWops
     }
-    unsafe fn rw_tell(&mut self, _rw: *mut SDL_RWops) -> i64 {
-        unimplemented!("WasmRenderer::rw_tell")
+    unsafe fn rw_tell(&mut self, rw: *mut SDL_RWops) -> i64 {
+        match rw_handles().get(&(rw as usize)) {
+            Some(h) => h.pos as i64,
+            None => -1,
+        }
     }
-    unsafe fn rw_close(&mut self, _rw: *mut SDL_RWops) -> c_int {
-        unimplemented!("WasmRenderer::rw_close")
+    unsafe fn rw_close(&mut self, rw: *mut SDL_RWops) -> c_int {
+        if let Some(h) = rw_handles().remove(&(rw as usize)) {
+            if let Some(path) = h.write_back_path {
+                crate::wasm_vfs::vfs_write(&path, h.data);
+            }
+        }
+        0
     }
-    unsafe fn rw_write(&mut self, _rw: *mut SDL_RWops, _ptr: *const std::os::raw::c_void, _size: usize, _num: usize) -> usize {
-        unimplemented!("WasmRenderer::rw_write")
+    unsafe fn rw_write(&mut self, rw: *mut SDL_RWops, ptr: *const std::os::raw::c_void, size: usize, num: usize) -> usize {
+        let Some(h) = rw_handles().get_mut(&(rw as usize)) else { return 0 };
+        if size == 0 { return 0; }
+        let n = size * num;
+        let end = h.pos + n;
+        if h.data.len() < end {
+            h.data.resize(end, 0);
+        }
+        let src = std::slice::from_raw_parts(ptr as *const u8, n);
+        h.data[h.pos..end].copy_from_slice(src);
+        h.pos = end;
+        num
     }
-    unsafe fn rw_read(&mut self, _rw: *mut SDL_RWops, _ptr: *mut std::os::raw::c_void, _size: usize, _maxnum: usize) -> usize {
-        unimplemented!("WasmRenderer::rw_read")
+    unsafe fn rw_read(&mut self, rw: *mut SDL_RWops, ptr: *mut std::os::raw::c_void, size: usize, maxnum: usize) -> usize {
+        let Some(h) = rw_handles().get_mut(&(rw as usize)) else { return 0 };
+        if size == 0 { return 0; }
+        let want = size * maxnum;
+        let avail = h.data.len().saturating_sub(h.pos);
+        let n = want.min(avail);
+        if n > 0 {
+            std::ptr::copy_nonoverlapping(h.data[h.pos..h.pos + n].as_ptr(), ptr as *mut u8, n);
+            h.pos += n;
+        }
+        n / size
     }
     unsafe fn show_message_box(&mut self, _title: &std::ffi::CStr, _message: &std::ffi::CStr) {
         unimplemented!("WasmRenderer::show_message_box")
@@ -382,8 +442,21 @@ impl Renderer for WasmRenderer {
     unsafe fn performance_frequency(&mut self) -> u64 {
         unimplemented!("WasmRenderer::performance_frequency")
     }
-    unsafe fn rw_from_file(&mut self, _path: &std::ffi::CStr, _mode: &std::ffi::CStr) -> *mut SDL_RWops {
-        unimplemented!("WasmRenderer::rw_from_file")
+    unsafe fn rw_from_file(&mut self, path: &std::ffi::CStr, mode: &std::ffi::CStr) -> *mut SDL_RWops {
+        let path = path.to_string_lossy().into_owned();
+        let mode = mode.to_string_lossy();
+        let writable = mode.starts_with('w') || mode.starts_with('a');
+        let (data, write_back_path) = if writable {
+            (Vec::new(), Some(path))
+        } else {
+            match crate::wasm_vfs::vfs_read(&path) {
+                Some(bytes) => (bytes, None),
+                None => return std::ptr::null_mut(),
+            }
+        };
+        let id = next_rw_id();
+        rw_handles().insert(id, WasmRw { data, pos: 0, write_back_path });
+        id as *mut SDL_RWops
     }
     unsafe fn get_scancode_name(&mut self, _scancode: u32) -> *const std::os::raw::c_char {
         unimplemented!("WasmRenderer::get_scancode_name")
@@ -420,8 +493,11 @@ impl Renderer for WasmRenderer {
     unsafe fn set_window_icon(&mut self, _window: *mut crate::SDL_Window, _icon: *mut SDL_Surface) {
         unimplemented!("WasmRenderer::set_window_icon")
     }
-    unsafe fn rw_from_const_mem(&mut self, _mem: *const std::os::raw::c_void, _size: c_int) -> *mut SDL_RWops {
-        unimplemented!("WasmRenderer::rw_from_const_mem")
+    unsafe fn rw_from_const_mem(&mut self, mem: *const std::os::raw::c_void, size: c_int) -> *mut SDL_RWops {
+        let data = std::slice::from_raw_parts(mem as *const u8, size.max(0) as usize).to_vec();
+        let id = next_rw_id();
+        rw_handles().insert(id, WasmRw { data, pos: 0, write_back_path: None });
+        id as *mut SDL_RWops
     }
     unsafe fn create_texture(&mut self, _renderer: *mut crate::SDL_Renderer, _format: u32, _access: c_int, _w: c_int, _h: c_int) -> *mut crate::SDL_Texture {
         unimplemented!("WasmRenderer::create_texture")
@@ -448,25 +524,37 @@ impl Renderer for WasmRenderer {
         unimplemented!("WasmRenderer::get_renderer_output_size")
     }
     unsafe fn get_renderer_info_flags(&mut self, _renderer: *mut crate::SDL_Renderer) -> u32 {
-        unimplemented!("WasmRenderer::get_renderer_info_flags")
+        // Report no flags set (in particular, no SDL_RENDERER_TARGETTEXTURE) -- steers the
+        // game onto its non-target-texture rendering fallback, which is the simpler path
+        // and doesn't need a real GPU-backed texture concept in a Canvas renderer.
+        0
     }
     unsafe fn set_hint(&mut self, _name: &std::ffi::CStr, _value: &std::ffi::CStr) -> c_int {
-        unimplemented!("WasmRenderer::set_hint")
+        // Real SDL hints (render scale quality, etc.) have no equivalent in a Canvas-based
+        // renderer -- there's no "hint system" to configure. Report success (SDL_TRUE) so
+        // callers that check the return value don't treat this as an error.
+        1
     }
     unsafe fn sdl_init(&mut self, _flags: u32) -> c_int {
-        unimplemented!("WasmRenderer::sdl_init")
+        // No real SDL subsystems exist here (Canvas/Web Audio/message-passing input stand
+        // in for video/audio/joystick) -- nothing to actually initialize. Report success.
+        0
     }
     unsafe fn sdl_init_subsystem(&mut self, _flags: u32) -> c_int {
-        unimplemented!("WasmRenderer::sdl_init_subsystem")
+        0
     }
     unsafe fn sdl_quit(&mut self) {
-        unimplemented!("WasmRenderer::sdl_quit")
+        // No real subsystems were ever initialized by sdl_init above -- nothing to tear
+        // down.
     }
     unsafe fn create_window(&mut self, _title: &std::ffi::CStr, _x: c_int, _y: c_int, _w: c_int, _h: c_int, _flags: u32) -> *mut crate::SDL_Window {
-        unimplemented!("WasmRenderer::create_window")
+        // No real OS window exists (the browser tab/canvas is the "window"); a distinct
+        // non-null sentinel is enough to satisfy code that only null-checks this and passes
+        // it back into other Renderer methods, none of which currently dereference it.
+        1 as *mut crate::SDL_Window
     }
     unsafe fn create_renderer(&mut self, _window: *mut crate::SDL_Window, _index: c_int, _flags: u32) -> *mut crate::SDL_Renderer {
-        unimplemented!("WasmRenderer::create_renderer")
+        1 as *mut crate::SDL_Renderer
     }
     unsafe fn open_audio_raw(&mut self, _desired: *mut std::os::raw::c_void, _obtained: *mut std::os::raw::c_void) -> c_int {
         unimplemented!("WasmRenderer::open_audio_raw")
@@ -634,32 +722,79 @@ pub fn shared_input() -> &'static mut WasmInput {
     unsafe { &mut SHARED_INPUT }
 }
 
+// Real key/mouse state, updated by whatever relays browser input events into the wasm
+// module (message-passing from the main thread, in the eventual Worker design -- not built
+// yet). Module-level statics rather than WasmInput fields, matching this file's existing
+// pattern (WasmInput itself stays a unit struct so `SHARED_INPUT`'s static initializer
+// stays trivial).
+fn key_states() -> &'static mut [bool; 512] {
+    static mut KEY_STATES: [bool; 512] = [false; 512];
+    #[allow(static_mut_refs)]
+    unsafe { &mut KEY_STATES }
+}
+
+struct MouseState {
+    x: c_int,
+    y: c_int,
+    left: bool,
+    right: bool,
+}
+
+fn mouse_state_mut() -> &'static mut MouseState {
+    static mut MOUSE: MouseState = MouseState { x: 0, y: 0, left: false, right: false };
+    #[allow(static_mut_refs)]
+    unsafe { &mut MOUSE }
+}
+
+/// JS-facing: report a key transition (SDL scancode + pressed/released), called from
+/// whatever relays browser `keydown`/`keyup` events into the wasm module.
+pub fn set_key_state(scancode: u32, pressed: bool) {
+    if let Some(slot) = key_states().get_mut(scancode as usize) {
+        *slot = pressed;
+    }
+}
+
+/// JS-facing: report the latest mouse position/button state.
+pub fn set_mouse_state(x: c_int, y: c_int, left: bool, right: bool) {
+    let m = mouse_state_mut();
+    m.x = x;
+    m.y = y;
+    m.left = left;
+    m.right = right;
+}
+
 impl WasmInput {
     /// Mirrors `SdlInput::init` -- an inherent method (not part of `InputSource`) that
-    /// `seg009.rs`'s startup path calls directly on `shared_input()`.
+    /// `seg009.rs`'s startup path calls directly on `shared_input()`. Nothing to actually
+    /// initialize here: `key_states()`/`mouse_state_mut()` are already zeroed statics, and
+    /// there's no real event pump/video/timer subsystem to construct (unlike native).
     pub fn init(&mut self) -> Result<(), String> {
-        unimplemented!("WasmInput::init")
+        Ok(())
     }
 }
 
 impl InputSource for WasmInput {
-    fn key_state(&self, _scancode: c_int) -> bool {
-        unimplemented!("WasmInput::key_state")
+    fn key_state(&self, scancode: c_int) -> bool {
+        key_states().get(scancode as usize).copied().unwrap_or(false)
     }
     fn mouse_state(&self) -> (c_int, c_int, bool, bool) {
-        unimplemented!("WasmInput::mouse_state")
+        let m = mouse_state_mut();
+        (m.x, m.y, m.left, m.right)
     }
     fn start_text_input(&mut self, _x: c_int, _y: c_int, _w: c_int, _h: c_int) {
-        unimplemented!("WasmInput::start_text_input")
+        // IME/on-screen-keyboard hinting has no equivalent worth implementing yet --
+        // physical-keyboard input already works via set_key_state.
     }
-    fn stop_text_input(&mut self) {
-        unimplemented!("WasmInput::stop_text_input")
-    }
+    fn stop_text_input(&mut self) {}
     fn add_one_shot_timer(&mut self, _delay_ms: u32, _callback: Box<dyn FnOnce() + Send>) -> bool {
-        unimplemented!("WasmInput::add_one_shot_timer")
+        // Only real caller is the level-skip Shift-key debounce (a minor UX nicety, not
+        // needed to boot a frame). Report "timer not created" rather than silently losing
+        // the callback -- the one caller already handles that by not debouncing.
+        false
     }
     fn rumble(&mut self, _strength: f32, _duration_ms: u32) {
-        unimplemented!("WasmInput::rumble")
+        // No controller haptics in a browser tab (yet); silently doing nothing matches
+        // what real SDL does on a controller with no rumble support.
     }
 }
 

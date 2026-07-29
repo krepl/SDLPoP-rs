@@ -24,6 +24,7 @@
 //!   gracefully (matching what these calls already do on a real filesystem when the path
 //!   doesn't exist) so linking succeeds; real behavior is a `platform::wasm` task.
 
+use std::collections::HashMap;
 use std::os::raw::{c_char, c_int, c_long, c_uint, c_void};
 
 // ============================================================================
@@ -385,8 +386,11 @@ pub unsafe extern "C" fn closedir(_dirp: *mut c_void) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn access(_path: *const c_char, _mode: c_int) -> c_int {
-    -1
+pub unsafe extern "C" fn access(path: *const c_char, _mode: c_int) -> c_int {
+    // Real access() also checks read/write/execute permission bits (the `mode` argument);
+    // every real caller in this codebase only ever checks F_OK (existence), so that's all
+    // this needs to implement.
+    if vfs_contains(&c_str_to_string(path)) { 0 } else { -1 }
 }
 
 #[no_mangle]
@@ -450,31 +454,120 @@ pub unsafe extern "C" fn __errno_location() -> *mut c_int {
 }
 
 // ============================================================================
-// Deferred: `FILE*` I/O. Same story as the POSIX filesystem functions above -- real file
-// access in a browser needs to route through the `FileSystem` trait (fetch for reads,
-// `localStorage`/IndexedDB for quicksave writes), not a libc-level shim. Stubbed to fail
-// gracefully (`fopen` always returns null, matching what every caller already checks for)
-// so linking succeeds.
+// `FILE*` I/O -- a real in-memory virtual filesystem (Phase C,
+// docs/plans/13-platform-architecture-unification.md), not a stub. Every DAT/asset/INI/
+// quicksave/HOF/replay file access in this codebase already goes through plain `fopen`/
+// `fread`/`fwrite`/`fseek`/`ftell`/`fclose` (confirmed by a full audit -- the `FileSystem`
+// trait turned out to be unused dead code, so this does NOT route through it), so making
+// these functions real makes every existing call site work with zero changes anywhere else
+// in the crate. `preload_file` is the JS-facing way to populate it -- call it for every
+// asset path the game might open, before starting the game.
+//
+// Semantics: read-mode opens look up the exact path string in `VFS_STORE`; nothing is
+// fetched lazily here (a synchronous-XHR-inside-a-Worker fallback is a reasonable future
+// refinement, not implemented yet). Write-mode opens start with an empty buffer; on
+// `fclose`, the buffer is copied back into `VFS_STORE` under the same path, so a
+// quicksave-then-quickload round-trip works within one session even with no real backing
+// storage yet -- it just doesn't survive a page reload (another deferred refinement, e.g.
+// wiring to IndexedDB).
 // ============================================================================
 
+struct VfsFile {
+    path: String,
+    data: Vec<u8>,
+    pos: usize,
+    writable: bool,
+}
+
+// The actual storage lives in `wasm_vfs` (shared with `platform::wasm::WasmRenderer::
+// rw_from_file` -- see that module's doc comment for why it's split out). Re-exported here
+// under their old names so the rest of this file's `fopen`-family code doesn't change.
+use crate::wasm_vfs::{vfs_contains, vfs_read, vfs_remove, vfs_write};
+
+fn open_files() -> &'static mut HashMap<usize, VfsFile> {
+    static mut OPEN_FILES: Option<HashMap<usize, VfsFile>> = None;
+    unsafe {
+        #[allow(static_mut_refs)]
+        OPEN_FILES.get_or_insert_with(HashMap::new)
+    }
+}
+
+fn next_file_id() -> usize {
+    static mut NEXT_ID: usize = 1;
+    unsafe {
+        let id = NEXT_ID;
+        NEXT_ID += 1;
+        id
+    }
+}
+
+unsafe fn c_str_to_string(s: *const c_char) -> String {
+    std::ffi::CStr::from_ptr(s).to_string_lossy().into_owned()
+}
+
+/// JS-facing: populate the virtual filesystem with one file's contents, keyed by the exact
+/// path the game will `fopen` (relative, matching the native build's own path resolution --
+/// e.g. `"data/PRINCE.DAT"`, `"SDLPoP.ini"`). Call before starting the game; there is no
+/// on-demand fetch fallback yet, so anything not preloaded will simply fail to open, exactly
+/// like a missing file does natively.
 #[no_mangle]
-pub unsafe extern "C" fn fopen(_path: *const c_char, _mode: *const c_char) -> *mut c_void {
-    std::ptr::null_mut()
+pub extern "C" fn wasm_vfs_preload(path: *const c_char, data: *const u8, len: usize) {
+    unsafe {
+        let path = c_str_to_string(path);
+        let bytes = std::slice::from_raw_parts(data, len).to_vec();
+        vfs_write(&path, bytes);
+    }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fseek(_stream: *mut c_void, _offset: c_long, _whence: c_int) -> c_int {
-    -1
+pub unsafe extern "C" fn fopen(path: *const c_char, mode: *const c_char) -> *mut c_void {
+    let path_str = c_str_to_string(path);
+    let mode_str = c_str_to_string(mode);
+    let writable = mode_str.starts_with('w') || mode_str.starts_with('a');
+
+    let file = if writable {
+        // "a" (append) would need seeding pos from any existing content; this codebase
+        // never opens a file in append mode (confirmed by the Phase C file-I/O audit), so
+        // treating both "w" and "a" as "start empty" is exact, not an approximation.
+        VfsFile { path: path_str, data: Vec::new(), pos: 0, writable: true }
+    } else {
+        match vfs_read(&path_str) {
+            Some(bytes) => VfsFile { path: path_str, data: bytes, pos: 0, writable: false },
+            None => return std::ptr::null_mut(),
+        }
+    };
+    let id = next_file_id();
+    open_files().insert(id, file);
+    id as *mut c_void
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn ftell(_stream: *mut c_void) -> c_long {
-    -1
+pub unsafe extern "C" fn fseek(stream: *mut c_void, offset: c_long, whence: c_int) -> c_int {
+    let Some(f) = open_files().get_mut(&(stream as usize)) else { return -1 };
+    let base = match whence {
+        0 => 0i64,                    // SEEK_SET
+        1 => f.pos as i64,            // SEEK_CUR
+        2 => f.data.len() as i64,     // SEEK_END
+        _ => return -1,
+    };
+    let new_pos = base + offset as i64;
+    if new_pos < 0 { return -1; }
+    f.pos = new_pos as usize;
+    0
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn remove(_path: *const c_char) -> c_int {
-    -1
+pub unsafe extern "C" fn ftell(stream: *mut c_void) -> c_long {
+    match open_files().get(&(stream as usize)) {
+        Some(f) => f.pos as c_long,
+        None => -1,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn remove(path: *const c_char) -> c_int {
+    let path_str = c_str_to_string(path);
+    if vfs_remove(&path_str) { 0 } else { -1 }
 }
 
 #[no_mangle]
@@ -483,17 +576,41 @@ pub unsafe extern "C" fn getenv(_name: *const c_char) -> *mut c_char {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fread(_ptr: *mut c_void, _size: usize, _count: usize, _stream: *mut c_void) -> usize {
-    0
+pub unsafe extern "C" fn fread(ptr: *mut c_void, size: usize, count: usize, stream: *mut c_void) -> usize {
+    let Some(f) = open_files().get_mut(&(stream as usize)) else { return 0 };
+    if size == 0 { return 0; }
+    let want = size * count;
+    let avail = f.data.len().saturating_sub(f.pos);
+    let n = want.min(avail);
+    if n > 0 {
+        std::ptr::copy_nonoverlapping(f.data[f.pos..f.pos + n].as_ptr(), ptr as *mut u8, n);
+        f.pos += n;
+    }
+    n / size
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fwrite(_ptr: *const c_void, _size: usize, _count: usize, _stream: *mut c_void) -> usize {
-    0
+pub unsafe extern "C" fn fwrite(ptr: *const c_void, size: usize, count: usize, stream: *mut c_void) -> usize {
+    let Some(f) = open_files().get_mut(&(stream as usize)) else { return 0 };
+    if size == 0 { return 0; }
+    let n = size * count;
+    let end = f.pos + n;
+    if f.data.len() < end {
+        f.data.resize(end, 0);
+    }
+    let src = std::slice::from_raw_parts(ptr as *const u8, n);
+    f.data[f.pos..end].copy_from_slice(src);
+    f.pos = end;
+    count
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fclose(_stream: *mut c_void) -> c_int {
+pub unsafe extern "C" fn fclose(stream: *mut c_void) -> c_int {
+    if let Some(f) = open_files().remove(&(stream as usize)) {
+        if f.writable {
+            vfs_write(&f.path, f.data);
+        }
+    }
     0
 }
 
@@ -501,11 +618,18 @@ pub unsafe extern "C" fn fclose(_stream: *mut c_void) -> c_int {
 pub unsafe extern "C" fn perror(_s: *const c_char) {}
 
 #[no_mangle]
-pub unsafe extern "C" fn rewind(_stream: *mut c_void) {}
+pub unsafe extern "C" fn rewind(stream: *mut c_void) {
+    if let Some(f) = open_files().get_mut(&(stream as usize)) {
+        f.pos = 0;
+    }
+}
 
 #[no_mangle]
-pub unsafe extern "C" fn feof(_stream: *mut c_void) -> c_int {
-    1
+pub unsafe extern "C" fn feof(stream: *mut c_void) -> c_int {
+    match open_files().get(&(stream as usize)) {
+        Some(f) => (f.pos >= f.data.len()) as c_int,
+        None => 1,
+    }
 }
 
 #[no_mangle]
@@ -514,18 +638,38 @@ pub unsafe extern "C" fn fflush(_stream: *mut c_void) -> c_int {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fgetc(_stream: *mut c_void) -> c_int {
-    -1
+pub unsafe extern "C" fn fgetc(stream: *mut c_void) -> c_int {
+    let Some(f) = open_files().get_mut(&(stream as usize)) else { return -1 };
+    if f.pos >= f.data.len() { return -1 }; // EOF
+    let c = f.data[f.pos];
+    f.pos += 1;
+    c as c_int
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fputc(_c: c_int, _stream: *mut c_void) -> c_int {
-    -1
+pub unsafe extern "C" fn fputc(c: c_int, stream: *mut c_void) -> c_int {
+    let Some(f) = open_files().get_mut(&(stream as usize)) else { return -1 };
+    let byte = c as u8;
+    if f.pos >= f.data.len() {
+        f.data.push(byte);
+    } else {
+        f.data[f.pos] = byte;
+    }
+    f.pos += 1;
+    c
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fputs(_s: *const c_char, _stream: *mut c_void) -> c_int {
-    -1
+pub unsafe extern "C" fn fputs(s: *const c_char, stream: *mut c_void) -> c_int {
+    let bytes = std::ffi::CStr::from_ptr(s).to_bytes();
+    let Some(f) = open_files().get_mut(&(stream as usize)) else { return -1 };
+    let end = f.pos + bytes.len();
+    if f.data.len() < end {
+        f.data.resize(end, 0);
+    }
+    f.data[f.pos..end].copy_from_slice(bytes);
+    f.pos = end;
+    0
 }
 
 /// `seg009.rs` declares `static mut stderr: *mut FILE` (the real glibc global, on

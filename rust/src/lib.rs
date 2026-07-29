@@ -118,6 +118,10 @@ pub mod platform;
 pub mod state;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_libc;
+// Dependency-free VFS storage shared by wasm_libc.rs (wasm32-only, uses js_sys elsewhere in
+// that file) and platform::wasm (also compiled on native under `cargo test`, see there).
+#[cfg(any(target_arch = "wasm32", test))]
+pub mod wasm_vfs;
 
 /// Browser entry point (Phase 2 exploratory milestone). `main()` in `main.rs` is the
 /// wasm module's `main` export, but wasm-bindgen's JS glue doesn't call it automatically
@@ -174,6 +178,15 @@ mod wasm_entry {
         ctx.put_image_data(&image_data, 0.0, 0.0)
             .expect("put_image_data failed");
         web_sys::console::log_1(&"drew test pattern".into());
+    }
+
+    /// Populates the wasm32 virtual filesystem (`wasm_libc.rs`) with one file's bytes,
+    /// keyed by the exact relative path the game will `fopen` (e.g. `"data/PRINCE.DAT"`,
+    /// `"SDLPoP.ini"`). Call once per asset before `run_game()`/the real game entry point.
+    #[wasm_bindgen]
+    pub fn preload_file(path: String, data: &[u8]) {
+        let cpath = std::ffi::CString::new(path).expect("path must not contain a NUL byte");
+        crate::wasm_libc::wasm_vfs_preload(cpath.as_ptr(), data.as_ptr(), data.len());
     }
 
     /// Exploratory Phase B milestone: actually call `pop_main()`, with no real
