@@ -3730,7 +3730,7 @@ pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int,
     }
 
     let (pr, pg, pb) = palette_rgb8(color);
-    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, pr, pg, pb) & 0xFFFFFF;
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb(crate::platform::sdl::shared_renderer().surface_format_ptr(colored_image), pr, pg, pb) & 0xFFFFFF;
     let stride = crate::platform::sdl::shared_renderer().surface_pitch(colored_image);
     let colored_pixels = crate::platform::sdl::shared_renderer().surface_pixels(colored_image) as *mut byte;
     for y in 0..h {
@@ -3770,7 +3770,7 @@ unsafe fn RGB24_bug_check() -> bool {
         if test_surface.is_null() {
             sdlperror(cs!("SDL_CreateSurface in RGB24_bug_check"));
         }
-        crate::platform::sdl::shared_renderer().fill_rect(test_surface, core::ptr::null(), crate::platform::sdl::shared_renderer().map_rgb((*test_surface).format, 0xFF, 0, 0));
+        crate::platform::sdl::shared_renderer().fill_rect(test_surface, core::ptr::null(), crate::platform::sdl::shared_renderer().map_rgb(crate::platform::sdl::shared_renderer().surface_format_ptr(test_surface), 0xFF, 0, 0));
         if crate::platform::sdl::shared_renderer().lock_surface(test_surface) != 0 {
             sdlperror(cs!("SDL_LockSurface in RGB24_bug_check"));
         }
@@ -3800,7 +3800,7 @@ pub unsafe extern "C" fn method_5_rect(rect: *const rect_type, _blit: c_int, col
     let mut dest_rect: SDL_Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut dest_rect);
     let (pr, pg, pb) = palette_rgb8(color);
-    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*current_target_surface).format, pr, pg, pb, 0xFF);
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba(crate::platform::sdl::shared_renderer().surface_format_ptr(current_target_surface), pr, pg, pb, 0xFF);
     if safe_fill_rect(current_target_surface, &dest_rect, rgb_color) != 0 {
         sdlperror(cs!("method_5_rect: SDL_FillRect"));
         quit(1);
@@ -3820,7 +3820,7 @@ pub unsafe extern "C" fn draw_rect_with_alpha(rect: *const rect_type, color: byt
     let mut dest_rect: SDL_Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut dest_rect);
     let (pr, pg, pb) = palette_rgb8(color);
-    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*overlay_surface).format, pr, pg, pb, alpha);
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba(crate::platform::sdl::shared_renderer().surface_format_ptr(overlay_surface), pr, pg, pb, alpha);
     if safe_fill_rect(current_target_surface, &dest_rect, rgb_color) != 0 {
         sdlperror(cs!("draw_rect_with_alpha: SDL_FillRect"));
         quit(1);
@@ -3842,7 +3842,7 @@ pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte)
     let mut dest_rect: SDL_Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut dest_rect);
     let (pr, pg, pb) = palette_rgb8(color);
-    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba((*overlay_surface).format, pr, pg, pb, 0xFF);
+    let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba(crate::platform::sdl::shared_renderer().surface_format_ptr(overlay_surface), pr, pg, pb, 0xFF);
     if crate::platform::sdl::shared_renderer().lock_surface(current_target_surface) != 0 {
         sdlperror(cs!("draw_rect_contours: SDL_LockSurface"));
         quit(1);
@@ -3891,7 +3891,7 @@ unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, i
         sdlperror(cs!("blit_xor: SDL_CreateRGBSurface"));
         quit(1);
     }
-    let image_24 = crate::platform::sdl::shared_renderer().convert_surface(image, (*helper_surface).format, 0);
+    let image_24 = crate::platform::sdl::shared_renderer().convert_surface(image, crate::platform::sdl::shared_renderer().surface_format_ptr(helper_surface), 0);
     if image_24.is_null() {
         sdlperror(cs!("blit_xor: SDL_CreateRGBSurface"));
         quit(1);
@@ -3955,8 +3955,9 @@ unsafe fn draw_colored_torch(color: c_int, image: *mut SDL_Surface, xpos: c_int,
     let iRed = ((color >> 4) & 3) * 85;
     let iGreen = ((color >> 2) & 3) * 85;
     let iBlue = ((color >> 0) & 3) * 85;
-    let old_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, 0xFC, 0x84, 0x00) & 0xFFFFFF;
-    let new_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*colored_image).format, iRed as u8, iGreen as u8, iBlue as u8) & 0xFFFFFF;
+    let colored_image_format = crate::platform::sdl::shared_renderer().surface_format_ptr(colored_image);
+    let old_color: u32 = crate::platform::sdl::shared_renderer().map_rgb(colored_image_format, 0xFC, 0x84, 0x00) & 0xFFFFFF;
+    let new_color: u32 = crate::platform::sdl::shared_renderer().map_rgb(colored_image_format, iRed as u8, iGreen as u8, iBlue as u8) & 0xFFFFFF;
     let stride = crate::platform::sdl::shared_renderer().surface_pitch(colored_image);
     let colored_pixels = crate::platform::sdl::shared_renderer().surface_pixels(colored_image) as *mut byte;
     for y in 0..h {
@@ -5028,7 +5029,7 @@ pub unsafe extern "C" fn set_bg_attr(vga_pal_index: c_int, hc_pal_index: c_int) 
         rect.w = offscreen_w;
         rect.h = offscreen_h;
         let (pr, pg, pb) = palette_rgb8(hc_pal_index as byte);
-        let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb((*onscreen_surface_).format, pr, pg, pb);
+        let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgb(crate::platform::sdl::shared_renderer().surface_format_ptr(onscreen_surface_), pr, pg, pb);
         // First clear the screen with the color of the flash.
         if safe_fill_rect(onscreen_surface_, &rect, rgb_color) != 0 {
             sdlperror(cs!("set_bg_attr: SDL_FillRect"));

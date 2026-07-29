@@ -121,7 +121,7 @@ pub unsafe extern "C" fn init_lighting() {
 
     // ambient lighting
     bgcolor = crate::platform::sdl::shared_renderer().map_rgba(
-        (*screen_overlay).format,
+        crate::platform::sdl::shared_renderer().surface_format_ptr(screen_overlay),
         ambient_level,
         ambient_level,
         ambient_level,

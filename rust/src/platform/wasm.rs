@@ -58,6 +58,12 @@ struct WasmSurface {
     blend_mode: c_int,
     alpha_mod: u8,
     clip_rect: Option<SDL_Rect>,
+    /// Real, heap-allocated `SDL_PixelFormat` mirroring this surface's own mask/depth
+    /// fields (and `palette`'s pointer, if any) -- exists solely so `surface_format_ptr`
+    /// can hand back something genuinely dereferenceable for the handful of call sites
+    /// that pass `(*surf).format` directly into `map_rgb`/`map_rgba`/`convert_surface`
+    /// (no accessor replaces those calls themselves, only the field read feeding them).
+    format_ptr: Box<SDL_PixelFormat>,
 }
 
 struct WasmPalette {
@@ -147,6 +153,149 @@ fn shift_for(mask: u32) -> u32 {
     if mask == 0 { 0 } else { mask.trailing_zeros() }
 }
 
+/// `globalThis.performance.now()`, read reflectively rather than via `web_sys::window()`
+/// specifically -- the eventual real target is a Worker (`self`, no `window` global at
+/// all), and `Window`/`WorkerGlobalScope` both expose the same `Performance` interface
+/// under the same `performance` property name, so reading it off `globalThis` works
+/// identically in a Window, a Worker, or (handy for testing without a browser) Node, which
+/// has provided a global `performance` object since Node 16.
+///
+/// `js_sys` is a wasm32-only dependency (`Cargo.toml`), but this module is also compiled
+/// on native under `cargo test` (Phase A) -- so the real implementation is wasm32-only,
+/// with a `std::time::Instant`-backed equivalent for native test builds (this function's
+/// contract, milliseconds since some fixed start point, is identical either way; nothing
+/// depends on it lining up with a real wall-clock epoch).
+#[cfg(target_arch = "wasm32")]
+fn performance_now_ms() -> f64 {
+    use wasm_bindgen::JsCast;
+    (|| {
+        let global = js_sys::global();
+        let perf = js_sys::Reflect::get(&global, &"performance".into()).ok()?;
+        let now: js_sys::Function = js_sys::Reflect::get(&perf, &"now".into()).ok()?.dyn_into().ok()?;
+        now.call0(&perf).ok()?.as_f64()
+    })()
+    .unwrap_or(0.0)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn performance_now_ms() -> f64 {
+    static mut START: Option<std::time::Instant> = None;
+    unsafe {
+        #[allow(static_mut_refs)]
+        let start = START.get_or_insert_with(std::time::Instant::now);
+        start.elapsed().as_secs_f64() * 1000.0
+    }
+}
+
+// ============================================================================
+// Texture / render-target store -- the software equivalent of SDL's GPU-backed textures.
+// `seg009.rs`'s actual rendering pipeline (texture_sharp/blurry/fuzzy, all
+// SDL_PIXELFORMAT_RGB24) goes through create_texture/update_texture/render_clear/
+// render_copy/render_present against the renderer_ global directly, not through
+// `Renderer::present` (native's own `present()` panics if reached -- seg009.rs's window/
+// renderer creation was never migrated to build a real owned SdlPlatform, per Step C's
+// notes -- so this family, not `present`, is the real pipeline to implement here too).
+// ============================================================================
+
+struct WasmTexture {
+    w: c_int,
+    h: c_int,
+    bytes_per_pixel: usize,
+    pixels: Vec<u8>,
+}
+
+fn textures() -> &'static mut HashMap<usize, WasmTexture> {
+    static mut TEXTURES: Option<HashMap<usize, WasmTexture>> = None;
+    unsafe {
+        #[allow(static_mut_refs)]
+        TEXTURES.get_or_insert_with(HashMap::new)
+    }
+}
+
+fn next_texture_id() -> usize {
+    static mut NEXT_ID: usize = 1;
+    unsafe {
+        let id = NEXT_ID;
+        NEXT_ID += 1;
+        id
+    }
+}
+
+/// Bytes per pixel for the handful of `SDL_PIXELFORMAT_*` enum values this codebase
+/// actually passes to `create_texture` (`RGB24`; `ARGB8888` isn't used for texture
+/// creation today, but included for robustness). Anything else defaults to 4 -- a
+/// reasonable guess, not a claim of correctness for a format this codebase never uses.
+fn bytes_per_pixel_for_format(format: u32) -> usize {
+    const SDL_PIXELFORMAT_RGB24: u32 = 386930691;
+    const SDL_PIXELFORMAT_ARGB8888: u32 = 372645892;
+    match format {
+        SDL_PIXELFORMAT_RGB24 => 3,
+        SDL_PIXELFORMAT_ARGB8888 => 4,
+        _ => 4,
+    }
+}
+
+/// The window's pixel dimensions, as given to `create_window`/`create_renderer` -- default
+/// matches this game's native resolution (320x200) so a render pipeline probed before a
+/// real window/renderer exists (shouldn't happen, but no reason to crash if it does) still
+/// has a sane screen-buffer size.
+static mut WINDOW_SIZE: (c_int, c_int) = (320, 200);
+
+/// `None` means "the real screen" (matches SDL's `SDL_SetRenderTarget(renderer, NULL)`);
+/// `Some(id)` means render calls act on that texture instead (render-to-texture).
+static mut CURRENT_RENDER_TARGET: Option<usize> = None;
+
+struct ScreenBuffer {
+    w: c_int,
+    h: c_int,
+    bytes_per_pixel: usize,
+    pixels: Vec<u8>,
+}
+
+fn screen_buffer() -> &'static mut ScreenBuffer {
+    static mut SCREEN: Option<ScreenBuffer> = None;
+    unsafe {
+        #[allow(static_mut_refs)]
+        SCREEN.get_or_insert_with(|| {
+            let (w, h) = WINDOW_SIZE;
+            ScreenBuffer { w, h, bytes_per_pixel: 3, pixels: vec![0u8; (w * h * 3) as usize] }
+        })
+    }
+}
+
+/// Resolves the current render target to a `(pixels, w, h, bytes_per_pixel)` view, whether
+/// it's the screen or a texture. Returns `None` for a target texture id that no longer
+/// exists (freed/never created) -- callers treat that as a no-op, matching SDL's own
+/// behavior of silently failing render calls against an invalid target.
+fn current_target_mut() -> Option<(&'static mut [u8], c_int, c_int, usize)> {
+    unsafe {
+        match CURRENT_RENDER_TARGET {
+            None => {
+                let s = screen_buffer();
+                Some((&mut s.pixels, s.w, s.h, s.bytes_per_pixel))
+            }
+            Some(id) => textures().get_mut(&id).map(|t| (&mut t.pixels[..], t.w, t.h, t.bytes_per_pixel)),
+        }
+    }
+}
+
+/// The most recently `render_present`-ed frame, in whatever format the screen buffer was
+/// last written in (today: `SDL_PIXELFORMAT_RGB24`, matching `texture_sharp`/etc.). This is
+/// the real remaining piece of Phase B: a JS-facing accessor (converting to RGBA8 for
+/// `ImageData`/canvas) belongs here once the Worker/JS harness exists to call it. For now
+/// this just makes `render_present` observably do something testable without a browser.
+static mut PRESENTED_FRAME: Option<(c_int, c_int, usize, Vec<u8>)> = None;
+
+/// Reads back the most recent `render_present`-ed frame -- `(width, height,
+/// bytes_per_pixel, pixels)`, or `None` if nothing has been presented yet. This is the real
+/// accessor the eventual JS-facing "get current frame" call will use (converting to RGBA8
+/// for `ImageData`/canvas); exposed now mainly so the pixel-parity test can verify
+/// `render_present` actually did something, not just that it didn't panic.
+pub(crate) fn last_presented_frame() -> Option<(c_int, c_int, usize, Vec<u8>)> {
+    #[allow(static_mut_refs)]
+    unsafe { PRESENTED_FRAME.clone() }
+}
+
 pub struct WasmRenderer;
 
 // `platform::backend::ActiveRenderer` only resolves to `WasmRenderer` when actually
@@ -174,7 +323,22 @@ impl Renderer for WasmRenderer {
         let bytes_per_pixel = ((depth.max(0) + 7) / 8) as u8;
         let pitch = width.max(0) * bytes_per_pixel as c_int;
         let pixels = vec![0u8; (pitch as usize) * (height.max(0) as usize)];
-        let palette = if depth == 8 { Some(WasmPalette::new()) } else { None };
+        let mut palette = if depth == 8 { Some(WasmPalette::new()) } else { None };
+        let format_ptr = Box::new(SDL_PixelFormat {
+            format: 0,
+            palette: palette.as_mut().map_or(std::ptr::null_mut(), |p| p.as_ptr()),
+            BitsPerPixel: depth as u8,
+            BytesPerPixel: bytes_per_pixel,
+            padding: [0; 2],
+            Rmask: rmask, Gmask: gmask, Bmask: bmask, Amask: amask,
+            // Every mask this codebase uses is a full byte-aligned 8-bit channel, so loss
+            // (bits discarded packing a component into fewer bits) is always 0.
+            Rloss: 0, Gloss: 0, Bloss: 0, Aloss: 0,
+            Rshift: shift_for(rmask) as u8, Gshift: shift_for(gmask) as u8,
+            Bshift: shift_for(bmask) as u8, Ashift: shift_for(amask) as u8,
+            refcount: 1,
+            next: std::ptr::null_mut(),
+        });
         let s = WasmSurface {
             w: width,
             h: height,
@@ -189,6 +353,7 @@ impl Renderer for WasmRenderer {
             blend_mode: SDL_BLENDMODE_NONE,
             alpha_mod: 255,
             clip_rect: None,
+            format_ptr,
         };
         let id = next_surface_id();
         surfaces().insert(id, s);
@@ -235,6 +400,10 @@ impl Renderer for WasmRenderer {
             Some(p) => p.as_ptr(),
             None => std::ptr::null_mut(),
         }
+    }
+
+    unsafe fn surface_format_ptr(&mut self, surf: *mut SDL_Surface) -> *mut SDL_PixelFormat {
+        surf_mut(surf).format_ptr.as_mut() as *mut SDL_PixelFormat
     }
 
     unsafe fn load_image_from_memory(&mut self, bytes: &[u8]) -> *mut SDL_Surface {
@@ -307,6 +476,11 @@ impl Renderer for WasmRenderer {
         let s = surf_mut(surf);
         if s.palette.is_none() {
             s.palette = Some(WasmPalette::new());
+            // format_ptr.palette was null at creation time (this surface wasn't 8bpp
+            // then) -- keep it in sync now that a palette actually exists, the same
+            // invariant create_surface establishes up front for surfaces created with
+            // depth == 8.
+            s.format_ptr.palette = s.palette.as_mut().unwrap().as_ptr();
         }
         let dst = s.palette.as_mut().unwrap().colors_mut();
         for i in 0..n {
@@ -447,10 +621,12 @@ impl Renderer for WasmRenderer {
         unimplemented!("WasmRenderer::linked_sdl_version")
     }
     unsafe fn performance_counter(&mut self) -> u64 {
-        unimplemented!("WasmRenderer::performance_counter")
+        (performance_now_ms() * 1000.0) as u64 // microsecond-resolution counter
     }
     unsafe fn performance_frequency(&mut self) -> u64 {
-        unimplemented!("WasmRenderer::performance_frequency")
+        1_000_000 // matches the microsecond unit above -- only the ratio between two
+                  // counter readings is ever used, not any absolute epoch, so this and
+                  // performance_counter just need to agree with each other.
     }
     unsafe fn rw_from_file(&mut self, path: &std::ffi::CStr, mode: &std::ffi::CStr) -> *mut SDL_RWops {
         let path = path.to_string_lossy().into_owned();
@@ -510,23 +686,80 @@ impl Renderer for WasmRenderer {
         rw_handles().insert(id, WasmRw { data, pos: 0, write_back_path: None });
         id as *mut SDL_RWops
     }
-    unsafe fn create_texture(&mut self, _renderer: *mut crate::SDL_Renderer, _format: u32, _access: c_int, _w: c_int, _h: c_int) -> *mut crate::SDL_Texture {
-        unimplemented!("WasmRenderer::create_texture")
+    unsafe fn create_texture(&mut self, _renderer: *mut crate::SDL_Renderer, format: u32, _access: c_int, w: c_int, h: c_int) -> *mut crate::SDL_Texture {
+        let bytes_per_pixel = bytes_per_pixel_for_format(format);
+        let pixels = vec![0u8; (w.max(0) as usize) * (h.max(0) as usize) * bytes_per_pixel];
+        let id = next_texture_id();
+        textures().insert(id, WasmTexture { w, h, bytes_per_pixel, pixels });
+        id as *mut crate::SDL_Texture
     }
-    unsafe fn update_texture(&mut self, _texture: *mut crate::SDL_Texture, _rect: *const SDL_Rect, _pixels: *const std::os::raw::c_void, _pitch: c_int) -> c_int {
-        unimplemented!("WasmRenderer::update_texture")
+    unsafe fn update_texture(&mut self, texture: *mut crate::SDL_Texture, rect: *const SDL_Rect, pixels: *const std::os::raw::c_void, pitch: c_int) -> c_int {
+        let Some(t) = textures().get_mut(&(texture as usize)) else { return -1 };
+        let (x0, y0, w, h) = match rect.as_ref() {
+            Some(r) => (r.x, r.y, r.w, r.h),
+            None => (0, 0, t.w, t.h),
+        };
+        let bpp = t.bytes_per_pixel;
+        let src = pixels as *const u8;
+        for row in 0..h {
+            let dy = y0 + row;
+            if dy < 0 || dy >= t.h { continue; }
+            let src_off = (row * pitch) as usize;
+            let dst_off = (dy * t.w) as usize * bpp + (x0.max(0) as usize) * bpp;
+            let n = (w.min(t.w - x0.max(0))).max(0) as usize * bpp;
+            if n == 0 { continue; }
+            std::ptr::copy_nonoverlapping(src.add(src_off), t.pixels[dst_off..].as_mut_ptr(), n);
+        }
+        0
     }
-    unsafe fn set_render_target(&mut self, _renderer: *mut crate::SDL_Renderer, _texture: *mut crate::SDL_Texture) -> c_int {
-        unimplemented!("WasmRenderer::set_render_target")
+    unsafe fn set_render_target(&mut self, _renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture) -> c_int {
+        CURRENT_RENDER_TARGET = if texture.is_null() { None } else { Some(texture as usize) };
+        0
     }
     unsafe fn render_clear(&mut self, _renderer: *mut crate::SDL_Renderer) -> c_int {
-        unimplemented!("WasmRenderer::render_clear")
+        let Some((pixels, _, _, _)) = current_target_mut() else { return -1 };
+        pixels.fill(0);
+        0
     }
-    unsafe fn render_copy(&mut self, _renderer: *mut crate::SDL_Renderer, _texture: *mut crate::SDL_Texture, _src_rect: *const SDL_Rect, _dst_rect: *const SDL_Rect) -> c_int {
-        unimplemented!("WasmRenderer::render_copy")
+    unsafe fn render_copy(&mut self, _renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture, src_rect: *const SDL_Rect, dst_rect: *const SDL_Rect) -> c_int {
+        // Copying a texture onto itself (render target == source) isn't something real SDL
+        // supports either -- reject it explicitly rather than let it slip through, since
+        // `current_target_mut()`'s `'static` borrow doesn't let the compiler catch the
+        // resulting aliased-mutable-and-immutable-reference-into-the-same-HashMap-entry
+        // case for us the way it normally would.
+        if CURRENT_RENDER_TARGET == Some(texture as usize) {
+            return -1;
+        }
+        let Some(t) = textures().get(&(texture as usize)) else { return -1 };
+        let (t_w, t_h, t_bpp) = (t.w, t.h, t.bytes_per_pixel);
+        let (sx0, sy0, sw, sh) = match src_rect.as_ref() {
+            Some(r) => (r.x, r.y, r.w, r.h),
+            None => (0, 0, t_w, t_h),
+        };
+        let Some((dst_pixels, d_w, d_h, d_bpp)) = current_target_mut() else { return -1 };
+        let (dx0, dy0, dw, dh) = match dst_rect.as_ref() {
+            Some(r) => (r.x, r.y, r.w, r.h),
+            None => (0, 0, d_w, d_h),
+        };
+        let t = &textures()[&(texture as usize)];
+        for y in 0..dh {
+            let sy = sy0 + if sh > 0 { y * sh / dh.max(1) } else { y };
+            for x in 0..dw {
+                let sx = sx0 + if sw > 0 { x * sw / dw.max(1) } else { x };
+                let (dyy, dxx) = (dy0 + y, dx0 + x);
+                if dyy < 0 || dyy >= d_h || dxx < 0 || dxx >= d_w { continue; }
+                if sy < 0 || sy >= t_h || sx < 0 || sx >= t_w { continue; }
+                let s_off = (sy * t_w) as usize * t_bpp + (sx as usize) * t_bpp;
+                let d_off = (dyy * d_w) as usize * d_bpp + (dxx as usize) * d_bpp;
+                let n = t_bpp.min(d_bpp);
+                dst_pixels[d_off..d_off + n].copy_from_slice(&t.pixels[s_off..s_off + n]);
+            }
+        }
+        0
     }
     unsafe fn render_present(&mut self, _renderer: *mut crate::SDL_Renderer) {
-        unimplemented!("WasmRenderer::render_present")
+        let s = screen_buffer();
+        PRESENTED_FRAME = Some((s.w, s.h, s.bytes_per_pixel, s.pixels.clone()));
     }
     unsafe fn render_set_logical_size(&mut self, _renderer: *mut crate::SDL_Renderer, _w: c_int, _h: c_int) -> c_int {
         // Canvas scaling is a JS/CSS concern in the real browser build, not something this
@@ -534,7 +767,7 @@ impl Renderer for WasmRenderer {
         0
     }
     unsafe fn get_renderer_output_size(&mut self, _renderer: *mut crate::SDL_Renderer) -> (c_int, c_int) {
-        unimplemented!("WasmRenderer::get_renderer_output_size")
+        WINDOW_SIZE
     }
     unsafe fn get_renderer_info_flags(&mut self, _renderer: *mut crate::SDL_Renderer) -> u32 {
         // Report no flags set (in particular, no SDL_RENDERER_TARGETTEXTURE) -- steers the
@@ -560,10 +793,15 @@ impl Renderer for WasmRenderer {
         // No real subsystems were ever initialized by sdl_init above -- nothing to tear
         // down.
     }
-    unsafe fn create_window(&mut self, _title: &std::ffi::CStr, _x: c_int, _y: c_int, _w: c_int, _h: c_int, _flags: u32) -> *mut crate::SDL_Window {
+    unsafe fn create_window(&mut self, _title: &std::ffi::CStr, _x: c_int, _y: c_int, w: c_int, h: c_int, _flags: u32) -> *mut crate::SDL_Window {
         // No real OS window exists (the browser tab/canvas is the "window"); a distinct
         // non-null sentinel is enough to satisfy code that only null-checks this and passes
         // it back into other Renderer methods, none of which currently dereference it.
+        // Real size IS recorded (WINDOW_SIZE) -- get_renderer_output_size and the screen
+        // buffer's own size need it.
+        if w > 0 && h > 0 {
+            WINDOW_SIZE = (w, h);
+        }
         1 as *mut crate::SDL_Window
     }
     unsafe fn create_renderer(&mut self, _window: *mut crate::SDL_Window, _index: c_int, _flags: u32) -> *mut crate::SDL_Renderer {

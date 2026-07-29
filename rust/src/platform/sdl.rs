@@ -99,6 +99,10 @@ impl Renderer for SdlRenderer {
         (*(*surf).format).palette
     }
 
+    unsafe fn surface_format_ptr(&mut self, surf: *mut SDL_Surface) -> *mut SDL_PixelFormat {
+        (*surf).format
+    }
+
     unsafe fn load_image_from_memory(&mut self, bytes: &[u8]) -> *mut SDL_Surface {
         // `sdl2::image::LoadSurface` only exposes `from_file`/`from_xpm_array`; the crate
         // has no safe load-from-memory-buffer wrapper (matches IMG_Load_RW), so this is

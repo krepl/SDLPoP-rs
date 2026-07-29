@@ -1505,7 +1505,8 @@ fn hflip(input: *mut SDL_Surface) -> *mut SDL_Surface {
     unsafe {
         let renderer = crate::platform::sdl::shared_renderer();
         let (width, height) = renderer.surface_size(input);
-        let output = renderer.convert_surface(input, (*input).format, 0);
+        let input_format = renderer.surface_format_ptr(input);
+        let output = renderer.convert_surface(input, input_format, 0);
         let palette = renderer.surface_palette(input);
         renderer.set_surface_palette(output, palette);
         if output.is_null() {

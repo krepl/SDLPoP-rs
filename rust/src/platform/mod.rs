@@ -95,6 +95,14 @@ pub trait Renderer {
     /// Replaces direct `(*(*surf).format).palette` field reads -- stays a raw handle,
     /// same reasoning as `set_palette_colors` already taking one.
     unsafe fn surface_palette(&mut self, surf: *mut SDL_Surface) -> *mut crate::SDL_Palette;
+    /// Replaces direct `(*surf).format` reads -- the specific case Phase A's per-file
+    /// migration passes deliberately left alone (`map_rgb`/`map_rgba`/`convert_surface`
+    /// all take a real `*const SDL_PixelFormat` argument, and there was no accessor for
+    /// "the format pointer itself," only its sub-fields via `surface_format_info`). Added
+    /// once that gap actually mattered: `WasmRenderer`'s surfaces are opaque handles, not
+    /// real memory, so `(*surf).format` is a wild-pointer dereference there, not just an
+    /// encapsulation nicety like the other accessors.
+    unsafe fn surface_format_ptr(&mut self, surf: *mut SDL_Surface) -> *mut SDL_PixelFormat;
     /// Loads an image (PNG via SDL2_image today) from an in-memory buffer -- the
     /// `IMG_Load_RW`-over-`SDL_RWFromConstMem` path `load_image` (seg009.rs) uses for
     /// sprite data -- or a file path (the window icon / lighting mask, both `IMG_Load`

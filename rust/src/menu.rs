@@ -1928,7 +1928,8 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
         let mut dest_rect: SDL_Rect = core::mem::zeroed();
         rect_to_sdlrect(&setting_box, &mut dest_rect);
         let renderer = crate::platform::sdl::shared_renderer();
-        let rgb_color = renderer.map_rgba((*overlay_surface).format, 55, 55, 55, 255);
+        let overlay_format = renderer.surface_format_ptr(overlay_surface);
+        let rgb_color = renderer.map_rgba(overlay_format, 55, 55, 55, 255);
         if renderer.fill_rect(overlay_surface, &dest_rect, rgb_color) != 0 {
             sdlperror(cs!("draw_setting: SDL_FillRect"));
             quit(1);
@@ -2342,7 +2343,8 @@ unsafe fn draw_confirmation_dialog(which_dialog: c_int, text: *const c_char) {
             // Need to redraw the dialog box.
             old_highlighted_button = highlighted_button;
             let renderer = crate::platform::sdl::shared_renderer();
-            let clear_color = renderer.map_rgba((*current_target_surface).format, 0, 0, 0, 255);
+            let current_target_format = renderer.surface_format_ptr(current_target_surface);
+            let clear_color = renderer.map_rgba(current_target_format, 0, 0, 0, 255);
             renderer.fill_rect(overlay_surface, null(), clear_color);
             draw_rect(addr_of!((*copyprot_dialog).peel_rect), colorids_color_0_black as c_int);
             dialog_method_2_frame(copyprot_dialog);
@@ -2411,7 +2413,8 @@ unsafe fn draw_select_level_dialog() {
 
             old_edited_level_number = menu_current_level as c_int;
             let renderer = crate::platform::sdl::shared_renderer();
-            let clear_color = renderer.map_rgba((*current_target_surface).format, 0, 0, 0, 255);
+            let current_target_format = renderer.surface_format_ptr(current_target_surface);
+            let clear_color = renderer.map_rgba(current_target_format, 0, 0, 0, 255);
             renderer.fill_rect(overlay_surface, null(), clear_color);
             draw_rect(addr_of!((*copyprot_dialog).peel_rect), colorids_color_0_black as c_int);
             dialog_method_2_frame(copyprot_dialog);
