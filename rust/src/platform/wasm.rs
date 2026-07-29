@@ -811,7 +811,10 @@ impl Renderer for WasmRenderer {
         unimplemented!("WasmRenderer::open_audio_raw")
     }
     unsafe fn num_joysticks(&mut self) -> c_int {
-        unimplemented!("WasmRenderer::num_joysticks")
+        // No gamepad support yet -- report none, so callers (e.g. set_joy_mode) take the
+        // keyboard-only branch and never reach the other joystick_open/game_controller_*
+        // stubs below.
+        0
     }
     unsafe fn is_game_controller(&mut self, _joystick_index: c_int) -> bool {
         unimplemented!("WasmRenderer::is_game_controller")

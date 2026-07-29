@@ -221,18 +221,37 @@ spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
 
 **Scope for this phase:**
 1. `setjmp`/`longjmp` fix (`seg000.rs` + `wasm_libc.rs`, wasm32-only). **✅ Done.**
-2. `WasmRenderer::present()` — post the finished frame buffer to the main thread. **Not
-   started** — this is the real remaining piece; the texture pipeline it depends on
-   (`create_texture`/`update_texture`/`render_present`) is the current wall.
+2. `WasmRenderer::present()`/texture pipeline — post the finished frame buffer to the main
+   thread. **✅ Texture/render-target pipeline done** (commit `b31b0ff`):
+   `create_texture`/`update_texture`/`set_render_target`/`render_clear`/`render_copy`/
+   `render_present`/`render_set_logical_size`/`get_renderer_output_size` all have real
+   `WasmRenderer` implementations (in-memory texture store + screen buffer, verified with a
+   pixel-parity test that reads back the presented frame). **Still not started**: actually
+   posting the presented frame across the Worker/main-thread boundary — that's real JS harness
+   work (item 5), not implementable/testable from the Rust side alone.
 3. `WasmInput` — receive key/mouse state via a message queue populated by the main thread.
    **Partially done**: real `key_state`/`mouse_state` storage and `set_key_state`/
-   `set_mouse_state` entry points exist (commit `e5ba566`); nothing calls them yet — no
-   actual JS event listener wiring, since there's no Worker harness to wire them into.
+   `set_mouse_state` entry points exist (commit `e5ba566`), and `WasmRenderer::num_joysticks`
+   now correctly reports zero (commit pending) so `set_joy_mode` takes the keyboard-only
+   branch. Nothing calls the JS-facing setters yet — no actual JS event listener wiring, since
+   there's no Worker harness to wire them into. **New wall found (not yet started):**
+   `Renderer::poll_event` is still `unimplemented!()` — `process_events()`
+   (`seg009.rs:4610`) expects a real `SDL_Event` queue (edge-triggered KEYDOWN/KEYUP, mouse
+   button/motion, QUIT, window events), but `WasmInput`'s current design only exposes
+   level-triggered key/mouse *state*, not a queue of discrete events. Closing this needs an
+   actual synthetic-event-queue design (JS pushes discrete key/mouse events, Rust buffers them,
+   `poll_event` drains one per call) — deliberately not stubbed with a quick "always return no
+   event," since `process_events` does real gameplay-affecting bookkeeping (fast-forward
+   toggle, screenshot hotkeys, fullscreen toggle, last-key tracking) that a silent no-op would
+   quietly break. Treated as part of item 5's JS harness work, not a cheap empirical fix.
 4. `WasmAudio` — post PCM buffers for the main thread to play. **Not started**, still all
    `unimplemented!()`.
 5. JS harness: a dedicated worker script loading the wasm module and relaying messages;
    `web/index.html` updated to spawn the worker, paint received frames to the canvas, forward
-   input events, and play received audio. **Not started.**
+   input events, and play received audio. **Not started.** This is now the natural next step —
+   items 2's texture pipeline and 3's input-queue design both need a real message-passing
+   counterpart to test against, and probing further via the headless Node harness alone yields
+   diminishing returns past this point.
 6. Enough of `sdl_init`/`create_window`/`create_renderer`/window-lifecycle stubs to get
    `pop_main()` actually running inside the worker without hitting `unimplemented!()` on the
    startup path — scope this empirically (run it, see what it hits next) rather than trying
@@ -240,8 +259,10 @@ spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
    Node-based `run_game()` probe (no browser needed for this), fixed `rw_from_file`,
    `set_hint`, `sdl_init`/`sdl_init_subsystem`/`sdl_quit`, `create_window`/`create_renderer`,
    `get_renderer_info_flags`, real `WasmInput`, real PNG decoding, `set_window_icon`,
-   `render_set_logical_size` (commits `e5ba566`, `9a3613a`). Current wall:
-   `create_texture`/`update_texture`/`render_present` — folds back into item 2.
+   `render_set_logical_size`, the texture/render-target pipeline, and `num_joysticks`
+   (commits `e5ba566`, `9a3613a`, `b31b0ff`). Current wall: `Renderer::poll_event` (see item 3)
+   — the probe has now run the startup path all the way to the first real per-frame event-pump
+   call, past every SDL init/lifecycle stub.
 
 **Exit criteria:** the `setjmp`/`longjmp` gap is resolved (or has a concretely updated plan,
 not a silent panic); a real frame produced by actual gameplay code (not the Phase-2-milestone
