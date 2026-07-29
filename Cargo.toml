@@ -18,6 +18,13 @@ pkg-config = "0.3"
 
 [dependencies]
 symphonia = "0.5.5"
+# Pure-Rust PNG decoder for WasmRenderer::load_image_from_file/load_image_from_memory --
+# unconditional (not wasm32-only) because platform::wasm is also compiled on native under
+# `cargo test` (Phase A). Vetted before adding: image-rs org (maintains the `image` crate),
+# 0 unsafe code in the crate itself, 0 cargo-audit vulnerabilities across its full resolved
+# dependency tree, confirmed wasm32-unknown-unknown buildable using the pure-Rust
+# miniz_oxide DEFLATE backend (no C zlib dependency).
+png = "0.18.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 sdl2 = { version = "0.38.0", features = ["image"] }

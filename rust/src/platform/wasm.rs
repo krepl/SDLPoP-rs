@@ -237,14 +237,24 @@ impl Renderer for WasmRenderer {
         }
     }
 
-    unsafe fn load_image_from_memory(&mut self, _bytes: &[u8]) -> *mut SDL_Surface {
-        unimplemented!("WasmRenderer::load_image_from_memory")
+    unsafe fn load_image_from_memory(&mut self, bytes: &[u8]) -> *mut SDL_Surface {
+        self.decode_png_to_surface(bytes)
     }
-    unsafe fn load_image_from_file(&mut self, _path: &std::ffi::CStr) -> *mut SDL_Surface {
-        unimplemented!("WasmRenderer::load_image_from_file")
+    unsafe fn load_image_from_file(&mut self, path: &std::ffi::CStr) -> *mut SDL_Surface {
+        match crate::wasm_vfs::vfs_read(&path.to_string_lossy()) {
+            Some(bytes) => self.decode_png_to_surface(&bytes),
+            None => std::ptr::null_mut(),
+        }
     }
-    unsafe fn img_load_rw(&mut self, _rw: *mut SDL_RWops, _freesrc: c_int) -> *mut SDL_Surface {
-        unimplemented!("WasmRenderer::img_load_rw")
+    unsafe fn img_load_rw(&mut self, rw: *mut SDL_RWops, freesrc: c_int) -> *mut SDL_Surface {
+        let result = match rw_handles().get(&(rw as usize)) {
+            Some(h) => self.decode_png_to_surface(&h.data),
+            None => std::ptr::null_mut(),
+        };
+        if freesrc != 0 {
+            self.rw_close(rw);
+        }
+        result
     }
 
     unsafe fn lock_surface(&mut self, _surf: *mut SDL_Surface) -> c_int {
@@ -491,7 +501,8 @@ impl Renderer for WasmRenderer {
     }
 
     unsafe fn set_window_icon(&mut self, _window: *mut crate::SDL_Window, _icon: *mut SDL_Surface) {
-        unimplemented!("WasmRenderer::set_window_icon")
+        // No real OS window exists to have a titlebar icon; a browser tab uses a favicon
+        // instead, a separate (and separately-configured) mechanism not modeled here.
     }
     unsafe fn rw_from_const_mem(&mut self, mem: *const std::os::raw::c_void, size: c_int) -> *mut SDL_RWops {
         let data = std::slice::from_raw_parts(mem as *const u8, size.max(0) as usize).to_vec();
@@ -518,7 +529,9 @@ impl Renderer for WasmRenderer {
         unimplemented!("WasmRenderer::render_present")
     }
     unsafe fn render_set_logical_size(&mut self, _renderer: *mut crate::SDL_Renderer, _w: c_int, _h: c_int) -> c_int {
-        unimplemented!("WasmRenderer::render_set_logical_size")
+        // Canvas scaling is a JS/CSS concern in the real browser build, not something this
+        // layer manages -- report success and defer actual scaling to that layer.
+        0
     }
     unsafe fn get_renderer_output_size(&mut self, _renderer: *mut crate::SDL_Renderer) -> (c_int, c_int) {
         unimplemented!("WasmRenderer::get_renderer_output_size")
@@ -608,6 +621,78 @@ fn pack_pixel(rmask: u32, gmask: u32, bmask: u32, amask: u32, r: u8, g: u8, b: u
 }
 
 impl WasmRenderer {
+    /// Decodes a PNG (via the `png` crate -- see the Phase C vetting notes in
+    /// `docs/plans/13-platform-architecture-unification.md`), producing a surface shaped
+    /// like real `IMG_Load` would: an 8bpp indexed surface with a real palette for a
+    /// palette-based PNG (matching how `SDL_ISPIXELFORMAT_INDEXED`-gated code in
+    /// `seg009.rs` branches on this), or a 32bpp RGBA surface for anything else. Null on
+    /// decode failure, matching `IMG_Load`'s convention.
+    unsafe fn decode_png_to_surface(&mut self, bytes: &[u8]) -> *mut SDL_Surface {
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        let Ok(mut reader) = decoder.read_info() else { return std::ptr::null_mut() };
+        let (width, height) = (reader.info().width as c_int, reader.info().height as c_int);
+
+        // Bit depths other than 8 (1/2/4/16-bit PNGs) would need extra unpacking this
+        // doesn't implement -- every real asset in this codebase is 8-bit; fail cleanly
+        // (matching IMG_Load's null-on-failure convention) rather than read garbage.
+        if reader.info().bit_depth != png::BitDepth::Eight {
+            return std::ptr::null_mut();
+        }
+
+        if reader.info().color_type == png::ColorType::Indexed {
+            let palette = reader.info().palette.clone().unwrap_or_default();
+            let trns = reader.info().trns.clone();
+            let Some(buf_size) = reader.output_buffer_size() else { return std::ptr::null_mut() };
+            let mut buf = vec![0u8; buf_size];
+            let Ok(frame) = reader.next_frame(&mut buf) else { return std::ptr::null_mut() };
+            let indices = &buf[..frame.buffer_size()];
+
+            let surf = self.create_surface(width, height, 8, 0, 0, 0, 0);
+            let s = surf_mut(surf);
+            s.pixels[..indices.len()].copy_from_slice(indices);
+            let colors: Vec<SDL_Color> = (0..256)
+                .map(|i| {
+                    let (r, g, b) = if i * 3 + 2 < palette.len() {
+                        (palette[i * 3], palette[i * 3 + 1], palette[i * 3 + 2])
+                    } else {
+                        (0, 0, 0)
+                    };
+                    let a = trns.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(255);
+                    SDL_Color { r, g, b, a }
+                })
+                .collect();
+            self.set_palette(surf, colors.as_ptr(), 0, 256);
+            return surf;
+        }
+
+        // Anything else (RGB/RGBA/Grayscale/GrayscaleAlpha) -- the sample-count-based match
+        // below handles each natively-decoded shape without needing an EXPAND
+        // transformation (which would have to be set before `read_info`, before the
+        // color-type check above -- easier to just handle each real shape directly).
+        let Some(buf_size) = reader.output_buffer_size() else { return std::ptr::null_mut() };
+        let mut buf = vec![0u8; buf_size];
+        let Ok(frame) = reader.next_frame(&mut buf) else { return std::ptr::null_mut() };
+        let pixels = &buf[..frame.buffer_size()];
+        let channels = frame.color_type.samples();
+
+        let (rmask, gmask, bmask, amask): (u32, u32, u32, u32) =
+            (0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
+        let surf = self.create_surface(width, height, 32, rmask, gmask, bmask, amask);
+        let s = surf_mut(surf);
+        for i in 0..(width as usize * height as usize) {
+            let (r, g, b, a) = match channels {
+                4 => (pixels[i * 4], pixels[i * 4 + 1], pixels[i * 4 + 2], pixels[i * 4 + 3]),
+                3 => (pixels[i * 3], pixels[i * 3 + 1], pixels[i * 3 + 2], 255),
+                2 => (pixels[i * 2], pixels[i * 2], pixels[i * 2], pixels[i * 2 + 1]),
+                1 => (pixels[i], pixels[i], pixels[i], 255),
+                _ => (0, 0, 0, 255),
+            };
+            let packed = pack_pixel(rmask, gmask, bmask, amask, r, g, b, a);
+            s.pixels[i * 4..i * 4 + 4].copy_from_slice(&packed.to_ne_bytes());
+        }
+        surf
+    }
+
     unsafe fn convert_to(&mut self, src: *mut SDL_Surface, depth: c_int, rmask: u32, gmask: u32, bmask: u32, amask: u32) -> *mut SDL_Surface {
         let (w, h) = self.surface_size(src);
         let dst = self.create_surface(w, h, depth, rmask, gmask, bmask, amask);
