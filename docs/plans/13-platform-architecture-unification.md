@@ -239,31 +239,59 @@ game loop.
 
 ---
 
-## Phase C — Unified file I/O via `FileSystem`
+## Phase C — Virtual filesystem for `fopen`-family calls — ✅ DONE (revised design)
 
-**Why this doesn't need native to change much:** the `FileSystem` trait already exists
-(Step C) but DAT-file/config loading still calls raw `fopen`/`fread` directly, bypassing it
-entirely. The fix is call-site migration, not a new native-side preload mechanism — native's
-`FileSystem` impl can keep doing real synchronous `fopen`/`fread` under the hood, unchanged
-behavior. Only the **web** implementation differs in *how* it's populated: an async preload
-phase (JS `fetch`, then an exported `preload_file(path, bytes)` call) populates an in-memory
-store before the game starts, and `WasmFiles::read_file` serves synchronously from that store
-from the game's perspective — no async-aware rewrite of gameplay code needed.
+**Original design, superseded:** the plan called for migrating every game-facing `fopen`/
+`fread`/`fwrite`/`fclose` call site to the `FileSystem` trait (`read_file`/`write_file`/
+`file_exists`), on the assumption DAT loading and friends bypassed that trait. A file-I/O
+audit before implementing found something better: **the `FileSystem` trait is completely
+unused dead code** — zero real call sites anywhere in the crate. Every DAT/asset/INI/
+quicksave/HOF/replay file access already goes through plain libc `fopen`/`fread`/`fwrite`/
+`fseek`/`ftell`/`fclose`, which already resolve to `wasm_libc.rs`'s shim on wasm32. So no
+call-site migration was needed at all — making `wasm_libc.rs`'s `fopen`-family functions
+real (backed by a virtual filesystem) makes every existing call site work with zero changes
+anywhere else in the crate, a smaller and lower-risk change than the planned migration.
 
-**Scope:** find and convert every game-facing raw `fopen`/`fread`/`fwrite`/`fclose` call
-(DAT files, `SDLPoP.ini`, replays, quicksaves, hall-of-fame, mod files — likely concentrated
-in `seg009.rs` and `options.rs`) to `FileSystem::read_file`/`write_file`/`file_exists`. Keep
-`wasm_libc.rs`'s own `fopen`-family stub as the low-level fallback for anything that
-legitimately isn't a real asset (there shouldn't be much left once this phase is done).
+**What shipped (commit `e5ba566`):**
+- `wasm_vfs.rs` (new) — the shared `path -> bytes` store. Split into its own
+  dependency-free module rather than living in `wasm_libc.rs`, because `wasm_libc.rs` can't
+  be widened to compile under native `cargo test` the way `platform::wasm` was (Phase A) —
+  it depends on `js_sys` (for `time()`), a wasm32-only crate.
+- `wasm_libc.rs` — `fopen`/`fread`/`fwrite`/`fseek`/`ftell`/`fclose`/`rewind`/`feof`/
+  `fgetc`/`fputc`/`fputs`/`access`/`remove` are now real implementations against the VFS,
+  not stubs. Write-mode files get copied back into the VFS on `fclose`, so a
+  quicksave-then-quickload round-trip works within one browser session even with no real
+  backing storage yet (doesn't survive a page reload — deferred, e.g. wiring to IndexedDB).
+- `lib.rs`'s `preload_file(path, data)` — the JS-facing way to populate the VFS before
+  starting the game. No on-demand fetch fallback yet (a synchronous-XHR-inside-a-Worker
+  option, per Phase B's revised design, is a reasonable future refinement, not implemented).
+- Also discovered (empirically, via the Node-based `run_game()` probe) that
+  `Renderer::rw_from_file`'s only real caller is `SDLPoP.cfg` loading (`menu.rs`), not DAT
+  files as originally assumed. Implemented `WasmRenderer`'s `rw_from_file`/`rw_from_mem`/
+  `rw_from_const_mem`/`rw_tell`/`rw_close`/`rw_write`/`rw_read` against the *same* VFS (one
+  filesystem, not two), backed by an opaque `SDL_RWops` handle store (confirmed safe —
+  nothing dereferences `SDL_RWops` fields directly anywhere in the crate).
 
-**Web asset list:** define an explicit manifest of files the game needs before it can start
-(the base `data/*.DAT` set at minimum) rather than trying to fetch-on-demand mid-tick, since
-`read_file` must return synchronously once called. Fetching on demand is a possible future
-refinement, not this phase's scope.
+**Also landed opportunistically while probing further with `run_game()`** (these are really
+Phase B's "item 6: enough SDL init/lifecycle stubs to get `pop_main()` running, scoped
+empirically" — noted here since they happened in the same pass): `set_hint`, `sdl_init`/
+`sdl_init_subsystem`/`sdl_quit` (no real subsystems to manage), `create_window`/
+`create_renderer` (sentinel non-null pointers — confirmed safe, nothing dereferences them),
+`get_renderer_info_flags` (reports no target-texture support, steering the game onto its
+simpler rendering fallback), and a real (not stub) `WasmInput` backed by module-level
+key/mouse-state statics plus `set_key_state`/`set_mouse_state` entry points for the eventual
+message-passing input design.
 
-**Exit criteria:** no game-facing file access happens outside the `FileSystem` trait. Native
-behavior unchanged (still real synchronous file I/O). Web can load real assets via
-preload-then-serve-from-memory.
+**Next wall found, not yet started:** `WasmRenderer::load_image_from_file` — real PNG
+decoding. A genuinely new, separately-scoped piece of work (either a Rust PNG-decode crate,
+or deferring image loading to a JS/Canvas `Image`/`createImageBitmap` roundtrip in the real
+browser build, not testable under Node), not a quick stub.
+
+**Exit criteria:** met for the stated scope (game-facing file access works through a real VFS
+with zero call-site changes elsewhere). Native behavior unchanged (still real synchronous
+`fopen`/`fread` via glibc). `stat`/`fstat` (mod-folder detection, loose-file sizing) and
+`opendir`/`readdir` (mod/replay directory scanning) remain fail-stubs — not exercised by the
+base-game startup path tested so far, deferred until mod support is prioritized.
 
 ---
 
