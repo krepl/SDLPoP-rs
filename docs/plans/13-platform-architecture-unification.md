@@ -293,6 +293,23 @@ with zero call-site changes elsewhere). Native behavior unchanged (still real sy
 `opendir`/`readdir` (mod/replay directory scanning) remain fail-stubs — not exercised by the
 base-game startup path tested so far, deferred until mod support is prioritized.
 
+**Deferred, explicitly not forgotten: file I/O still isn't behind a real interface.** The fix
+above makes wasm32 file access *work*, but it works by making `wasm_libc.rs`'s raw libc
+`fopen`-family shim real — not by routing it through a proper Rust trait boundary. The
+`FileSystem` trait (`platform/mod.rs`) still exists, still describes the right shape
+(`read_file`/`write_file`/`file_exists`), and is still unused. This matters for the same
+reason Phase A's `Renderer` encapsulation mattered: without a real interface, there's no
+seam to swap backends (real fetch/IndexedDB for a production web build vs. the flat
+preloaded-map VFS today), no seam to unit-test file-loading logic independent of the wasm32
+libc shim, and native/web diverge in *how* file access is implemented even though they now
+agree on behavior. Why not done now: routing every real call site (concentrated in
+`seg009.rs` and `options.rs`, per the Phase C file-I/O audit) through `FileSystem` instead of
+raw `fopen`/`fread` is a real, broader call-site migration — comparable in shape to Phase A's
+`Renderer` accessor-method migration, not a quick follow-on to the VFS fix that just shipped.
+The VFS storage layer (`wasm_vfs.rs`) is at least already a clean, separate module, so this
+migration has a real foundation to build on whenever it's prioritized — it does not need to
+be redone from scratch, just re-routed through a trait instead of called directly.
+
 ---
 
 ## Ordering and dependencies
