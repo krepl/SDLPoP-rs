@@ -209,7 +209,7 @@ the actual, sole motivating problem. Consequences:
   wasm's `longjmp` shim (`wasm_libc.rs`) panic with a distinguishable marker type that
   wrapper catches and turns into a retry. Contained to `seg000.rs` + `wasm_libc.rs`, gated
   `#[cfg(target_arch = "wasm32")]` — native keeps using real libc `setjmp`/`longjmp`,
-  completely untouched.
+  completely untouched. **✅ Done, commit `4111b02`.**
 
 **Known tradeoff, accepted for a first working version:** without `SharedArrayBuffer` (which
 needs COOP/COEP cross-origin-isolation HTTP headers — a real deployment constraint), there's
@@ -220,22 +220,53 @@ not correctness. Real efficient sleep via `Atomics.wait` is a deferred future re
 spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
 
 **Scope for this phase:**
-1. `setjmp`/`longjmp` fix (`seg000.rs` + `wasm_libc.rs`, wasm32-only).
-2. `WasmRenderer::present()` — post the finished frame buffer to the main thread.
+1. `setjmp`/`longjmp` fix (`seg000.rs` + `wasm_libc.rs`, wasm32-only). **✅ Done.**
+2. `WasmRenderer::present()` — post the finished frame buffer to the main thread. **Not
+   started** — this is the real remaining piece; the texture pipeline it depends on
+   (`create_texture`/`update_texture`/`render_present`) is the current wall.
 3. `WasmInput` — receive key/mouse state via a message queue populated by the main thread.
-4. `WasmAudio` — post PCM buffers for the main thread to play.
+   **Partially done**: real `key_state`/`mouse_state` storage and `set_key_state`/
+   `set_mouse_state` entry points exist (commit `e5ba566`); nothing calls them yet — no
+   actual JS event listener wiring, since there's no Worker harness to wire them into.
+4. `WasmAudio` — post PCM buffers for the main thread to play. **Not started**, still all
+   `unimplemented!()`.
 5. JS harness: a dedicated worker script loading the wasm module and relaying messages;
    `web/index.html` updated to spawn the worker, paint received frames to the canvas, forward
-   input events, and play received audio.
+   input events, and play received audio. **Not started.**
 6. Enough of `sdl_init`/`create_window`/`create_renderer`/window-lifecycle stubs to get
    `pop_main()` actually running inside the worker without hitting `unimplemented!()` on the
    startup path — scope this empirically (run it, see what it hits next) rather than trying
-   to predict the full startup call graph up front.
+   to predict the full startup call graph up front. **Substantial progress, ongoing**: via a
+   Node-based `run_game()` probe (no browser needed for this), fixed `rw_from_file`,
+   `set_hint`, `sdl_init`/`sdl_init_subsystem`/`sdl_quit`, `create_window`/`create_renderer`,
+   `get_renderer_info_flags`, real `WasmInput`, real PNG decoding, `set_window_icon`,
+   `render_set_logical_size` (commits `e5ba566`, `9a3613a`). Current wall:
+   `create_texture`/`update_texture`/`render_present` — folds back into item 2.
 
 **Exit criteria:** the `setjmp`/`longjmp` gap is resolved (or has a concretely updated plan,
 not a silent panic); a real frame produced by actual gameplay code (not the Phase-2-milestone
 test gradient) reaches the browser canvas via the Worker, driven by the genuinely unmodified
 game loop.
+
+---
+
+### Future consideration (deferred, not scheduled): `advance_one_frame()`
+
+The originally-sketched design — extracting the game loop's per-tick body into a single
+callable `advance_one_frame(state) -> LoopSignal`, driven identically by native (a plain loop)
+and web (`requestAnimationFrame`/a JS-driven tick) — remains a genuinely nicer end state than
+the Worker approach above: native and web would share the literal same driving loop, instead
+of diverging into "native: real blocking loop" vs. "web: the same blocking loop, just inside
+a Worker instead of the main thread." The Worker design was chosen first because it reaches
+the same practical goal (a browser tab that doesn't freeze) for a small fraction of the risk —
+see "Original design, superseded" above for exactly why the inline version is large (the
+restart mechanism's 12 call sites, ~8 other blocking-wait call sites).
+
+Worth revisiting once the Worker-based version is fully working end to end (a real reason to
+want it would be: wanting to drop the Worker/`postMessage` indirection entirely, or wanting
+`advance_one_frame` for something else, like Phase 3's automated game-beating search wanting
+fast single-step control over simulation ticks). Not scheduled now — explicitly a "nice
+future goal," not a commitment.
 
 ---
 
