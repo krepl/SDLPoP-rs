@@ -250,7 +250,7 @@ game loop.
 
 ---
 
-### Future consideration (deferred, not scheduled): `advance_one_frame()`
+### Future consideration (deferred, not scheduled): `advance_one_frame()` and removing setjmp/longjmp for real
 
 The originally-sketched design — extracting the game loop's per-tick body into a single
 callable `advance_one_frame(state) -> LoopSignal`, driven identically by native (a plain loop)
@@ -262,11 +262,44 @@ the same practical goal (a browser tab that doesn't freeze) for a small fraction
 see "Original design, superseded" above for exactly why the inline version is large (the
 restart mechanism's 12 call sites, ~8 other blocking-wait call sites).
 
+**This future work should also retire both of the current restart-mechanism's real liabilities,
+not just add a nicer loop on top:**
+
+- **Native's real `setjmp`/`longjmp` should eventually go away too, not stay as a
+  native-only exception.** It's a genuine non-local jump — it doesn't compile to (or map
+  onto) anything a normal reader's mental model of function calls/returns handles, it's
+  inherently a divergence from idiomatic Rust, and as long as it exists natively, native and
+  web have two *structurally different* restart mechanisms (real non-local jump vs.
+  panic-based emulation) instead of one shared implementation — directly working against
+  this whole plan's "one effective implementation" goal, not just a wasm32-specific wart.
+- **The `catch_unwind`/`panic_any(RestartGameSignal)` mechanism used for wasm32 today
+  (commit `4111b02`) is explicitly acknowledged tech debt, not a real fix — keep it only
+  until the real fix below lands.** Using a panic for ordinary control flow (not an actual
+  error) is a Rust anti-pattern: panics are supposed to signal "something went wrong," and
+  overloading them for "the player pressed Ctrl+R" makes real bugs harder to distinguish
+  from intentional restarts, and makes the control flow just as opaque as the `longjmp` it
+  replaced — a different-shaped version of the same problem, not a solution to it.
+- **The real fix for both, when this is picked up: make "restart the game" an ordinary
+  return value that bubbles up through the call stack, the same way `advance_one_frame`'s
+  `LoopSignal` already would.** Concretely: none of the 12 current restart call sites
+  (Ctrl+R, the win/Hall-of-Fame sequence, the demo timing out, the level clock expiring,
+  etc.) should call `start_game()` directly at all. Each is already reacting to a specific
+  game event — model that explicitly: the event handler returns (or sets) a signal value
+  (e.g. `GameEvent::RestartRequested`), which propagates upward through ordinary function
+  returns — through `play_frame` → `play_level_2` → `play_level` → `init_game_main` — the
+  same path `LoopSignal` would already need to traverse for the frame-loop unification above.
+  Once every restart trigger is expressed as "return this event," the *one* place at the top
+  that receives it (`init_game_main`'s driving loop) can just loop and call the setup logic
+  again — no jump, no panic, no unwinding, on **either** target. This is real, comparable in
+  size to the frame-loop extraction itself (touches the same 12 call sites either way), which
+  is exactly why it's bundled with `advance_one_frame()` as one future initiative rather than
+  attempted piecemeal.
+
 Worth revisiting once the Worker-based version is fully working end to end (a real reason to
-want it would be: wanting to drop the Worker/`postMessage` indirection entirely, or wanting
-`advance_one_frame` for something else, like Phase 3's automated game-beating search wanting
-fast single-step control over simulation ticks). Not scheduled now — explicitly a "nice
-future goal," not a commitment.
+want it would be: wanting to drop the Worker/`postMessage` indirection entirely, wanting
+`advance_one_frame` for something else like Phase 3's automated game-beating search wanting
+fast single-step control over simulation ticks, or just wanting to finally delete the
+`catch_unwind` hack). Not scheduled now — explicitly a "nice future goal," not a commitment.
 
 ---
 
@@ -350,6 +383,32 @@ raw `fopen`/`fread` is a real, broader call-site migration — comparable in sha
 The VFS storage layer (`wasm_vfs.rs`) is at least already a clean, separate module, so this
 migration has a real foundation to build on whenever it's prioritized — it does not need to
 be redone from scratch, just re-routed through a trait instead of called directly.
+
+### Future consideration (deferred, not scheduled): asset manifest / preload strategy
+
+Every asset preloaded into the VFS so far has been added by hand, one file at a time, as
+testing discovered each was needed (`SDLPoP.ini`, then `data/icon.png`, ...). A real build
+needs an actual manifest — an explicit list of every file to fetch and hand to
+`preload_file()` before the game starts — rather than a hand-maintained ad hoc list. Not
+designed yet; a few real open questions to think through once this is prioritized, not now:
+
+- **Offline play (PWA) is an explicit future goal**, and it pulls toward "preload
+  everything up front into a real local cache" (Service Worker + Cache API/IndexedDB,
+  not just the current in-memory-only VFS, which forgets everything on reload) — a full
+  manifest fetched and cached once, then playable with no network at all afterward.
+- **Online play might benefit from a different, lazier strategy**: eagerly load only what's
+  needed right now (the current level's assets), then prefetch the *next* level's assets in
+  the background while the player is still on the current one — reducing initial load time,
+  if there's an actual latency win to be had. That's a real "if": if the total asset set
+  turns out small/cheap enough to fetch in full up front anyway, the lazy/prefetch design
+  adds real complexity (two loading code paths, prefetch-timing logic) for no measurable
+  benefit. Worth measuring actual asset sizes and load times against a working baseline
+  before deciding, not assumed now.
+- **These two modes aren't necessarily exclusive** — a real design might end up being
+  "offline mode: full manifest, cached once, played from cache" and "online mode: lazy
+  current-level load + background next-level prefetch," selected based on whether the PWA
+  has already cached everything. Genuinely needs more thought once there's a working
+  end-to-end version to measure against; captured here so it isn't lost, not designed now.
 
 ---
 
