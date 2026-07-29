@@ -282,10 +282,20 @@ simpler rendering fallback), and a real (not stub) `WasmInput` backed by module-
 key/mouse-state statics plus `set_key_state`/`set_mouse_state` entry points for the eventual
 message-passing input design.
 
-**Next wall found, not yet started:** `WasmRenderer::load_image_from_file` — real PNG
-decoding. A genuinely new, separately-scoped piece of work (either a Rust PNG-decode crate,
-or deferring image loading to a JS/Canvas `Image`/`createImageBitmap` roundtrip in the real
-browser build, not testable under Node), not a quick stub.
+**Update (commit `9a3613a`): PNG decoding done.** Added the `png` crate (image-rs org,
+vetted per the same rigor as `symphonia`'s earlier adoption — 511 stars, actively maintained,
+0 `cargo-audit` vulnerabilities, 0 unsafe code in the crate itself, confirmed wasm32
+buildable via the pure-Rust `miniz_oxide` backend). `load_image_from_file`/
+`load_image_from_memory`/`img_load_rw` decode real PNGs into either an 8bpp indexed surface
+with a real palette (matching real `IMG_Load`, and what `SDL_ISPIXELFORMAT_INDEXED`-gated
+code in `seg009.rs` branches on) or a 32bpp RGBA surface otherwise. Also picked off
+`set_window_icon` and `render_set_logical_size` (both no-ops — no real OS window/canvas
+scaling concern at this layer) while continuing the empirical probe.
+
+**Next wall found, not yet started:** `create_texture`/`update_texture`/`render_present` —
+the actual frame-presentation pipeline. This is real Phase B territory (the deliberately
+deferred `present()` design) — needs the Worker/JS message-passing design, not another cheap
+stub.
 
 **Exit criteria:** met for the stated scope (game-facing file access works through a real VFS
 with zero call-site changes elsewhere). Native behavior unchanged (still real synchronous
