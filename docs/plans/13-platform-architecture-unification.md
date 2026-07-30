@@ -405,6 +405,32 @@ The VFS storage layer (`wasm_vfs.rs`) is at least already a clean, separate modu
 migration has a real foundation to build on whenever it's prioritized — it does not need to
 be redone from scratch, just re-routed through a trait instead of called directly.
 
+### Future consideration (deferred, not scheduled): stop returning raw pointers from `Renderer` accessors on the wasm side
+
+`Renderer::surface_format_ptr` (added this session to fix the `(*surf).format` wild-pointer
+bug — see `platform/wasm.rs`) returns `*mut SDL_PixelFormat`, matching the type the C-ported
+call sites expect. On native that's a real pointer into real SDL memory, so it's the natural
+type. On wasm, `WasmSurface` doesn't have real SDL memory at all — the returned pointer is
+just `&mut` on a heap-allocated `Box<SDL_PixelFormat>` cast to a raw pointer, purely so the
+same call-site code compiles unchanged against both backends. That's exactly the kind of
+pointer the "wild pointer" bug came from in the first place (a pointer standing in for
+something that isn't really memory-shaped) — it's *safe* here only because `WasmSurface` now
+keeps a real backing `SDL_PixelFormat` alongside it, but the accessor's signature doesn't make
+that guarantee visible or enforced.
+
+Not fixable in general: most `Renderer` methods intentionally keep C-shaped pointer signatures
+because they're called directly from faithfully-ported C code across hundreds of sites, and
+changing those signatures would mean touching the ported code itself, not just the platform
+layer — out of scope for "faithful translation." But methods like `surface_format_ptr` that
+exist purely inside the platform-trait boundary (not preserved C call sites) are a smaller,
+real candidate: they could return a `&SDL_PixelFormat`/`&mut SDL_PixelFormat` (borrow-checked,
+can't outlive the surface) or a slice-based accessor instead of a synthetic raw pointer,
+without touching native's implementation or any ported gameplay code. Worth auditing which
+`Renderer` methods are "real C call site, pointer is unavoidable" vs. "platform-internal,
+could be a safe reference" once the JS harness work settles down — not urgent, since the
+current pointer-returning version is verified correct (pixel-parity tests, harness, wasm32
+build all green).
+
 ### Future consideration (deferred, not scheduled): asset manifest / preload strategy
 
 Every asset preloaded into the VFS so far has been added by hand, one file at a time, as
