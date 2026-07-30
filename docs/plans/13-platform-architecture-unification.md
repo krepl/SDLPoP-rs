@@ -243,7 +243,12 @@ spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
    Building that queue is meaningfully blocked on a separate decision (see the `SharedArrayBuffer`
    discussion below), not just unstarted busywork.
 4. `WasmAudio` — post PCM buffers for the main thread to play. **Not started**, still all
-   `unimplemented!()`.
+   `unimplemented!()`. `WasmRenderer::linked_sdl_version` was fixed (reports a recent version
+   rather than panicking -- `init_digi`'s only real use for it, a pre-2.0.4 resampling
+   workaround), which unblocked the empirical probe to reach the real next wall:
+   `Renderer::open_audio_raw`, called from `init_digi`. This is genuine `WasmAudio` design
+   work (a real `AudioContext`/`ScriptProcessorNode`-or-`AudioWorklet` bridge across the
+   Worker/main-thread boundary), not a cheap stub -- treated as its own future push.
 5. JS harness: a dedicated worker script loading the wasm module and relaying messages;
    `web/index.html` updated to spawn the worker, paint received frames to the canvas, forward
    input events, and play received audio. **✅ Frames-out half done, verified working in a real
@@ -259,6 +264,34 @@ spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
    sequencing decision made this session, since a naive `postMessage`-based input design would
    silently never deliver a single keystroke (a Worker's `onmessage` can't fire while
    `pop_main()`'s blocking loop holds the stack; see below).
+
+   **Update, same session:** `web/worker.js` now preloads *every* file under `data/` (via a
+   `scripts/build_wasm.sh`-generated `web/data_manifest.txt`, fetched and loaded with bounded
+   concurrency) instead of a hand-picked two-file list. This surfaced three more real bugs,
+   all fixed via repeated Playwright-driven browser runs (not just the headless Node probe --
+   these needed the real texture/blit pipeline exercised with real assets to show up):
+   - `decode_png_to_surface` assumed every real asset was 8-bit; 926/927 real sprite/font
+     PNGs are actually 1/2/4-bit indexed. Fixed by unpacking sub-8-bit indexed scanlines by
+     hand (`unpack_indexed_scanlines`) rather than using the `png` crate's `EXPAND` transform,
+     which would've resolved the palette into RGB(A) and broken `set_color_key`'s
+     index-based contract.
+   - `blit_impl` never did palette-aware conversion (indexed source -> truecolor destination)
+     and never implemented `SDL_BLENDMODE_BLEND` compositing at all -- both real gaps, found
+     because hardcoded-font text rendering (`method_3_blit_mono`) depends on both. Fixed;
+     the same-format/blend-NONE fast path everything else uses is unchanged, so this carries
+     no regression risk to the differential harness (which is native-SDL-only anyway and
+     never touches `WasmRenderer`).
+   - `access()`/`stat()` couldn't recognize a loose-resource-folder path (e.g.
+     `"data/IBM_SND1"`) as existing, since the VFS is a flat `path -> bytes` map with no
+     literal entry for the directory itself, only for files under it. Added
+     `vfs_contains_dir` (prefix check) and wired it into both.
+
+   **Result: real hardcoded-font text now renders legibly in the browser** (previously solid
+   rectangles) -- confirmed visually via Playwright screenshot showing "Cannot find a required
+   data file: IBM_SND1.DAT or folder: data/IBM_SND1 / Press any key to quit." in the game's
+   own crisp bitmap font. That specific message is itself expected and correct: `IBM_SND1` is
+   a real asset folder that exists on disk but isn't consumed by anything yet since audio
+   (item 4) isn't implemented -- the probe has now reached the actual audio-init code path.
 6. Enough of `sdl_init`/`create_window`/`create_renderer`/window-lifecycle stubs to get
    `pop_main()` actually running inside the worker without hitting `unimplemented!()` on the
    startup path. **Done** — the empirical Node-based `run_game()` probe found and fixed every
