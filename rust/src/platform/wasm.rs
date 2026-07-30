@@ -187,6 +187,43 @@ fn performance_now_ms() -> f64 {
     }
 }
 
+/// Posts a presented frame out via `postMessage`, read reflectively off `globalThis` for the
+/// same reason `performance_now_ms` does -- this runs inside a dedicated Worker in the real
+/// harness (no `window`), but reflective access also works unmodified from a plain Node probe
+/// (where `postMessage` doesn't exist at all: the lookup returns `None` and this is a no-op,
+/// which is exactly what the headless `run_game()` probe needs -- it has no JS side listening
+/// for frames and shouldn't need one).
+///
+/// This is frames-out only (Phase B item 2/5's first pass, "frames first, then input" per
+/// explicit user decision -- see the plan doc). It deliberately does NOT attempt to solve
+/// input delivery: a Worker's `onmessage` handler cannot run while `pop_main()`'s blocking
+/// loop still occupies the call stack, so getting input *into* a running game needs
+/// `SharedArrayBuffer`/`Atomics` (a separate, not-yet-started piece -- see the plan's Phase B
+/// section), not another `postMessage`. Sending, unlike receiving, never needs the far end's
+/// event loop to be idle, so this half works today without that.
+#[cfg(target_arch = "wasm32")]
+fn post_frame_to_js(w: c_int, h: c_int, bpp: usize, pixels: &[u8]) {
+    use wasm_bindgen::JsCast;
+    (|| -> Option<()> {
+        let global = js_sys::global();
+        let post_message: js_sys::Function =
+            js_sys::Reflect::get(&global, &"postMessage".into()).ok()?.dyn_into().ok()?;
+        let msg = js_sys::Object::new();
+        js_sys::Reflect::set(&msg, &"type".into(), &"frame".into()).ok()?;
+        js_sys::Reflect::set(&msg, &"w".into(), &(w as u32).into()).ok()?;
+        js_sys::Reflect::set(&msg, &"h".into(), &(h as u32).into()).ok()?;
+        js_sys::Reflect::set(&msg, &"bpp".into(), &(bpp as u32).into()).ok()?;
+        let arr = js_sys::Uint8Array::new_with_length(pixels.len() as u32);
+        arr.copy_from(pixels);
+        js_sys::Reflect::set(&msg, &"pixels".into(), &arr).ok()?;
+        post_message.call1(&global, &msg).ok()?;
+        Some(())
+    })();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn post_frame_to_js(_w: c_int, _h: c_int, _bpp: usize, _pixels: &[u8]) {}
+
 // ============================================================================
 // Texture / render-target store -- the software equivalent of SDL's GPU-backed textures.
 // `seg009.rs`'s actual rendering pipeline (texture_sharp/blurry/fuzzy, all
@@ -759,6 +796,7 @@ impl Renderer for WasmRenderer {
     }
     unsafe fn render_present(&mut self, _renderer: *mut crate::SDL_Renderer) {
         let s = screen_buffer();
+        post_frame_to_js(s.w, s.h, s.bytes_per_pixel, &s.pixels);
         PRESENTED_FRAME = Some((s.w, s.h, s.bytes_per_pixel, s.pixels.clone()));
     }
     unsafe fn render_set_logical_size(&mut self, _renderer: *mut crate::SDL_Renderer, _w: c_int, _h: c_int) -> c_int {
@@ -844,7 +882,13 @@ impl Renderer for WasmRenderer {
         unimplemented!("WasmRenderer::push_event")
     }
     unsafe fn poll_event(&mut self, _event: *mut std::os::raw::c_void) -> c_int {
-        unimplemented!("WasmRenderer::poll_event")
+        // No real input source is wired up yet (see the plan's Phase B notes on why: live
+        // input into a blocking Worker loop needs SharedArrayBuffer/Atomics, not a queue
+        // this method could just drain). Reporting "no events pending" (SDL_PollEvent's own
+        // return value for an empty queue) is the textbook-correct answer given that, not a
+        // stopgap fudge -- process_events()'s `while poll_event(...) == 1` loop simply never
+        // runs its body, exactly as it would with a real, currently-empty SDL event queue.
+        0
     }
 }
 

@@ -18,5 +18,10 @@ fi
 wasm-bindgen --target web --out-dir web/pkg --out-name sdlpop \
     target/wasm32-unknown-unknown/debug/prince.wasm
 
+# worker.js fetches assets by path relative to web/ (see its ASSETS list) -- symlink them in,
+# the same way scripts/run_harness.sh does for the native binary's working directory.
+ln -sfn "$(pwd)/data"       "web/data"
+ln -sfn "$(pwd)/SDLPoP.ini" "web/SDLPoP.ini"
+
 echo "Built web/pkg/. Serve web/ over HTTP (ES modules need it, not file://), e.g.:"
 echo "  cd web && python3 -m http.server 8642"

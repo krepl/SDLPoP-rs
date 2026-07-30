@@ -222,52 +222,70 @@ spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
 **Scope for this phase:**
 1. `setjmp`/`longjmp` fix (`seg000.rs` + `wasm_libc.rs`, wasm32-only). **✅ Done.**
 2. `WasmRenderer::present()`/texture pipeline — post the finished frame buffer to the main
-   thread. **✅ Texture/render-target pipeline done** (commit `b31b0ff`):
+   thread. **✅ Done** (commits `b31b0ff`, and frame delivery this pass):
    `create_texture`/`update_texture`/`set_render_target`/`render_clear`/`render_copy`/
    `render_present`/`render_set_logical_size`/`get_renderer_output_size` all have real
    `WasmRenderer` implementations (in-memory texture store + screen buffer, verified with a
-   pixel-parity test that reads back the presented frame). **Still not started**: actually
-   posting the presented frame across the Worker/main-thread boundary — that's real JS harness
-   work (item 5), not implementable/testable from the Rust side alone.
+   pixel-parity test that reads back the presented frame). `render_present` now also calls a
+   new `post_frame_to_js` helper, which reads `postMessage` reflectively off `globalThis` (same
+   pattern as `performance_now_ms`, so this stays a no-op on native/under `cargo test` and on
+   the headless Node probe, and only actually sends once run inside a real Worker/browser) and
+   posts `{type: 'frame', w, h, bpp, pixels}`.
 3. `WasmInput` — receive key/mouse state via a message queue populated by the main thread.
-   **Partially done**: real `key_state`/`mouse_state` storage and `set_key_state`/
-   `set_mouse_state` entry points exist (commit `e5ba566`), and `WasmRenderer::num_joysticks`
-   now correctly reports zero (commit pending) so `set_joy_mode` takes the keyboard-only
-   branch. Nothing calls the JS-facing setters yet — no actual JS event listener wiring, since
-   there's no Worker harness to wire them into. **New wall found (not yet started):**
-   `Renderer::poll_event` is still `unimplemented!()` — `process_events()`
-   (`seg009.rs:4610`) expects a real `SDL_Event` queue (edge-triggered KEYDOWN/KEYUP, mouse
-   button/motion, QUIT, window events), but `WasmInput`'s current design only exposes
-   level-triggered key/mouse *state*, not a queue of discrete events. Closing this needs an
-   actual synthetic-event-queue design (JS pushes discrete key/mouse events, Rust buffers them,
-   `poll_event` drains one per call) — deliberately not stubbed with a quick "always return no
-   event," since `process_events` does real gameplay-affecting bookkeeping (fast-forward
-   toggle, screenshot hotkeys, fullscreen toggle, last-key tracking) that a silent no-op would
-   quietly break. Treated as part of item 5's JS harness work, not a cheap empirical fix.
+   **Key/mouse *state* storage done** (commit `e5ba566`), `WasmRenderer::num_joysticks`
+   correctly reports zero (commit `a1ca374`) so `set_joy_mode` takes the keyboard-only branch,
+   and `Renderer::poll_event` now returns `0` ("no events pending") rather than
+   `unimplemented!()` — confirmed via a real browser run (see item 5) that this is not a
+   silent-breakage shortcut: `process_events`'s `while poll_event(...) == 1` loop simply never
+   executes its body, exactly matching real SDL's behavior for a genuinely empty event queue.
+   **Still not done, and now the clearly next open item:** there is no real event *queue* —
+   nothing ever produces a `1` return, so no keyboard/mouse input reaches the game at all yet.
+   Building that queue is meaningfully blocked on a separate decision (see the `SharedArrayBuffer`
+   discussion below), not just unstarted busywork.
 4. `WasmAudio` — post PCM buffers for the main thread to play. **Not started**, still all
    `unimplemented!()`.
 5. JS harness: a dedicated worker script loading the wasm module and relaying messages;
    `web/index.html` updated to spawn the worker, paint received frames to the canvas, forward
-   input events, and play received audio. **Not started.** This is now the natural next step —
-   items 2's texture pipeline and 3's input-queue design both need a real message-passing
-   counterpart to test against, and probing further via the headless Node harness alone yields
-   diminishing returns past this point.
+   input events, and play received audio. **✅ Frames-out half done, verified working in a real
+   browser** (`web/worker.js` new, `web/index.html` rewritten, `scripts/build_wasm.sh` updated
+   to symlink `data/`/`SDLPoP.ini` into `web/` the way the native harness does for
+   `target/debug/`). Verified end-to-end with Playwright MCP (`chrome-for-testing`, installed
+   this session): the Worker fetches the preloaded assets, runs `pop_main()` unmodified, and a
+   real frame produced by actual gameplay code — the game's own `showmessage()` dialog box
+   rendered via its real font/text-drawing code — reaches the page's `<canvas>` via
+   `postMessage`, confirmed both via console log (`frame 640x400, bpp=3`, repeating) and a
+   screenshot. This is the milestone this phase's exit criteria asked for. Input is
+   deliberately still not wired (see item 3) — an explicit "frames first, then input"
+   sequencing decision made this session, since a naive `postMessage`-based input design would
+   silently never deliver a single keystroke (a Worker's `onmessage` can't fire while
+   `pop_main()`'s blocking loop holds the stack; see below).
 6. Enough of `sdl_init`/`create_window`/`create_renderer`/window-lifecycle stubs to get
    `pop_main()` actually running inside the worker without hitting `unimplemented!()` on the
-   startup path — scope this empirically (run it, see what it hits next) rather than trying
-   to predict the full startup call graph up front. **Substantial progress, ongoing**: via a
-   Node-based `run_game()` probe (no browser needed for this), fixed `rw_from_file`,
-   `set_hint`, `sdl_init`/`sdl_init_subsystem`/`sdl_quit`, `create_window`/`create_renderer`,
-   `get_renderer_info_flags`, real `WasmInput`, real PNG decoding, `set_window_icon`,
-   `render_set_logical_size`, the texture/render-target pipeline, and `num_joysticks`
-   (commits `e5ba566`, `9a3613a`, `b31b0ff`). Current wall: `Renderer::poll_event` (see item 3)
-   — the probe has now run the startup path all the way to the first real per-frame event-pump
-   call, past every SDL init/lifecycle stub.
+   startup path. **Done** — the empirical Node-based `run_game()` probe found and fixed every
+   wall up through `poll_event`, and item 5's real-browser run confirms the whole chain now
+   runs cleanly with no more startup-path panics (commits `e5ba566`, `9a3613a`, `b31b0ff`,
+   `a1ca374`, plus this pass).
 
-**Exit criteria:** the `setjmp`/`longjmp` gap is resolved (or has a concretely updated plan,
-not a silent panic); a real frame produced by actual gameplay code (not the Phase-2-milestone
-test gradient) reaches the browser canvas via the Worker, driven by the genuinely unmodified
-game loop.
+**`SharedArrayBuffer`/input note (this session):** getting live keyboard/mouse input into a
+*running* (blocking) Worker game loop cannot work via plain `postMessage` — a Worker's
+`onmessage` handler literally cannot run while a synchronous call still occupies the stack,
+and `pop_main()` never returns until the game exits. The real fix is `SharedArrayBuffer` +
+`Atomics` (main thread writes input state directly into shared memory; Rust reads it with
+plain/atomic loads once per poll, no event loop involved) — which also happens to be the
+existing accepted fix for `Renderer::delay`'s busy-spin frame-pacing tradeoff (same primitive
+solves both). The catch: `SharedArrayBuffer` needs COOP/COEP cross-origin-isolation headers,
+which not every hosting target supports, and the user has explicitly said they'd like to
+avoid depending on `SharedArrayBuffer` long-term regardless — reinforcing that the
+`advance_one_frame()`/event-driven-restart redesign (already recorded above as future work) is
+the real long-term direction, since a non-blocking per-tick design lets plain `postMessage`
+handle input with no shared memory needed at all. Not scheduled yet; noted here so the
+tradeoff isn't rediscovered from scratch later.
+
+**Exit criteria: ✅ met.** The `setjmp`/`longjmp` gap is resolved (not a silent panic); a real
+frame produced by actual gameplay code (not the Phase-2-milestone test gradient) reaches the
+browser canvas via the Worker, driven by the genuinely unmodified game loop — confirmed with a
+real browser (Playwright MCP) this session. Remaining Phase B scope (input, audio) continues
+below as open items, but the phase's own stated exit bar is cleared.
 
 ---
 
