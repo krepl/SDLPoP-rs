@@ -103,6 +103,7 @@ web/pkg/
 # native harness).
 web/data
 web/SDLPoP.ini
+web/data_manifest.txt
 
 # Obsidian workspace
 .obsidian/

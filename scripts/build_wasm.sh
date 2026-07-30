@@ -18,10 +18,17 @@ fi
 wasm-bindgen --target web --out-dir web/pkg --out-name sdlpop \
     target/wasm32-unknown-unknown/debug/prince.wasm
 
-# worker.js fetches assets by path relative to web/ (see its ASSETS list) -- symlink them in,
-# the same way scripts/run_harness.sh does for the native binary's working directory.
+# worker.js fetches assets by path relative to web/ -- symlink them in, the same way
+# scripts/run_harness.sh does for the native binary's working directory.
 ln -sfn "$(pwd)/data"       "web/data"
 ln -sfn "$(pwd)/SDLPoP.ini" "web/SDLPoP.ini"
+
+# Ad hoc manifest (not the real asset-manifest design from the plan doc's "future
+# consideration" section -- just every file actually on disk under data/, so the harness
+# doesn't need a hand-maintained list of which resources the startup path happens to touch).
+# --no-ignore because data/music/*.ogg is gitignored but still needed at runtime if present.
+fdfind --no-ignore --type f . data | sort > web/data_manifest.txt
+echo "SDLPoP.ini" >> web/data_manifest.txt
 
 echo "Built web/pkg/. Serve web/ over HTTP (ES modules need it, not file://), e.g.:"
 echo "  cd web && python3 -m http.server 8642"

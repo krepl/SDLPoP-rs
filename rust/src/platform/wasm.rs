@@ -95,6 +95,7 @@ impl WasmPalette {
 }
 
 const SDL_BLENDMODE_NONE: c_int = 0;
+const SDL_BLENDMODE_BLEND: c_int = 1;
 
 fn surfaces() -> &'static mut HashMap<usize, WasmSurface> {
     static mut SURFACES: Option<HashMap<usize, WasmSurface>> = None;
@@ -655,7 +656,10 @@ impl Renderer for WasmRenderer {
         unimplemented!("WasmRenderer::show_message_box")
     }
     unsafe fn linked_sdl_version(&mut self) -> (u8, u8, u8) {
-        unimplemented!("WasmRenderer::linked_sdl_version")
+        // No real SDL2 exists to ask -- report a recent version, so the one caller
+        // (`init_digi`'s "SDL older than 2.0.4 has a resampling bug" workaround) takes the
+        // modern (16-bit audio) branch, matching what real SDL2 on any current system reports.
+        (2, 30, 0)
     }
     unsafe fn performance_counter(&mut self) -> u64 {
         (performance_now_ms() * 1000.0) as u64 // microsecond-resolution counter
@@ -892,6 +896,31 @@ impl Renderer for WasmRenderer {
     }
 }
 
+/// Unpacks PNG scanlines of a sub-8-bit indexed image into one byte (palette index) per
+/// pixel. PNG bit-packing is MSB-first within each byte, and each scanline starts on a fresh
+/// byte (trailing bits in a row's last byte, if width isn't a multiple of the pack ratio, are
+/// padding -- ignored here since `row_bytes` is computed the same way and each row is sliced
+/// independently). A no-op copy when `bit_depth == 8` (already one byte per pixel).
+fn unpack_indexed_scanlines(packed: &[u8], width: usize, height: usize, bit_depth: u8) -> Vec<u8> {
+    if bit_depth == 8 {
+        return packed.to_vec();
+    }
+    let pixels_per_byte = 8 / bit_depth as usize;
+    let row_bytes = width.div_ceil(pixels_per_byte);
+    let mask: u8 = (1u16 << bit_depth) as u8 - 1;
+    let mut out = vec![0u8; width * height];
+    for y in 0..height {
+        let row = &packed[y * row_bytes..(y * row_bytes + row_bytes).min(packed.len())];
+        for x in 0..width {
+            let byte_idx = x / pixels_per_byte;
+            if byte_idx >= row.len() { break; }
+            let shift = 8 - bit_depth as usize * (x % pixels_per_byte + 1);
+            out[y * width + x] = (row[byte_idx] >> shift) & mask;
+        }
+    }
+    out
+}
+
 /// Packs 8-bit RGBA components into a pixel value using the given channel masks --
 /// `map_rgb`/`map_rgba`'s actual logic, generic over whatever masks a surface was created
 /// with (SDLPoP always uses one of a few fixed mask sets, so this doesn't need to handle
@@ -917,24 +946,33 @@ impl WasmRenderer {
         let Ok(mut reader) = decoder.read_info() else { return std::ptr::null_mut() };
         let (width, height) = (reader.info().width as c_int, reader.info().height as c_int);
 
-        // Bit depths other than 8 (1/2/4/16-bit PNGs) would need extra unpacking this
-        // doesn't implement -- every real asset in this codebase is 8-bit; fail cleanly
-        // (matching IMG_Load's null-on-failure convention) rather than read garbage.
-        if reader.info().bit_depth != png::BitDepth::Eight {
-            return std::ptr::null_mut();
-        }
-
+        // Every real sprite/font asset in this codebase turned out to be Indexed color type
+        // (confirmed empirically: 927/927 res*.png files), but NOT all 8-bit -- 1/2/4-bit
+        // indexed PNGs are common (font glyphs especially). Unpacking those via this crate's
+        // `EXPAND` transform (an earlier version of this function did that) resolves the
+        // palette into real RGB(A) samples -- but callers like `method_3_blit_mono`
+        // (`seg009.rs`) call `set_color_key(image, true, 0)` expecting pixel value `0` to mean
+        // "palette index 0", a contract only an indexed surface satisfies; on an RGBA surface
+        // "color key 0" almost never matches a real pixel, so the intended per-glyph
+        // transparency silently stopped working (glyphs rendered as solid rectangles instead
+        // of their real shape) even though the image data itself decoded successfully. `png`
+        // 0.18 has no "unpack bits, keep the palette" transform (libpng's `PACKING` isn't
+        // implemented here), so unpack sub-8-bit rows by hand instead, to keep every real
+        // asset on the one indexed-surface-with-a-real-SDL-palette path below, matching what
+        // real `IMG_Load` does for indexed PNGs regardless of bit depth.
         if reader.info().color_type == png::ColorType::Indexed {
+            let bit_depth = reader.info().bit_depth as u8; // BitDepth's repr is its own bit count
             let palette = reader.info().palette.clone().unwrap_or_default();
             let trns = reader.info().trns.clone();
             let Some(buf_size) = reader.output_buffer_size() else { return std::ptr::null_mut() };
             let mut buf = vec![0u8; buf_size];
             let Ok(frame) = reader.next_frame(&mut buf) else { return std::ptr::null_mut() };
-            let indices = &buf[..frame.buffer_size()];
+            let packed = &buf[..frame.buffer_size()];
+            let indices = unpack_indexed_scanlines(packed, width as usize, height as usize, bit_depth);
 
             let surf = self.create_surface(width, height, 8, 0, 0, 0, 0);
             let s = surf_mut(surf);
-            s.pixels[..indices.len()].copy_from_slice(indices);
+            s.pixels[..indices.len()].copy_from_slice(&indices);
             let colors: Vec<SDL_Color> = (0..256)
                 .map(|i| {
                     let (r, g, b) = if i * 3 + 2 < palette.len() {
@@ -950,10 +988,13 @@ impl WasmRenderer {
             return surf;
         }
 
-        // Anything else (RGB/RGBA/Grayscale/GrayscaleAlpha) -- the sample-count-based match
-        // below handles each natively-decoded shape without needing an EXPAND
-        // transformation (which would have to be set before `read_info`, before the
-        // color-type check above -- easier to just handle each real shape directly).
+        // Anything else (RGB/RGBA/Grayscale/GrayscaleAlpha) -- no real asset in this codebase
+        // is one of these (see above), but keep a generic fallback for robustness. Only 8-bit
+        // depth is handled; sub-8-bit non-indexed PNGs would need the same manual-unpack
+        // treatment as above and aren't worth building until something actually needs it.
+        if reader.info().bit_depth != png::BitDepth::Eight {
+            return std::ptr::null_mut();
+        }
         let Some(buf_size) = reader.output_buffer_size() else { return std::ptr::null_mut() };
         let mut buf = vec![0u8; buf_size];
         let Ok(frame) = reader.next_frame(&mut buf) else { return std::ptr::null_mut() };
@@ -987,18 +1028,38 @@ impl WasmRenderer {
         dst
     }
 
-    /// Shared `blit`/`blit_scaled` implementation. Honors color-key transparency; does
-    /// **not** yet implement alpha/`ADD`/`MOD` blend-mode compositing (`SDL_BLENDMODE_NONE`
-    /// is a plain copy, which covers every current Phase A test scene and file migration to
-    /// date) -- add real blend math here once a file migration actually exercises it
-    /// (`lighting.rs`'s `ADD`/`MOD` overlay is the known future case).
+    /// Shared `blit`/`blit_scaled` implementation. Honors color-key transparency always;
+    /// for the common case (same bpp, no source palette, `SDL_BLENDMODE_NONE`) does the
+    /// original plain byte copy, verified correct by every differential-harness replay to
+    /// date (which exercises game *state*, not rendered pixels, but this fast path is
+    /// unchanged from before this comment, so nothing here is newly at risk). Two real gaps
+    /// were added to close, both found empirically via a real browser run rendering actual
+    /// text (`method_3_blit_mono` in `seg009.rs`, which `convert_surface_format`s an indexed
+    /// glyph to ARGB8888 and then blits it with `SDL_BLENDMODE_BLEND`):
+    /// - Converting an indexed (paletted) source into a different-bpp destination now does a
+    ///   real palette lookup (color *and* alpha, so `tRNS`-derived per-index transparency
+    ///   survives the conversion) instead of truncating to a raw, meaningless byte copy.
+    /// - `SDL_BLENDMODE_BLEND` now actually alpha-composites onto the destination's existing
+    ///   pixel, instead of being silently ignored (previously: still a raw copy regardless of
+    ///   blend mode, which is why a colored-but-still-per-pixel-transparent glyph surface
+    ///   rendered as one solid opaque rectangle -- the "should be transparent here" alpha
+    ///   value was simply never consulted).
+    /// `ADD`/`MOD` compositing (`lighting.rs`'s overlay) is still not implemented -- nothing
+    /// exercises it yet.
     unsafe fn blit_impl(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect, scaled: bool) -> c_int {
         let s = surf_mut(src);
         let (sx0, sy0, sw, sh) = match src_rect.as_ref() {
             Some(r) => (r.x, r.y, r.w, r.h),
             None => (0, 0, s.w, s.h),
         };
-        let (s_pitch, s_bpp, s_ckey) = (s.pitch, s.bytes_per_pixel as usize, s.color_key);
+        let (s_pitch, s_bpp, s_ckey, s_blend, s_alpha_mod) =
+            (s.pitch, s.bytes_per_pixel as usize, s.color_key, s.blend_mode, s.alpha_mod);
+        let (s_rmask, s_gmask, s_bmask, s_amask) = (s.rmask, s.gmask, s.bmask, s.amask);
+        let (s_rshift, s_gshift, s_bshift, s_ashift) = (s.rshift, s.gshift, s.bshift, s.ashift);
+        // Snapshot palette colors up front: avoids holding a live borrow of `s` at the same
+        // time as `d` below (both come from the same `HashMap`, via the same `surf_mut`
+        // aliasing this function already relied on before this change).
+        let s_palette: Option<[SDL_Color; 256]> = s.palette.as_ref().map(|p| *p.colors);
 
         let d = surf_mut(dst);
         let (dx0, dy0) = match dst_rect.as_ref() {
@@ -1014,6 +1075,16 @@ impl WasmRenderer {
             (sw, sh)
         };
         let (d_pitch, d_bpp) = (d.pitch, d.bytes_per_pixel as usize);
+        let (d_rmask, d_gmask, d_bmask, d_amask) = (d.rmask, d.gmask, d.bmask, d.amask);
+        let (d_rshift, d_gshift, d_bshift, d_ashift) = (d.rshift, d.gshift, d.bshift, d.ashift);
+        let d_is_indexed = d.palette.is_some();
+
+        // Fast path only when no per-pixel reinterpretation is needed at all: same byte
+        // width, no palette-to-truecolor resolution needed (indexed source AND indexed dest
+        // is still a same-format raw index copy, not a conversion), no blending to perform.
+        // This is the exact prior behavior, for the exact cases it was already used for.
+        let needs_conversion =
+            (s_palette.is_some() && !d_is_indexed) || s_bpp != d_bpp || s_blend == SDL_BLENDMODE_BLEND;
 
         for y in 0..dh {
             let sy = sy0 + if scaled && dh > 0 { y * sh / dh } else { y };
@@ -1033,12 +1104,60 @@ impl WasmRenderer {
                 }
 
                 let d_off = (dyy * d_pitch) as usize + (dxx as usize) * d_bpp;
-                let n = s_bpp.min(d_bpp);
-                d.pixels[d_off..d_off + n].copy_from_slice(&pixel[..n]);
+
+                if !needs_conversion {
+                    let n = s_bpp.min(d_bpp);
+                    d.pixels[d_off..d_off + n].copy_from_slice(&pixel[..n]);
+                    continue;
+                }
+
+                let (mut r, mut g, mut b, mut a) = if let Some(colors) = &s_palette {
+                    let c = colors[pixel[0] as usize];
+                    (c.r, c.g, c.b, c.a)
+                } else {
+                    let raw = read_native_u32(pixel);
+                    let channel = |mask: u32, shift: u32, default: u8| {
+                        if mask != 0 { ((raw >> shift) & 0xFF) as u8 } else { default }
+                    };
+                    (
+                        channel(s_rmask, s_rshift, 0),
+                        channel(s_gmask, s_gshift, 0),
+                        channel(s_bmask, s_bshift, 0),
+                        channel(s_amask, s_ashift, 255),
+                    )
+                };
+                a = ((a as u32 * s_alpha_mod as u32) / 255) as u8;
+
+                if s_blend == SDL_BLENDMODE_BLEND {
+                    let draw = read_native_u32(&d.pixels[d_off..d_off + d_bpp]);
+                    let dchannel = |mask: u32, shift: u32| {
+                        if mask != 0 { ((draw >> shift) & 0xFF) as u8 } else { 0 }
+                    };
+                    let (dr, dg, db) = (dchannel(d_rmask, d_rshift), dchannel(d_gmask, d_gshift), dchannel(d_bmask, d_bshift));
+                    let da = if d_amask != 0 { ((draw >> d_ashift) & 0xFF) as u8 } else { 255 };
+                    let af = a as u32;
+                    let over = |sc: u8, dc: u8| (((sc as u32 * af) + (dc as u32 * (255 - af))) / 255) as u8;
+                    r = over(r, dr);
+                    g = over(g, dg);
+                    b = over(b, db);
+                    a = (af + (da as u32 * (255 - af)) / 255).min(255) as u8;
+                }
+
+                let packed = pack_pixel(d_rmask, d_gmask, d_bmask, d_amask, r, g, b, a);
+                d.pixels[d_off..d_off + d_bpp].copy_from_slice(&packed.to_ne_bytes()[..d_bpp]);
             }
         }
         0
     }
+}
+
+/// Zero-extends a short (1-4 byte) native-endian pixel value into a `u32`, so mask/shift
+/// arithmetic (written for a full 32-bit pixel) works uniformly regardless of a surface's
+/// actual bytes-per-pixel.
+fn read_native_u32(bytes: &[u8]) -> u32 {
+    let mut buf = [0u8; 4];
+    buf[..bytes.len()].copy_from_slice(bytes);
+    u32::from_ne_bytes(buf)
 }
 
 pub struct WasmAudio;

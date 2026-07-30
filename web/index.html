@@ -40,6 +40,8 @@
     } else if (msg.type === 'error') {
       status.textContent = `worker error: ${msg.message}`;
       console.error('worker error', msg.message);
+    } else if (msg.type === 'status') {
+      status.textContent = msg.message;
     }
   };
 

@@ -389,8 +389,12 @@ pub unsafe extern "C" fn closedir(_dirp: *mut c_void) -> c_int {
 pub unsafe extern "C" fn access(path: *const c_char, _mode: c_int) -> c_int {
     // Real access() also checks read/write/execute permission bits (the `mode` argument);
     // every real caller in this codebase only ever checks F_OK (existence), so that's all
-    // this needs to implement.
-    if vfs_contains(&c_str_to_string(path)) { 0 } else { -1 }
+    // this needs to implement. Also recognizes directory prefixes (see `vfs_contains_dir`)
+    // -- `locate_file_`'s first probe is `file_exists(a_loose_resource_folder_path)`, e.g.
+    // `"data/IBM_SND1"`, which is never a literal VFS key itself, only a prefix of the real
+    // per-resource file keys stored under it.
+    let path_str = c_str_to_string(path);
+    if vfs_contains(&path_str) || vfs_contains_dir(&path_str) { 0 } else { -1 }
 }
 
 #[no_mangle]
@@ -403,19 +407,55 @@ pub unsafe extern "C" fn mkdir(_path: *const c_char, _mode: c_uint) -> c_int {
     -1
 }
 
+/// Glibc x86-64 `struct stat` field offsets this codebase actually reads (see the matching
+/// comment on [`fstat`] below): `st_mode` at byte 24, `st_size` at byte 48. The VFS models no
+/// real directories, so a path is reported as a directory if anything is stored *under* it
+/// (see [`vfs_contains_dir`]) and as a regular file if it matches exactly -- covering both
+/// real callers in this codebase (data-folder-exists checks, and file-size/mtime probing;
+/// `st_mtime` is left zeroed, since the VFS keeps no timestamps).
 #[no_mangle]
-pub unsafe extern "C" fn stat(_path: *const c_char, _buf: *mut c_void) -> c_int {
-    -1
+pub unsafe extern "C" fn stat(path: *const c_char, buf: *mut c_void) -> c_int {
+    const S_IFDIR: u32 = 0o040000;
+    const S_IFREG: u32 = 0o100000;
+    let path_str = c_str_to_string(path);
+    let (mode, size) = if vfs_contains(&path_str) {
+        (S_IFREG, vfs_read(&path_str).map_or(0, |d| d.len() as i64))
+    } else if vfs_contains_dir(&path_str) {
+        (S_IFDIR, 0)
+    } else {
+        return -1;
+    };
+    std::ptr::write_bytes(buf as *mut u8, 0, 144);
+    std::ptr::write_unaligned((buf as *mut u8).add(24) as *mut u32, mode);
+    std::ptr::write_unaligned((buf as *mut u8).add(48) as *mut i64, size);
+    0
 }
 
+/// `fd` here is really the VFS file id `fopen` disguised as a pointer (see [`fileno`]) --
+/// there's no real file descriptor table on wasm32 to consult. `st_size` is the only field
+/// any caller in this codebase reads off an `fstat` result (`load_from_opendats_metadata`,
+/// to size a loose-file resource after opening it via the directory fallback), so that's the
+/// only one populated; everything else in the buffer is zeroed. Layout matches seg009.rs's
+/// local `stat_t` (glibc x86-64 `struct stat`, 144 bytes, `st_size` at byte offset 48) --
+/// duplicated here rather than shared, since that struct is private to each file that needs
+/// it, the same way it's separately duplicated in replay.rs/options.rs/menu.rs.
 #[no_mangle]
-pub unsafe extern "C" fn fstat(_fd: c_int, _buf: *mut c_void) -> c_int {
-    -1
+pub unsafe extern "C" fn fstat(fd: c_int, buf: *mut c_void) -> c_int {
+    let Some(f) = open_files().get(&(fd as usize)) else { return -1 };
+    std::ptr::write_bytes(buf as *mut u8, 0, 144);
+    std::ptr::write_unaligned((buf as *mut u8).add(48) as *mut i64, f.data.len() as i64);
+    0
 }
 
+/// Real callers only ever pass this straight into `fstat`, so returning the same id `fopen`
+/// handed out (rather than a real OS file descriptor, which doesn't exist here) is enough.
 #[no_mangle]
-pub unsafe extern "C" fn fileno(_stream: *mut c_void) -> c_int {
-    -1
+pub unsafe extern "C" fn fileno(stream: *mut c_void) -> c_int {
+    if open_files().contains_key(&(stream as usize)) {
+        stream as usize as c_int
+    } else {
+        -1
+    }
 }
 
 /// Generic in-place sort driven by a C comparator callback, operating on raw
@@ -482,7 +522,7 @@ struct VfsFile {
 // The actual storage lives in `wasm_vfs` (shared with `platform::wasm::WasmRenderer::
 // rw_from_file` -- see that module's doc comment for why it's split out). Re-exported here
 // under their old names so the rest of this file's `fopen`-family code doesn't change.
-use crate::wasm_vfs::{vfs_contains, vfs_read, vfs_remove, vfs_write};
+use crate::wasm_vfs::{vfs_contains, vfs_contains_dir, vfs_read, vfs_remove, vfs_write};
 
 fn open_files() -> &'static mut HashMap<usize, VfsFile> {
     static mut OPEN_FILES: Option<HashMap<usize, VfsFile>> = None;

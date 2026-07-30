@@ -34,3 +34,13 @@ pub(crate) fn vfs_contains(path: &str) -> bool {
 pub(crate) fn vfs_remove(path: &str) -> bool {
     vfs_store().remove(path).is_some()
 }
+
+/// The VFS is a flat `path -> bytes` map with no real directory concept -- there is no
+/// stored entry for `"data/IBM_SND1"` itself, only for the files under it
+/// (`"data/IBM_SND1/res1.bin"`, ...). `stat()`-style "does this directory exist" checks
+/// (`seg009.rs`'s loose-resource-folder fallback, e.g.) need a yes/no answer anyway, so
+/// synthesize one: true if any stored path has `prefix` as a proper directory prefix.
+pub(crate) fn vfs_contains_dir(prefix: &str) -> bool {
+    let with_slash = format!("{prefix}/");
+    vfs_store().keys().any(|k| k.starts_with(&with_slash))
+}
