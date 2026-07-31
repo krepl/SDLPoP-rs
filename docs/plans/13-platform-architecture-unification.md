@@ -202,14 +202,15 @@ the actual, sole motivating problem. Consequences:
   permitted inside Workers (unlike the main thread, where it's deprecated/discouraged), so
   the async-preload-then-serve-synchronously design may not be needed at all — worth
   revisiting Phase C's plan once this lands.
-- `setjmp`/`longjmp` still needs a real fix (this part of the original plan stands), but it
-  turns out much smaller in isolation than assumed: it's exactly one `longjmp` call site, and
-  the fix does **not** require touching any of the 12 restart call sites. Wrap just the outer
-  `start_game()`-calling loop (`init_game_main`, `seg000.rs`) in `catch_unwind`, and make
-  wasm's `longjmp` shim (`wasm_libc.rs`) panic with a distinguishable marker type that
-  wrapper catches and turns into a retry. Contained to `seg000.rs` + `wasm_libc.rs`, gated
-  `#[cfg(target_arch = "wasm32")]` — native keeps using real libc `setjmp`/`longjmp`,
-  completely untouched. **✅ Done, commit `4111b02`.**
+- `setjmp`/`longjmp` still needs a real fix (this part of the original plan stands). The
+  first attempt (commit `4111b02`) wrapped the outer `start_game()`-calling loop in
+  `catch_unwind`, with wasm's restart path panicking with a distinguishable marker type the
+  wrapper would catch and retry on. **This did not actually work** — see the correction
+  below; `catch_unwind` cannot catch anything at all on `wasm32-unknown-unknown` with this
+  toolchain, confirmed empirically once real input let the game reach an actual restart call
+  site (see item 3's "real fix" note, commit `0fa3cc0`). Contained to `seg000.rs` +
+  `lib.rs` + `web/worker.js`, gated `#[cfg(target_arch = "wasm32")]` — native keeps using
+  real libc `setjmp`/`longjmp`, completely untouched. **✅ Actually done, commit `0fa3cc0`.**
 
 **Known tradeoff, accepted for a first working version:** without `SharedArrayBuffer` (which
 needs COOP/COEP cross-origin-isolation HTTP headers — a real deployment constraint), there's
@@ -220,7 +221,9 @@ not correctness. Real efficient sleep via `Atomics.wait` is a deferred future re
 spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
 
 **Scope for this phase:**
-1. `setjmp`/`longjmp` fix (`seg000.rs` + `wasm_libc.rs`, wasm32-only). **✅ Done.**
+1. `setjmp`/`longjmp` fix (`seg000.rs` + `lib.rs` + `web/worker.js`, wasm32-only). **✅ Done
+   for real** (commit `0fa3cc0`, correcting the `catch_unwind`-based commit `4111b02`, which
+   turned out never to have worked — see the note above and item 3's real-fix writeup below).
 2. `WasmRenderer::present()`/texture pipeline — post the finished frame buffer to the main
    thread. **✅ Done** (commits `b31b0ff`, and frame delivery this pass):
    `create_texture`/`update_texture`/`set_render_target`/`render_clear`/`render_copy`/
@@ -333,6 +336,43 @@ spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
    runs cleanly with no more startup-path panics (commits `e5ba566`, `9a3613a`, `b31b0ff`,
    `a1ca374`, plus this pass).
 
+**The real `setjmp`/`longjmp` fix, correcting commit `4111b02` (this session, commit
+`0fa3cc0`):** the `catch_unwind`-based wasm32 restart mechanism was never actually
+functional. Confirmed with an isolated minimal test, independent of this codebase: on
+`wasm32-unknown-unknown` with the current stable toolchain, every panic unconditionally
+aborts via `__rust_abort`, regardless of whether it's wrapped in `catch_unwind` — this is a
+real, long-standing limitation of this target (real unwinding needs a nightly toolchain,
+`-Z build-std`, and the wasm exception-handling target feature; not something to take on for
+this). The bug went unnoticed for as long as it did because it requires actually reaching one
+of the ~12 restart call sites to trigger — which nothing did until real keyboard input (item
+3) let the game advance past its title screen, "press any key to continue" being one of those
+call sites. Once input worked, every restart crashed the browser tab with an uncaught panic.
+
+The real fix crosses the wasm/JS boundary instead of trying to unwind purely within wasm:
+`wasm_bindgen::throw_str` throws a real, catchable JS `Error` that correctly unwinds every
+intervening wasm stack frame — also confirmed empirically (a synthetic 3-levels-deep nested
+throw unwound cleanly back to the JS caller, with the wasm instance's memory/globals fully
+intact and callable again afterward). This is the same "JS exceptions" mechanism Emscripten
+has long used for `setjmp`/`longjmp`, and needs no toolchain change at all.
+
+The catch: this throw necessarily unwinds *all* the way back to whatever JS call is currently
+running — there is no way to "catch and resume mid-wasm-stack" the way `setjmp`/`longjmp` or
+a working `catch_unwind` could. This works here specifically because `start_game`'s own outer
+call is already the very last thing `pop_main()`/`init_game_main()` do (nothing meaningful
+runs after it), so losing every frame back to the JS boundary loses nothing real. A new
+`resume_game_after_restart()` export (`lib.rs`) re-enters directly at `start_game_body()`,
+skipping straight past `pop_main()`'s one-time setup (asset loading, `SDL_Init`, ...), which
+must not re-run on a restart. `web/worker.js`'s `runWithRestartRetries` wraps the first
+`run_game()` call and retries via `resume_game_after_restart()` on that specific signal
+(matched by exact message string), letting any other exception — a real panic/bug — propagate
+normally instead of being silently swallowed. Native's `start_game` is completely untouched
+(still real `setjmp`/`longjmp`).
+
+Verified end-to-end with Playwright MCP: the exact rapid key sequence that previously crashed
+with an uncaught panic (advancing past the title screen into gameplay) now runs cleanly with
+zero console errors, reaching real in-game rendering — the Prince standing in an actual
+dungeon room, torches lit, HUD visible.
+
 **`SharedArrayBuffer`/input note, implemented (commit `292a19a`):** getting live keyboard/
 mouse input into a *running* (blocking) Worker game loop cannot work via plain `postMessage`
 — a Worker's `onmessage` handler literally cannot run while a synchronous call still occupies
@@ -388,13 +428,15 @@ not just add a nicer loop on top:**
   web have two *structurally different* restart mechanisms (real non-local jump vs.
   panic-based emulation) instead of one shared implementation — directly working against
   this whole plan's "one effective implementation" goal, not just a wasm32-specific wart.
-- **The `catch_unwind`/`panic_any(RestartGameSignal)` mechanism used for wasm32 today
-  (commit `4111b02`) is explicitly acknowledged tech debt, not a real fix — keep it only
-  until the real fix below lands.** Using a panic for ordinary control flow (not an actual
-  error) is a Rust anti-pattern: panics are supposed to signal "something went wrong," and
-  overloading them for "the player pressed Ctrl+R" makes real bugs harder to distinguish
-  from intentional restarts, and makes the control flow just as opaque as the `longjmp` it
-  replaced — a different-shaped version of the same problem, not a solution to it.
+- **The wasm32 restart mechanism (`wasm_bindgen::throw_str` across the wasm/JS boundary,
+  commit `0fa3cc0`, replacing the never-actually-functional `catch_unwind` attempt from
+  commit `4111b02`) is explicitly acknowledged tech debt, not a real fix — keep it only until
+  the real fix below lands.** Using an exception for ordinary control flow (not an actual
+  error) is the same anti-pattern `catch_unwind` was reaching for, just via a mechanism that
+  actually works on this target: it makes real bugs harder to distinguish from intentional
+  restarts (mitigated today by matching on an exact signal string, but still fragile in
+  spirit), and the control flow is just as opaque as the `longjmp` it replaced — a
+  different-shaped version of the same problem, not a solution to it.
 - **The real fix for both, when this is picked up: make "restart the game" an ordinary
   return value that bubbles up through the call stack, the same way `advance_one_frame`'s
   `LoopSignal` already would.** Concretely: none of the 12 current restart call sites
