@@ -222,6 +222,21 @@ mod wasm_entry {
             crate::pop_main();
         }
     }
+
+    /// The JS-facing re-entry point a restart request unwinds to. `seg000.rs`'s wasm32
+    /// `start_game` throws a JS `Error` (`seg000::RESTART_SIGNAL`) to signal a restart --
+    /// the only non-local-control mechanism that actually works on this target (`catch_unwind`
+    /// does not; see that function's doc comment for why). That throw necessarily unwinds all
+    /// the way back to whatever JS call is currently running, discarding `pop_main()`'s own
+    /// frame along with everything below it -- harmless, since `pop_main()`/`init_game_main()`
+    /// do only one-time setup (asset loading, `SDL_Init`, ...) before their single call into
+    /// `start_game`, and none of it should re-run on a restart. So the retry loop (`worker.js`)
+    /// calls `run_game()` exactly once, and calls this instead for every restart after that --
+    /// it re-enters directly at `start_game_body()`, skipping straight past that setup.
+    #[wasm_bindgen]
+    pub fn resume_game_after_restart() {
+        unsafe { crate::seg000::start_game_body() };
+    }
 }
 
 // Shared support for tests that touch real files on disk (quicksave, hall-of-fame,

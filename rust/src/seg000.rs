@@ -546,41 +546,53 @@ pub unsafe extern "C" fn start_game() {
     start_game_body();
 }
 
-/// Marker type panicked with by wasm32's `start_game` when a nested call wants to restart --
-/// caught by the outer call's `catch_unwind`, never allowed to escape it. Carries no data;
-/// its identity (via `downcast_ref`) is the whole signal.
+/// The JS `Error.message` a restart request is thrown with (see wasm32's `start_game`
+/// below) -- `worker.js`'s retry loop matches on this exact string to distinguish an
+/// intentional restart from a real panic/bug, which it must let propagate instead of
+/// swallowing. Public so `lib.rs`'s `resume_game_after_restart` (the JS-facing re-entry
+/// point the retry loop calls) can be sure it matches this file's actual value.
 #[cfg(target_arch = "wasm32")]
-pub(crate) struct RestartGameSignal;
+pub(crate) const RESTART_SIGNAL: &str = "SDLPOP_RESTART";
 
+/// wasm32 has no working non-local jump *or* unwind primitive: `catch_unwind` cannot catch
+/// anything on this target (confirmed empirically -- every panic unconditionally aborts via
+/// `__rust_abort`, regardless of any `catch_unwind` wrapper; a previous version of this
+/// function relied on `catch_unwind` and consequently crashed on every real restart, e.g. the
+/// title screen's "press any key"). The actual working mechanism crosses the wasm/JS boundary
+/// instead of trying to unwind purely within wasm: `wasm_bindgen::throw_str` throws a real,
+/// catchable JS `Error` that correctly unwinds every intervening wasm stack frame (confirmed
+/// empirically: a 3-levels-deep nested call throwing this way unwinds cleanly back to the
+/// JS caller, with the wasm instance's memory/globals fully intact and callable afterward --
+/// this is the same "JS exceptions" mechanism Emscripten has long used for `setjmp`/`longjmp`,
+/// not dependent on Rust's own unwind tables at all).
+///
+/// This throw necessarily unwinds *all* the way back to whatever JS call is currently running
+/// (`run_game()`, the first time; `resume_game_after_restart()`, every time after) -- there is
+/// no way to "catch and resume mid-wasm-stack" the way `setjmp`/`longjmp` or `catch_unwind`
+/// can. That's fine here specifically because `start_game`'s own outer call is already the
+/// last thing `pop_main()` does (nothing meaningful runs after it), so losing every frame back
+/// to the JS boundary loses nothing: `resume_game_after_restart` (`lib.rs`) just calls
+/// `start_game_body()` directly, skipping `pop_main()`/`init_game_main()`'s one-time setup
+/// (asset loading, `SDL_Init`, ...), which must NOT re-run on a restart.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub unsafe extern "C" fn start_game() {
     if first_start != 0 {
         first_start = 0;
-        loop {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| start_game_body())) {
-                Ok(()) => return,
-                Err(payload) => {
-                    if payload.downcast_ref::<RestartGameSignal>().is_some() {
-                        continue;
-                    }
-                    // A real panic/bug, not a restart request -- propagate it.
-                    std::panic::resume_unwind(payload);
-                }
-            }
-        }
+        start_game_body();
     } else {
         draw_rect(addr_of!(screen_rect), colorids_color_0_black as c_int);
         show_quotes();
         clear_screen_and_sounds();
-        std::panic::panic_any(RestartGameSignal);
+        wasm_bindgen::throw_str(RESTART_SIGNAL);
     }
 }
 
 /// The actual "start (or restart) the game" logic -- identical on every target. Landed on
-/// (native: via the `setjmp` fallthrough; wasm32: via the `catch_unwind` loop) once per
-/// restart, so `entry_used`/`letts_used` are declared fresh here rather than by the caller.
-unsafe fn start_game_body() {
+/// (native: via the `setjmp` fallthrough; wasm32: via `resume_game_after_restart`, `lib.rs`)
+/// once per restart, so `entry_used`/`letts_used` are declared fresh here rather than by the
+/// caller.
+pub(crate) unsafe fn start_game_body() {
     // USE_COPYPROT
     let mut entry_used = [0u16; 40];
     let mut letts_used = [0u8; 26];

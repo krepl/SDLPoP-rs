@@ -15,7 +15,40 @@
 // thread will keep writing live keyboard/mouse state into directly, with no further messages
 // needed afterward. See set_shared_input_buffer's doc comment (rust/src/lib.rs) and
 // platform::wasm's "Live input" section for the full design.
-import init, { preload_file, run_game, set_shared_input_buffer } from './pkg/sdlpop.js';
+import init, { preload_file, run_game, resume_game_after_restart, set_shared_input_buffer } from './pkg/sdlpop.js';
+
+// wasm32 has no working non-local-jump/unwind primitive (catch_unwind cannot catch anything
+// on this target -- see seg000.rs's start_game doc comment), so a game restart (title screen
+// "press any key", death/retry, ...) is signaled by throwing a real JS Error across the
+// wasm/JS boundary instead -- the one mechanism that actually works, since it relies on the
+// JS engine's own exception propagation, not Rust's. That throw unwinds the *entire* wasm
+// call stack, so recovering means calling back into wasm fresh: resume_game_after_restart()
+// re-enters directly at the game's restart point, skipping run_game()'s one-time setup
+// (which must not re-run). Must match seg000::RESTART_SIGNAL exactly.
+const RESTART_SIGNAL = 'SDLPOP_RESTART';
+function isRestartSignal(e) {
+    return e instanceof Error && e.message === RESTART_SIGNAL;
+}
+
+// Runs `first` once, then keeps calling `resume_game_after_restart` every time a restart is
+// signaled. A non-restart exception (a real panic/bug) propagates out normally -- this must
+// not swallow those, only intentional restarts.
+function runWithRestartRetries(first) {
+    try {
+        first();
+        return; // returned normally -- the game loop genuinely ended, no restart happened
+    } catch (e) {
+        if (!isRestartSignal(e)) throw e;
+    }
+    while (true) {
+        try {
+            resume_game_after_restart();
+            return; // returned normally -- the game loop genuinely ended, not a restart
+        } catch (e) {
+            if (!isRestartSignal(e)) throw e;
+        }
+    }
+}
 
 const inputReady = new Promise((resolve) => {
     self.onmessage = (e) => {
@@ -66,7 +99,7 @@ async function main() {
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
     postMessage({ type: 'status', message: `preloaded ${paths.length} assets, starting game` });
-    run_game();
+    runWithRestartRetries(run_game);
 }
 
 main().catch((err) => {
