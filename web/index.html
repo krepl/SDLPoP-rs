@@ -2,22 +2,81 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>SDLPoP wasm (Worker harness, frames + audio out)</title>
+<title>SDLPoP wasm (Worker harness, frames + audio + input)</title>
 <style>
   body { background: #222; color: #eee; font-family: monospace; }
   canvas { image-rendering: pixelated; border: 1px solid #555; }
 </style>
 </head>
 <body>
-<h3>SDLPoP wasm — Worker harness milestone: frames + audio out, no input yet</h3>
-<canvas id="screen" width="320" height="200"></canvas>
+<h3>SDLPoP wasm — Worker harness milestone: frames + audio + input</h3>
+<canvas id="screen" width="320" height="200" tabindex="0"></canvas>
 <p id="status">starting worker&hellip;</p>
 <p><button id="enable-audio">Enable audio</button> (browsers require a click before audio can play)</p>
-<p>Open devtools console for log output.</p>
+<p>Click the canvas first, then use arrow keys / space / etc. Open devtools console for log output.</p>
 <script type="module">
   const canvas = document.getElementById('screen');
   const ctx = canvas.getContext('2d');
   const status = document.getElementById('status');
+
+  // Live input: a SharedArrayBuffer this page writes keyboard/mouse state into directly, and
+  // the Worker's wasm side reads on every poll -- see set_shared_input_buffer's doc comment
+  // (rust/src/lib.rs) and platform::wasm's "Live input" section for why a SharedArrayBuffer
+  // (not postMessage) is the mechanism, and why this is a deliberate first-pass choice, not
+  // the intended long-term shape. Requires cross-origin isolation (COOP/COEP response
+  // headers) -- see scripts/build_wasm.sh's serving instructions.
+  if (typeof SharedArrayBuffer === 'undefined') {
+    status.textContent =
+      'SharedArrayBuffer is unavailable -- this page must be served with ' +
+      'Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp ' +
+      '(see scripts/build_wasm.sh).';
+    throw new Error('SharedArrayBuffer unavailable');
+  }
+  const INPUT_BUFFER_SIZE = 521; // 512 key-state bytes + mouse x/y (i32 each) + button bitmask
+  const sharedInput = new SharedArrayBuffer(INPUT_BUFFER_SIZE);
+  const keyState = new Uint8Array(sharedInput, 0, 512);
+  const mouseView = new DataView(sharedInput, 512, 9);
+
+  // Standard SDL2 scancodes (USB HID usage IDs) for the keys this game's controls actually
+  // use, keyed by the physical-key identifier browsers report in KeyboardEvent.code (layout-
+  // independent, unlike .key). Extend as more keys turn out to matter.
+  const SCANCODE = {
+    ArrowLeft: 80, ArrowRight: 79, ArrowUp: 82, ArrowDown: 81,
+    Space: 44, Enter: 40, Escape: 41, Backspace: 42, Tab: 43, Delete: 76,
+    ShiftLeft: 225, ShiftRight: 229, ControlLeft: 224, ControlRight: 228,
+    AltLeft: 226, AltRight: 230, Backquote: 53,
+    F1: 58, F2: 59, F3: 60, F4: 61, F5: 62, F6: 63, F7: 64, F8: 65, F9: 66, F10: 67, F11: 68, F12: 69,
+  };
+
+  window.addEventListener('keydown', (e) => {
+    const sc = SCANCODE[e.code];
+    if (sc === undefined) return;
+    e.preventDefault(); // stop arrow keys/space from scrolling the page, etc.
+    keyState[sc] = 1;
+  });
+  window.addEventListener('keyup', (e) => {
+    const sc = SCANCODE[e.code];
+    if (sc === undefined) return;
+    e.preventDefault();
+    keyState[sc] = 0;
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.round((e.clientX - rect.left) * (canvas.width / rect.width));
+    const y = Math.round((e.clientY - rect.top) * (canvas.height / rect.height));
+    mouseView.setInt32(0, x, true);
+    mouseView.setInt32(4, y, true);
+  });
+  function setMouseButton(e, down) {
+    const bit = e.button === 0 ? 1 : e.button === 2 ? 2 : 0;
+    if (!bit) return;
+    const cur = mouseView.getUint8(8);
+    mouseView.setUint8(8, down ? (cur | bit) : (cur & ~bit));
+  }
+  canvas.addEventListener('mousedown', (e) => setMouseButton(e, true));
+  canvas.addEventListener('mouseup', (e) => setMouseButton(e, false));
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
   // Real Web Audio API playback of PCM chunks posted from the Worker (see pump_audio /
   // post_audio_to_js in rust/src/platform/wasm.rs). Chunks are scheduled back-to-back via
@@ -70,6 +129,9 @@
   }
 
   const worker = new Worker('./worker.js', { type: 'module' });
+  // SharedArrayBuffers are passed by reference through postMessage (unlike ArrayBuffer,
+  // which would need transferring/copying) -- both sides see the same underlying memory.
+  worker.postMessage({ type: 'init', sharedInput });
 
   worker.onmessage = (e) => {
     const msg = e.data;

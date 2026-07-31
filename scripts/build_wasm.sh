@@ -30,5 +30,6 @@ ln -sfn "$(pwd)/SDLPoP.ini" "web/SDLPoP.ini"
 fdfind --no-ignore --type f . data | sort > web/data_manifest.txt
 echo "SDLPoP.ini" >> web/data_manifest.txt
 
-echo "Built web/pkg/. Serve web/ over HTTP (ES modules need it, not file://), e.g.:"
-echo "  cd web && python3 -m http.server 8642"
+echo "Built web/pkg/. Serve it with scripts/serve_wasm.sh (sets the COOP/COEP headers"
+echo "SharedArrayBuffer -- used for live input -- requires; plain http.server can't):"
+echo "  scripts/serve_wasm.sh"

@@ -189,6 +189,17 @@ mod wasm_entry {
         crate::wasm_libc::wasm_vfs_preload(cpath.as_ptr(), data.as_ptr(), data.len());
     }
 
+    /// Hands the wasm module the `SharedArrayBuffer` the main thread writes live keyboard/
+    /// mouse state into (see `platform::wasm`'s "Live input" section for the full design and
+    /// why a `SharedArrayBuffer` is needed at all). Call once, before `run_game()` --
+    /// `worker.js` waits for an `'init'` message carrying this buffer before doing anything
+    /// else, since that's the one message a Worker's `onmessage` handler *can* receive (it
+    /// arrives before `pop_main()`'s blocking loop starts, unlike any message sent after).
+    #[wasm_bindgen]
+    pub fn set_shared_input_buffer(buf: js_sys::SharedArrayBuffer) {
+        crate::platform::wasm::set_shared_input_buffer(buf);
+    }
+
     /// Exploratory Phase B milestone: actually call `pop_main()`, with no real
     /// `WasmRenderer`/`WasmInput`/`WasmAudio`/`WasmFiles` implementation behind it yet --
     /// used to empirically discover exactly what real platform surface `pop_main`'s startup

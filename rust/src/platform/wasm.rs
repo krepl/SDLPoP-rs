@@ -997,17 +997,25 @@ impl Renderer for WasmRenderer {
     unsafe fn haptic_rumble_init(&mut self, _haptic: *mut crate::SDL_Haptic) -> c_int {
         unimplemented!("WasmRenderer::haptic_rumble_init")
     }
-    unsafe fn push_event(&mut self, _event: *mut std::os::raw::c_void) -> c_int {
-        unimplemented!("WasmRenderer::push_event")
+    unsafe fn push_event(&mut self, event: *mut std::os::raw::c_void) -> c_int {
+        let mut bytes = [0u8; SDL_EVENT_SIZE];
+        std::ptr::copy_nonoverlapping(event as *const u8, bytes.as_mut_ptr(), SDL_EVENT_SIZE);
+        event_queue().push_back(bytes);
+        1 // matches real SDL_PushEvent's success return value
     }
-    unsafe fn poll_event(&mut self, _event: *mut std::os::raw::c_void) -> c_int {
-        // No real input source is wired up yet (see the plan's Phase B notes on why: live
-        // input into a blocking Worker loop needs SharedArrayBuffer/Atomics, not a queue
-        // this method could just drain). Reporting "no events pending" (SDL_PollEvent's own
-        // return value for an empty queue) is the textbook-correct answer given that, not a
-        // stopgap fudge -- process_events()'s `while poll_event(...) == 1` loop simply never
-        // runs its body, exactly as it would with a real, currently-empty SDL event queue.
-        0
+    unsafe fn poll_event(&mut self, event: *mut std::os::raw::c_void) -> c_int {
+        // Live input (real key/mouse state written into a SharedArrayBuffer by the main
+        // thread -- see `sync_shared_input`'s doc comment) plus edge detection turns the
+        // level state `key_states()` holds into the discrete queued events `process_events`
+        // (`seg009.rs`) actually consumes, the same way real SDL turns HID reports into an
+        // event queue. `push_event` callers (native-only scripted-replay input injection,
+        // and a couple of window/focus events -- none hit by the browser startup path yet)
+        // feed the same queue.
+        sync_shared_input();
+        synthesize_key_edge_events();
+        let Some(bytes) = event_queue().pop_front() else { return 0 };
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), event as *mut u8, SDL_EVENT_SIZE);
+        1
     }
 }
 
@@ -1372,6 +1380,132 @@ pub fn set_mouse_state(x: c_int, y: c_int, left: bool, right: bool) {
     m.y = y;
     m.left = left;
     m.right = right;
+}
+
+// ============================================================================
+// Live input, via a `SharedArrayBuffer` the main thread writes into directly.
+//
+// `set_key_state`/`set_mouse_state` above assume a message-passing relay (main thread
+// -> Worker `postMessage`) that was never built, because it can't work: a Worker's
+// `onmessage` handler cannot run while `pop_main()`'s blocking loop still occupies the call
+// stack (see the plan doc's Phase B `SharedArrayBuffer` note). The actual mechanism is a
+// plain (not wasm's own linear memory -- that would need real wasm32 threads support, a much
+// bigger lift) `SharedArrayBuffer` the main thread writes keyboard/mouse state into with
+// ordinary (non-atomic) typed-array writes -- a torn read of a single already-atomic byte
+// isn't a real correctness concern for polled input tolerant of at-most-one-frame staleness,
+// so plain reads/writes are fine and simpler than `Atomics.load`/`store` per field.
+//
+// Buffer layout (521 bytes total), written by `web/index.html`, read by `sync_shared_input`:
+//   [0..512)   one byte per SDL scancode, 1 = held, 0 = released
+//   [512..516) mouse x, i32 little-endian
+//   [516..520) mouse y, i32 little-endian
+//   [520]      mouse buttons bitmask: bit0 = left, bit1 = right
+//
+// The user has explicitly said they'd like to move off `SharedArrayBuffer` eventually (see
+// the plan doc) in favor of the `advance_one_frame()` redesign, where a non-blocking per-tick
+// loop would let plain `postMessage` handle input with no shared memory at all -- this is a
+// deliberate first-pass choice, not the intended long-term shape.
+// ============================================================================
+
+#[cfg(target_arch = "wasm32")]
+static mut SHARED_INPUT_BUFFER: Option<js_sys::Uint8Array> = None;
+
+/// JS-facing: hand the wasm module the `SharedArrayBuffer` the main thread will write
+/// keyboard/mouse state into. Called once, before `run_game()`, from `worker.js` (which
+/// waits for an `'init'` message carrying it -- the one message a Worker's `onmessage` *can*
+/// receive, since it arrives before `pop_main()` starts blocking).
+#[cfg(target_arch = "wasm32")]
+#[allow(static_mut_refs)]
+pub fn set_shared_input_buffer(buf: js_sys::SharedArrayBuffer) {
+    unsafe { SHARED_INPUT_BUFFER = Some(js_sys::Uint8Array::new(&buf)) };
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_shared_input_buffer(_buf: ()) {}
+
+/// Copies the shared buffer's current contents into `key_states()`/`mouse_state_mut()` --
+/// the existing `InputSource::key_state`/`mouse_state` consumers, and `poll_event`'s edge
+/// detector below, don't need to know this replaces a `postMessage` relay that was never
+/// wired up. A no-op if no buffer has been set (native/test builds, or a wasm32 run before
+/// `set_shared_input_buffer` -- e.g. the headless `run_game()` probe, which has no JS side to
+/// supply one).
+#[allow(static_mut_refs)]
+unsafe fn sync_shared_input() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let Some(buf) = SHARED_INPUT_BUFFER.as_ref() else { return };
+        let mut raw = [0u8; 521];
+        buf.copy_to(&mut raw);
+        let states = key_states();
+        for i in 0..512 {
+            states[i] = raw[i] != 0;
+        }
+        let m = mouse_state_mut();
+        m.x = i32::from_le_bytes([raw[512], raw[513], raw[514], raw[515]]);
+        m.y = i32::from_le_bytes([raw[516], raw[517], raw[518], raw[519]]);
+        m.left = raw[520] & 1 != 0;
+        m.right = raw[520] & 2 != 0;
+    }
+}
+
+/// One `SDL_Event`'s worth of raw bytes -- real SDL2's `SDL_Event` union is 56 bytes on a
+/// 64-bit target, matching `seg009.rs`'s local (private, so duplicated here by value rather
+/// than referenced) definition. `push_event`/`poll_event` only ever see this many bytes
+/// copied in or out, so treating events as opaque `[u8; 56]` blobs (rather than needing
+/// `seg009.rs`'s actual `SDL_Event` type here) is exact, not an approximation.
+const SDL_EVENT_SIZE: usize = 56;
+
+fn event_queue() -> &'static mut std::collections::VecDeque<[u8; SDL_EVENT_SIZE]> {
+    static mut QUEUE: Option<std::collections::VecDeque<[u8; SDL_EVENT_SIZE]>> = None;
+    unsafe {
+        #[allow(static_mut_refs)]
+        QUEUE.get_or_insert_with(std::collections::VecDeque::new)
+    }
+}
+
+/// Diffs the just-synced `key_states()` against the previous poll's snapshot and queues a
+/// real `SDL_KEYDOWN`/`SDL_KEYUP` event (byte-for-byte matching `seg009.rs`'s private
+/// `SDL_KeyboardEvent`/`SDL_Keysym` layout) for every scancode that changed -- turning level
+/// state into the edge-triggered events `process_events` (`seg009.rs`) actually expects, the
+/// same way real SDL turns raw HID reports into a queue of discrete events.
+#[allow(static_mut_refs)]
+fn synthesize_key_edge_events() {
+    static mut PREV: [bool; 512] = [false; 512];
+    const SDL_KEYDOWN: u32 = 0x300;
+    const SDL_KEYUP: u32 = 0x301;
+    // seg009.rs's SDL_SCANCODE_L{CTRL,SHIFT,ALT}/R{CTRL,SHIFT,ALT} constants.
+    const LCTRL: usize = 224;
+    const LSHIFT: usize = 225;
+    const LALT: usize = 226;
+    const RCTRL: usize = 228;
+    const RSHIFT: usize = 229;
+    const RALT: usize = 230;
+    unsafe {
+        let states = *key_states(); // snapshot -- key_states() is also read per-index below
+        let mut mod_bits: u16 = 0;
+        if states[LSHIFT] { mod_bits |= 0x0001; }
+        if states[RSHIFT] { mod_bits |= 0x0002; }
+        if states[LCTRL] { mod_bits |= 0x0040; }
+        if states[RCTRL] { mod_bits |= 0x0080; }
+        if states[LALT] { mod_bits |= 0x0100; }
+        if states[RALT] { mod_bits |= 0x0200; }
+        for sc in 0..512usize {
+            if states[sc] == PREV[sc] {
+                continue;
+            }
+            PREV[sc] = states[sc];
+            let mut bytes = [0u8; SDL_EVENT_SIZE];
+            let type_ = if states[sc] { SDL_KEYDOWN } else { SDL_KEYUP };
+            bytes[0..4].copy_from_slice(&type_.to_ne_bytes());
+            // timestamp (4..8) and windowID (8..12) stay 0 -- nothing reads them.
+            bytes[12] = states[sc] as u8; // SDL_KeyboardEvent::state
+            // repeat/padding2/padding3 (13..16) stay 0 -- real key-repeat isn't modeled;
+            // process_events only branches on KEYDOWN vs KEYUP, not the repeat flag.
+            bytes[16..20].copy_from_slice(&(sc as u32).to_ne_bytes()); // keysym.scancode
+            // keysym.sym (20..24) stays 0 -- process_events reads scancode/mod, not sym.
+            bytes[24..26].copy_from_slice(&mod_bits.to_ne_bytes()); // keysym.mod
+            event_queue().push_back(bytes);
+        }
+    }
 }
 
 impl WasmInput {
