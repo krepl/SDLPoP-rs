@@ -226,6 +226,93 @@ fn post_frame_to_js(w: c_int, h: c_int, bpp: usize, pixels: &[u8]) {
 fn post_frame_to_js(_w: c_int, _h: c_int, _bpp: usize, _pixels: &[u8]) {}
 
 // ============================================================================
+// Audio. Real SDL pulls `SDL_AudioSpec.callback` from a dedicated realtime audio thread,
+// completely decoupled from the game's own timing -- there's no such thread here (wasm32 is
+// single-threaded in this build), so the callback is instead pulled synchronously from every
+// spin of `Renderer::delay`'s busy-wait (see there) and once per `render_present`, the two
+// points the blocking game loop actually yields CPU time somewhat regularly. Each pulled PCM
+// chunk is posted out to JS the same way a frame is (`post_frame_to_js`'s reflective-
+// `postMessage` pattern), for the main thread to actually play via the Web Audio API.
+// ============================================================================
+
+/// Mirrors `seg009.rs`'s private `SDL_AudioSpec` layout exactly (same duplication pattern as
+/// `stat_t`, redeclared per file rather than shared) -- `open_audio_raw` receives this same
+/// struct through an untyped `*mut c_void`, built by `init_digi` (`seg009.rs`).
+#[repr(C)]
+struct WasmSdlAudioSpec {
+    freq: c_int,
+    format: u16,
+    channels: u8,
+    silence: u8,
+    samples: u16,
+    padding: u16,
+    size: u32,
+    callback: Option<unsafe extern "C" fn(*mut std::os::raw::c_void, *mut u8, c_int)>,
+    userdata: *mut std::os::raw::c_void,
+}
+
+struct AudioSpecInfo {
+    freq: c_int,
+    format: u16,
+    channels: u8,
+    samples: u16,
+    callback: unsafe extern "C" fn(*mut std::os::raw::c_void, *mut u8, c_int),
+    userdata: *mut std::os::raw::c_void,
+}
+
+static mut AUDIO_SPEC: Option<AudioSpecInfo> = None;
+static mut AUDIO_PAUSED: bool = true;
+static mut NEXT_AUDIO_PUMP_MS: f64 = 0.0;
+
+/// Pulls one chunk of PCM from the game's registered audio callback, if a full chunk's worth
+/// of playback time has elapsed since the last pull, and posts it to JS. Cheap to call more
+/// often than that -- the time check makes extra calls a no-op, so every `delay` spin
+/// iteration and every `render_present` can call this unconditionally.
+#[allow(static_mut_refs)]
+unsafe fn pump_audio() {
+    let Some(spec) = AUDIO_SPEC.as_ref() else { return };
+    if AUDIO_PAUSED {
+        return;
+    }
+    let now = performance_now_ms();
+    if now < NEXT_AUDIO_PUMP_MS {
+        return;
+    }
+    // The low byte of an `SDL_AudioFormat` is its sample bit size (8 for `AUDIO_U8`, 16 for
+    // `AUDIO_S16*`) -- this codebase only ever requests one of those two (see `init_digi`).
+    let bytes_per_sample = ((spec.format & 0xFF) / 8).max(1) as usize;
+    let buf_len = spec.samples as usize * spec.channels as usize * bytes_per_sample;
+    let mut buf = vec![0u8; buf_len];
+    (spec.callback)(spec.userdata, buf.as_mut_ptr(), buf_len as c_int);
+    post_audio_to_js(spec.freq, spec.channels, bytes_per_sample as u32, &buf);
+    let chunk_duration_ms = (spec.samples as f64 / spec.freq as f64) * 1000.0;
+    NEXT_AUDIO_PUMP_MS = now + chunk_duration_ms;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn post_audio_to_js(freq: c_int, channels: u8, bytes_per_sample: u32, pcm: &[u8]) {
+    use wasm_bindgen::JsCast;
+    (|| -> Option<()> {
+        let global = js_sys::global();
+        let post_message: js_sys::Function =
+            js_sys::Reflect::get(&global, &"postMessage".into()).ok()?.dyn_into().ok()?;
+        let msg = js_sys::Object::new();
+        js_sys::Reflect::set(&msg, &"type".into(), &"audio".into()).ok()?;
+        js_sys::Reflect::set(&msg, &"freq".into(), &(freq as u32).into()).ok()?;
+        js_sys::Reflect::set(&msg, &"channels".into(), &(channels as u32).into()).ok()?;
+        js_sys::Reflect::set(&msg, &"bytesPerSample".into(), &bytes_per_sample.into()).ok()?;
+        let arr = js_sys::Uint8Array::new_with_length(pcm.len() as u32);
+        arr.copy_from(pcm);
+        js_sys::Reflect::set(&msg, &"pcm".into(), &arr).ok()?;
+        post_message.call1(&global, &msg).ok()?;
+        Some(())
+    })();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn post_audio_to_js(_freq: c_int, _channels: u8, _bytes_per_sample: u32, _pcm: &[u8]) {}
+
+// ============================================================================
 // Texture / render-target store -- the software equivalent of SDL's GPU-backed textures.
 // `seg009.rs`'s actual rendering pipeline (texture_sharp/blurry/fuzzy, all
 // SDL_PIXELFORMAT_RGB24) goes through create_texture/update_texture/render_clear/
@@ -604,8 +691,21 @@ impl Renderer for WasmRenderer {
     unsafe fn show_cursor(&mut self, _show: bool) {
         unimplemented!("WasmRenderer::show_cursor")
     }
-    unsafe fn delay(&mut self, _ms: u32) {
-        unimplemented!("WasmRenderer::delay")
+    unsafe fn delay(&mut self, ms: u32) {
+        // Real busy-spin, the accepted first-pass tradeoff for frame pacing (see the plan
+        // doc's Phase B "known tradeoff" note) -- no `SharedArrayBuffer`/`Atomics.wait`
+        // available for a real blocking sleep inside a Worker without cross-origin-isolation
+        // headers. Doubles as the audio pump's only real timing source: the game's audio
+        // callback is normally pulled by a dedicated realtime thread real SDL owns, which
+        // doesn't exist here, so `pump_audio` is called from every spin of every wait point
+        // in the game (this, and once per `render_present`) instead.
+        let target = performance_now_ms() + ms as f64;
+        loop {
+            pump_audio();
+            if performance_now_ms() >= target {
+                break;
+            }
+        }
     }
     unsafe fn rw_from_mem(&mut self, buf: *mut std::os::raw::c_void, size: c_int) -> *mut SDL_RWops {
         let data = std::slice::from_raw_parts(buf as *const u8, size.max(0) as usize).to_vec();
@@ -799,6 +899,7 @@ impl Renderer for WasmRenderer {
         0
     }
     unsafe fn render_present(&mut self, _renderer: *mut crate::SDL_Renderer) {
+        pump_audio();
         let s = screen_buffer();
         post_frame_to_js(s.w, s.h, s.bytes_per_pixel, &s.pixels);
         PRESENTED_FRAME = Some((s.w, s.h, s.bytes_per_pixel, s.pixels.clone()));
@@ -849,8 +950,22 @@ impl Renderer for WasmRenderer {
     unsafe fn create_renderer(&mut self, _window: *mut crate::SDL_Window, _index: c_int, _flags: u32) -> *mut crate::SDL_Renderer {
         1 as *mut crate::SDL_Renderer
     }
-    unsafe fn open_audio_raw(&mut self, _desired: *mut std::os::raw::c_void, _obtained: *mut std::os::raw::c_void) -> c_int {
-        unimplemented!("WasmRenderer::open_audio_raw")
+    unsafe fn open_audio_raw(&mut self, desired: *mut std::os::raw::c_void, _obtained: *mut std::os::raw::c_void) -> c_int {
+        let spec = desired as *const WasmSdlAudioSpec;
+        let Some(callback) = (*spec).callback else { return -1 };
+        AUDIO_SPEC = Some(AudioSpecInfo {
+            freq: (*spec).freq,
+            format: (*spec).format,
+            channels: (*spec).channels,
+            samples: (*spec).samples,
+            callback,
+            userdata: (*spec).userdata,
+        });
+        // Real SDL_OpenAudio starts a device paused; the game's own resume_sound()/similar
+        // (-> AudioBackend::pause(false)) turns it on, matching real SDL semantics.
+        AUDIO_PAUSED = true;
+        NEXT_AUDIO_PUMP_MS = performance_now_ms();
+        0
     }
     unsafe fn num_joysticks(&mut self) -> c_int {
         // No gamepad support yet -- report none, so callers (e.g. set_joy_mode) take the
@@ -1179,18 +1294,25 @@ pub fn shared_audio() -> &'static mut WasmAudio {
 }
 
 impl AudioBackend for WasmAudio {
+    /// Not the real open path -- see `WasmRenderer::open_audio_raw`, which every actual
+    /// caller in this codebase uses instead (confirmed by grep: nothing calls
+    /// `AudioBackend::open`, only `.lock()`/`.unlock()`/`.pause()`, the same "trait exists,
+    /// real call sites use something else" shape Phase C found for `FileSystem`). Kept
+    /// unimplemented rather than faked, so a real future caller fails loudly instead of
+    /// silently doing nothing.
     fn open(&mut self, _sample_rate: c_int, _channels: u8, _fill: Box<dyn FnMut(&mut [i16]) + Send>) -> Result<(), String> {
-        unimplemented!("WasmAudio::open")
+        unimplemented!("WasmAudio::open -- real call sites use WasmRenderer::open_audio_raw instead")
     }
-    fn pause(&mut self, _paused: bool) {
-        unimplemented!("WasmAudio::pause")
+    fn pause(&mut self, paused: bool) {
+        unsafe { AUDIO_PAUSED = paused };
     }
-    fn lock(&mut self) {
-        unimplemented!("WasmAudio::lock")
-    }
-    fn unlock(&mut self) {
-        unimplemented!("WasmAudio::unlock")
-    }
+    /// Single-threaded (wasm32 in this build has no real second thread pulling the audio
+    /// callback concurrently -- `pump_audio` calls it synchronously from the game's own
+    /// thread), so there's nothing to actually lock against. Real `SDL_LockAudio` exists to
+    /// keep the realtime audio thread from calling back into the game mid-mutation; that
+    /// race can't happen here.
+    fn lock(&mut self) {}
+    fn unlock(&mut self) {}
 }
 
 pub struct WasmInput;

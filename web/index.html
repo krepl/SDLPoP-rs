@@ -2,21 +2,72 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>SDLPoP wasm (Worker harness, frames-out only)</title>
+<title>SDLPoP wasm (Worker harness, frames + audio out)</title>
 <style>
   body { background: #222; color: #eee; font-family: monospace; }
   canvas { image-rendering: pixelated; border: 1px solid #555; }
 </style>
 </head>
 <body>
-<h3>SDLPoP wasm — Worker harness milestone: frames out, no input yet</h3>
+<h3>SDLPoP wasm — Worker harness milestone: frames + audio out, no input yet</h3>
 <canvas id="screen" width="320" height="200"></canvas>
 <p id="status">starting worker&hellip;</p>
+<p><button id="enable-audio">Enable audio</button> (browsers require a click before audio can play)</p>
 <p>Open devtools console for log output.</p>
 <script type="module">
   const canvas = document.getElementById('screen');
   const ctx = canvas.getContext('2d');
   const status = document.getElementById('status');
+
+  // Real Web Audio API playback of PCM chunks posted from the Worker (see pump_audio /
+  // post_audio_to_js in rust/src/platform/wasm.rs). Chunks are scheduled back-to-back via
+  // AudioBufferSourceNode, tracking a running "next chunk start time" cursor -- the standard
+  // gap-free-streaming pattern for Web Audio without ScriptProcessorNode/AudioWorklet.
+  let audioCtx = null;
+  let nextPlayTime = 0;
+  let audioChunksReceived = 0;
+  window.audioChunksReceived = () => audioChunksReceived;
+
+  function ensureAudioContext() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      nextPlayTime = audioCtx.currentTime;
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    return audioCtx;
+  }
+
+  document.getElementById('enable-audio').addEventListener('click', ensureAudioContext);
+
+  function playPcmChunk(freq, channels, bytesPerSample, pcm) {
+    // Browsers block audio until a user gesture resumes the context (the "Enable audio"
+    // button); until then, silently drop chunks rather than queuing an ever-growing backlog.
+    if (!audioCtx || audioCtx.state !== 'running') return;
+    const frameCount = Math.floor(pcm.length / (channels * bytesPerSample));
+    if (frameCount === 0) return;
+    const buffer = audioCtx.createBuffer(channels, frameCount, freq);
+    for (let ch = 0; ch < channels; ch++) {
+      const out = buffer.getChannelData(ch);
+      for (let i = 0; i < frameCount; i++) {
+        const offset = (i * channels + ch) * bytesPerSample;
+        if (bytesPerSample === 2) {
+          let sample = pcm[offset] | (pcm[offset + 1] << 8);
+          if (sample >= 0x8000) sample -= 0x10000;
+          out[i] = sample / 32768;
+        } else {
+          out[i] = (pcm[offset] - 128) / 128;
+        }
+      }
+    }
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioCtx.destination);
+    const startAt = Math.max(nextPlayTime, audioCtx.currentTime);
+    source.start(startAt);
+    nextPlayTime = startAt + buffer.duration;
+  }
 
   const worker = new Worker('./worker.js', { type: 'module' });
 
@@ -37,6 +88,9 @@
       }
       ctx.putImageData(new ImageData(rgba, w, h), 0, 0);
       status.textContent = `frame ${w}x${h}, bpp=${bpp}`;
+    } else if (msg.type === 'audio') {
+      audioChunksReceived++;
+      playPcmChunk(msg.freq, msg.channels, msg.bytesPerSample, msg.pcm);
     } else if (msg.type === 'error') {
       status.textContent = `worker error: ${msg.message}`;
       console.error('worker error', msg.message);
