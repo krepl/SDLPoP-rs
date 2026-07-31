@@ -231,17 +231,36 @@ spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
    pattern as `performance_now_ms`, so this stays a no-op on native/under `cargo test` and on
    the headless Node probe, and only actually sends once run inside a real Worker/browser) and
    posts `{type: 'frame', w, h, bpp, pixels}`.
-3. `WasmInput` — receive key/mouse state via a message queue populated by the main thread.
-   **Key/mouse *state* storage done** (commit `e5ba566`), `WasmRenderer::num_joysticks`
-   correctly reports zero (commit `a1ca374`) so `set_joy_mode` takes the keyboard-only branch,
-   and `Renderer::poll_event` now returns `0` ("no events pending") rather than
-   `unimplemented!()` — confirmed via a real browser run (see item 5) that this is not a
-   silent-breakage shortcut: `process_events`'s `while poll_event(...) == 1` loop simply never
-   executes its body, exactly matching real SDL's behavior for a genuinely empty event queue.
-   **Still not done, and now the clearly next open item:** there is no real event *queue* —
-   nothing ever produces a `1` return, so no keyboard/mouse input reaches the game at all yet.
-   Building that queue is meaningfully blocked on a separate decision (see the `SharedArrayBuffer`
-   discussion below), not just unstarted busywork.
+3. `WasmInput` — receive key/mouse state and deliver it to the game live. **✅ Done** (commit
+   `292a19a`), via `SharedArrayBuffer` per the discussion below (a deliberate first-pass choice,
+   not the intended long-term shape). `web/index.html` creates a 521-byte `SharedArrayBuffer`
+   (512 key-state bytes + mouse x/y/buttons) and writes into it directly with ordinary
+   (non-atomic — a torn read of an already-atomic single byte isn't a real correctness concern
+   here) typed-array writes from `keydown`/`keyup`/`mouse*` listeners, mapping
+   `KeyboardEvent.code` to SDL scancodes. It's passed to the Worker as the very first
+   `postMessage` (the one message a Worker actually *can* receive, since it arrives before
+   `run_game()`'s blocking loop starts — `web/worker.js` waits for it before doing anything
+   else). `WasmRenderer::set_shared_input_buffer` (new `lib.rs` wasm-bindgen export) stores a
+   `js_sys::Uint8Array` view; `sync_shared_input` copies its contents into the existing
+   `key_states()`/`mouse_state_mut()` storage every poll, so `InputSource::key_state`/
+   `mouse_state` needed no changes. `synthesize_key_edge_events` diffs current vs
+   previous-poll key state and queues real `SDL_KEYDOWN`/`SDL_KEYUP` events (byte-for-byte
+   matching `seg009.rs`'s private `SDL_KeyboardEvent`/`SDL_Keysym` layout, including computed
+   modifier bits), turning level state into the edge-triggered events `process_events`
+   actually consumes — the same way real SDL turns HID reports into an event queue.
+   `push_event`/`poll_event` are now both real, sharing one FIFO queue (previously
+   `poll_event` was a deliberate "always empty" stub; see the exit-criteria note below on why
+   that was correct at the time, not a shortcut). `scripts/serve_wasm.sh` (new) serves `web/`
+   with the `Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy` headers
+   `SharedArrayBuffer` requires — plain `python3 -m http.server` can't set custom headers.
+   **Verified end-to-end with Playwright MCP**: a real `keydown` event dispatched from the
+   main thread advanced the game from its intro text past the real, fully-rendered "Prince of
+   Persia" title screen (ornate border, palace art, logo, copyright text — all real sprite/
+   palette decoding) into its attract-mode demo animation, confirming genuine gameplay-loop
+   progression driven by real input, not just a static frame. Mouse button *events* (not just
+   polled state) aren't synthesized yet — this game is overwhelmingly keyboard-driven (mouse
+   only matters for menu clicks), so that's a known, minor, explicitly-scoped gap, not an
+   oversight.
 4. `WasmAudio` — post PCM buffers for the main thread to play. **✅ Done** (commit `c56b774`):
    `WasmRenderer::open_audio_raw` parses the real `SDL_AudioSpec` `init_digi` builds
    (`seg009.rs`), storing its callback/userdata/format. Real SDL pulls that callback from a
@@ -314,26 +333,36 @@ spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
    runs cleanly with no more startup-path panics (commits `e5ba566`, `9a3613a`, `b31b0ff`,
    `a1ca374`, plus this pass).
 
-**`SharedArrayBuffer`/input note (this session):** getting live keyboard/mouse input into a
-*running* (blocking) Worker game loop cannot work via plain `postMessage` — a Worker's
-`onmessage` handler literally cannot run while a synchronous call still occupies the stack,
-and `pop_main()` never returns until the game exits. The real fix is `SharedArrayBuffer` +
-`Atomics` (main thread writes input state directly into shared memory; Rust reads it with
-plain/atomic loads once per poll, no event loop involved) — which also happens to be the
-existing accepted fix for `Renderer::delay`'s busy-spin frame-pacing tradeoff (same primitive
-solves both). The catch: `SharedArrayBuffer` needs COOP/COEP cross-origin-isolation headers,
-which not every hosting target supports, and the user has explicitly said they'd like to
-avoid depending on `SharedArrayBuffer` long-term regardless — reinforcing that the
-`advance_one_frame()`/event-driven-restart redesign (already recorded above as future work) is
-the real long-term direction, since a non-blocking per-tick design lets plain `postMessage`
-handle input with no shared memory needed at all. Not scheduled yet; noted here so the
-tradeoff isn't rediscovered from scratch later.
+**`SharedArrayBuffer`/input note, implemented (commit `292a19a`):** getting live keyboard/
+mouse input into a *running* (blocking) Worker game loop cannot work via plain `postMessage`
+— a Worker's `onmessage` handler literally cannot run while a synchronous call still occupies
+the stack, and `pop_main()` never returns until the game exits. The real fix, now built, is a
+plain `SharedArrayBuffer` the main thread writes into directly with ordinary (non-atomic —
+deliberate; see item 3 above) typed-array writes, which the wasm side reads on every
+`poll_event`. This is a *separate* `SharedArrayBuffer` from wasm's own linear memory, not real
+wasm32 threads (`WebAssembly.Memory({shared: true})`) — much simpler, no special toolchain/
+threading build needed, just a JS object passed by reference through one `postMessage`. The
+catch, now a real constraint rather than a hypothetical one: the buffer needs COOP/COEP
+cross-origin-isolation headers, which is why `scripts/serve_wasm.sh` exists (plain
+`python3 -m http.server` can't set them) — a real hosting target must support setting these
+two response headers, or this design doesn't work there. `Renderer::delay`'s busy-spin
+frame-pacing tradeoff is unrelated to this buffer (it doesn't use `Atomics.wait`, just wall-
+clock polling — see item 4/`WasmAudio`'s done note), so that potential future refinement
+remains separately deferred. The user has said they'd like to move off `SharedArrayBuffer`
+eventually regardless, in favor of the `advance_one_frame()`/event-driven-restart redesign
+(recorded above as future work) — a non-blocking per-tick design would let plain `postMessage`
+handle input with no shared memory needed at all. Not scheduled; this first-pass
+implementation is deliberately not the intended long-term shape.
 
-**Exit criteria: ✅ met.** The `setjmp`/`longjmp` gap is resolved (not a silent panic); a real
-frame produced by actual gameplay code (not the Phase-2-milestone test gradient) reaches the
-browser canvas via the Worker, driven by the genuinely unmodified game loop — confirmed with a
-real browser (Playwright MCP) this session. Remaining Phase B scope (input, audio) continues
-below as open items, but the phase's own stated exit bar is cleared.
+**Exit criteria: ✅ met, and exceeded.** The `setjmp`/`longjmp` gap is resolved (not a silent
+panic); a real frame produced by actual gameplay code reaches the browser canvas via the
+Worker, driven by the genuinely unmodified game loop. Beyond the phase's original stated bar:
+audio (item 4) and live input (item 3) are both now real too, confirmed end-to-end with
+Playwright MCP — real keyboard input drives the game from its intro text through the fully-
+rendered title screen into its attract-mode demo animation, with audio init completing
+without panics. All of Phase B's scope is now done except mouse *events* (a known, minor,
+explicitly-scoped gap — see item 3) and the deliberately-deferred `advance_one_frame()`
+redesign (recorded as future work, not part of this phase's scope).
 
 ---
 
