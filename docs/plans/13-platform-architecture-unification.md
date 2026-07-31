@@ -242,17 +242,32 @@ spirit as Phase A's deferred alpha/`ADD`/`MOD` blend-mode compositing.
    nothing ever produces a `1` return, so no keyboard/mouse input reaches the game at all yet.
    Building that queue is meaningfully blocked on a separate decision (see the `SharedArrayBuffer`
    discussion below), not just unstarted busywork.
-4. `WasmAudio` — post PCM buffers for the main thread to play. **Not started**, still all
-   `unimplemented!()`. `WasmRenderer::linked_sdl_version` was fixed (reports a recent version
-   rather than panicking -- `init_digi`'s only real use for it, a pre-2.0.4 resampling
-   workaround), which unblocked the empirical probe to reach the real next wall:
-   `Renderer::open_audio_raw`, called from `init_digi`. This is genuine `WasmAudio` design
-   work (a real `AudioContext`/`ScriptProcessorNode`-or-`AudioWorklet` bridge across the
-   Worker/main-thread boundary), not a cheap stub -- treated as its own future push.
+4. `WasmAudio` — post PCM buffers for the main thread to play. **✅ Done** (commit `c56b774`):
+   `WasmRenderer::open_audio_raw` parses the real `SDL_AudioSpec` `init_digi` builds
+   (`seg009.rs`), storing its callback/userdata/format. Real SDL pulls that callback from a
+   dedicated realtime audio thread, decoupled from game timing -- no such thread exists here
+   (wasm32 is single-threaded in this build), so a new `pump_audio()` calls it synchronously
+   instead, from every spin of `Renderer::delay`'s busy-wait (also implemented for real this
+   pass, closing another `unimplemented!()` -- the already-accepted busy-spin frame-pacing
+   tradeoff, see below) and once per `render_present` -- the two points the blocking game loop
+   actually yields time with any regularity. Each pulled PCM chunk posts to JS via the same
+   reflective-`postMessage` pattern as frames (`post_audio_to_js`). `AudioBackend::pause`/
+   `lock`/`unlock` (the methods real call sites actually use -- `.open()` turned out to be
+   dead code, the same "trait exists, real callers use something else" shape Phase C found
+   for `FileSystem`) are real: `pause` toggles whether `pump_audio` does anything; `lock`/
+   `unlock` are correctly no-ops (nothing else runs concurrently to race against on a single
+   thread). `web/index.html` plays received chunks via the Web Audio API
+   (`AudioContext`/`AudioBufferSourceNode`, scheduled back-to-back via a running
+   next-play-time cursor), gated behind a required "Enable audio" button click (browser
+   autoplay policy). Verified end-to-end with Playwright MCP: audio init completes with no
+   panics, and the game reaches its real title/splash screen with fully legible text. No audio
+   chunks have actually posted yet in that verification run, since nothing calls `pause(false)`
+   before that screen -- reaching a point with real sound needs input (item 3) to advance past
+   "Press any key to continue...".
 5. JS harness: a dedicated worker script loading the wasm module and relaying messages;
    `web/index.html` updated to spawn the worker, paint received frames to the canvas, forward
-   input events, and play received audio. **✅ Frames-out half done, verified working in a real
-   browser** (`web/worker.js` new, `web/index.html` rewritten, `scripts/build_wasm.sh` updated
+   input events, and play received audio. **✅ Frames + audio out done, verified working in a
+   real browser** (`web/worker.js` new, `web/index.html` rewritten, `scripts/build_wasm.sh` updated
    to symlink `data/`/`SDLPoP.ini` into `web/` the way the native harness does for
    `target/debug/`). Verified end-to-end with Playwright MCP (`chrome-for-testing`, installed
    this session): the Worker fetches the preloaded assets, runs `pop_main()` unmodified, and a
