@@ -1,0 +1,4 @@
+[alias]
+# Project-local dev tooling -- see xtask/src/main.rs. Run `cargo xtask --help` for the full
+# subcommand list.
+xtask = "run --package xtask --"

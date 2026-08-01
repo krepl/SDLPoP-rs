@@ -1,3 +1,10 @@
+[workspace]
+members = [".", "xtask"]
+# Plain `cargo build`/`cargo test --lib`/`cargo check --target wasm32-unknown-unknown` at the
+# repo root (used throughout CLAUDE.md and by scripts/*.sh) should keep building only the
+# `sdlpop` package, not `xtask` too.
+default-members = ["."]
+
 [package]
 name = "sdlpop"
 version = "0.1.0"

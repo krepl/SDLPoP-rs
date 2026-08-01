@@ -41,18 +41,32 @@ Replay files live in `replays/`. To play one headlessly (auto-exits, no title sc
 ```
 Important: the replay file must be passed as a plain positional argument after `validate` (space-separated). Do NOT pass a level number alongside `validate` — it breaks replay loading. Do NOT use `seed=` with validate — the replay file must be `argv[1]` for seed to be honoured, which conflicts with `validate`.
 
-The differential harness lives in `scripts/run_harness.sh`:
+The differential harness lives in `scripts/run_harness.sh`, fronted by `cargo xtask harness`:
 ```sh
-scripts/run_harness.sh --regen   # regenerate golden trace from current binary
-scripts/run_harness.sh           # run binary, compare output against golden trace
-scripts/run_harness.sh --compare A.trace B.trace  # diff two arbitrary traces
+cargo xtask harness regen         # regenerate golden traces from the C oracle binary
+cargo xtask harness               # run binary, compare output against golden traces
+cargo xtask harness compare A.trace B.trace  # diff two arbitrary traces
+cargo xtask harness one REPLAY GOLDEN        # run a single replay/trace pair
+cargo xtask harness build         # just `cargo build` the binary under test
 ```
 
-The golden trace (`traces/golden.trace`) was generated from the all-C build and is committed as the correctness reference. `compare_traces.py` supports `--all`, `--tick N`, `--ignore FIELD`.
+The golden traces (`traces/golden.trace`, `traces/doc/*.trace`) were generated from the all-C build and are committed as the correctness reference. `compare_traces.py` supports `--all`, `--tick N`, `--ignore FIELD` (pass them after `cargo xtask harness compare A B`).
 
-Plain `scripts/run_harness.sh` runs `scripts/smoke_test.sh` first: it launches the real binary via its normal interactive startup (not `validate`) and confirms it runs a few seconds without panicking. This exists because `validate` mode skips window creation and most of the live input path, so startup-only bugs (e.g. the missing `SdlPlatform` event-pump wiring fixed in commit `4a11238`) are invisible to the replay comparisons — 30/30 replays passed the entire time that bug existed. Run it standalone with `scripts/smoke_test.sh [duration_seconds]`.
+Plain `cargo xtask harness` runs `scripts/smoke_test.sh` first: it launches the real binary via its normal interactive startup (not `validate`) and confirms it runs a few seconds without panicking. This exists because `validate` mode skips window creation and most of the live input path, so startup-only bugs (e.g. the missing `SdlPlatform` event-pump wiring fixed in commit `4a11238`) are invisible to the replay comparisons — 30/30 replays passed the entire time that bug existed. Run it standalone with `cargo xtask smoke-test [duration_seconds]`. It then runs `scripts/gameplay_smoke_test.sh` (`cargo xtask gameplay-smoke-test` standalone): scripted-input scenarios asserting the Kid's position actually moves the way real keyboard input should drive it, before finally comparing all replay/golden-trace pairs.
 
 **Harness gotchas:** The game `chdir(exe_dir)` when loading a replay (see `replay.c:277`), so relative paths passed via `POPTRACE_OUT` break. The harness uses absolute paths to work around this. The Rust binary (`target/debug/prince`) resolves data assets relative to its own path, so `target/debug/data` and `target/debug/replays` must be symlinked to the project-root copies — the harness does this automatically.
+
+**`cargo xtask verify`** runs everything at once — `cargo build`, `cargo test --lib`, `cargo check --target wasm32-unknown-unknown`, then the full harness above (smoke test + gameplay smoke test + all replay comparisons). This is *the* command to run before considering a change done, replacing the separate steps below.
+
+## WASM / browser build
+
+The game also runs in a browser, via a Web Worker running the same, unmodified `pop_main()` loop (see `docs/plans/13-platform-architecture-unification.md` for the full design). Dev tooling, both fronted by `cargo xtask`:
+```sh
+cargo xtask wasm-build          # cargo build --target wasm32-unknown-unknown + wasm-bindgen + asset manifest
+cargo xtask wasm-serve [--port N]  # serve web/ with the COOP/COEP headers SharedArrayBuffer needs;
+                                    # rebuilds first only if the wasm bundle is stale
+```
+`wasm-build` requires the `wasm-bindgen` CLI installed at the exact version pinned in `Cargo.lock` (it checks and tells you the install command if not: `cargo install wasm-bindgen-cli --version X --locked`). Open `http://localhost:8642/` after `wasm-serve`, click the canvas first (for keyboard focus), then play with arrow keys/space/enter — mouse clicks don't register yet. Live input relies on a `SharedArrayBuffer` (hence the COOP/COEP headers); a plain `python3 -m http.server` won't work.
 
 ## Architecture
 
@@ -113,7 +127,7 @@ All porting work is on `master`. These rules apply:
 - **Faithful translation only.** Port each C function block-by-block, statement-by-statement. No refactoring, no idiomatic rewrites, no helper extraction.
 - **Use `unsafe` freely.** Every function body should be `unsafe`. Don't fight it.
 - **No behavior changes.** Reproduce weird C behavior exactly. Quirks may be load-bearing.
-- **Fix harness divergence before moving on.** Run `cargo check` after each batch; run the harness before marking a subsystem done.
+- **Fix harness divergence before moving on.** Run `cargo check` after each batch; run `cargo xtask verify` before marking a subsystem done.
 - **Model and effort selection:**
   - **Porting** (`pop-porter` agents): `model: "opus"`. Sonnet gets stuck on the trap categories in this codebase (signed/unsigned, `word` vs `c_short`, logical `!`). Opus is slower and more expensive but the retry cost with Sonnet is worse.
   - **Divergence debugging**: Opus + `/effort max` for the main session. Switch when a harness divergence doesn't yield to `--gen-test` + `--dump-tick` within one pass.
@@ -406,8 +420,8 @@ core::ptr::addr_of!((*custom).demo_moves) as *const auto_move_type
 5. **After each batch, audit for the two silent traps:**
    - Integer `!`: `grep -n '!\w' file.rs` — every hit must be on a `bool`
    - `u16` bare arithmetic: scan `+`/`-` on `word`/`u16` values — add `wrapping_add`/`wrapping_sub`
-6. **Run the harness** (`scripts/run_harness.sh`) before marking the subsystem done.
-7. **Remove the C file** from `src/Makefile` and `src/CMakeLists.txt`. Run `cargo test` and the harness again.
+6. **Run the harness** (`cargo xtask harness`) before marking the subsystem done.
+7. **Remove the C file** from `src/Makefile` and `src/CMakeLists.txt`. Run `cargo xtask verify` again.
 8. **Write tests aggressively (TDD).** For any function where you can set up `State` to make the output deterministic, write the test *before* porting the function. This includes non-pure functions — set up the relevant `State` fields, call the function, assert on resulting state. Derive expected values from the C source or by running the C binary with equivalent inputs.
 
    Each test gets its own `State` on the stack, so `&mut State` tests are naturally isolated from each other. **However**, C globals accessed via FFI are shared across tests and can leak — if your test touches C globals, reset them at the end (or call `set_options_to_default()` as a setup step):
@@ -440,7 +454,7 @@ core::ptr::addr_of!((*custom).demo_moves) as *const auto_move_type
 
 ### Debugging harness divergences
 
-When `scripts/run_harness.sh` reports a divergence at tick N:
+When `cargo xtask harness` reports a divergence at tick N:
 
 **Step 1 — always use the harness, never hand-roll a comparison.**
 `run_harness.sh` deletes `tmp/test.trace` before each run and fails if the trace isn't written. A hand-composed `compare_traces.py golden.trace /some/stale.trace` call against an old file is the fastest way to chase a ghost bug. Use the harness.
@@ -464,7 +478,7 @@ The stub has two `// TODO:` placeholders: one for `level.fg`/`level.bg` tiles (n
 cargo test -- test_function_name   # must fail first, confirming the bug is reproduced
 # fix the bug
 cargo test -- test_function_name   # must pass
-scripts/run_harness.sh             # harness must be green
+cargo xtask harness                # harness must be green
 ```
 
 **Level tiles** are the one thing the trace doesn't capture. If the function reads tiles, use `--dump-tick` on both golden and test traces at the divergent tick to compare `curr_tilepos`, `tile_col`, `tile_row`, then look up the tile values in the level data (`level.fg` / `level.bg`) by hand or by adding a temporary print to the C binary.
