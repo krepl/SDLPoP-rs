@@ -1439,9 +1439,21 @@ mod ini_scan_tests {
         fn ftell(stream: *mut FILE) -> c_long;
     }
 
+    /// A genuinely unique path per call -- `data.as_ptr()` (the previous scheme) is **not**
+    /// unique: identical `&'static str` literals (most reliably, every `""` in the binary)
+    /// are deduplicated by the compiler to one shared address, so two different tests both
+    /// tracing an empty-string case computed the exact same path. Under `cargo test`'s
+    /// default parallelism, one test's `File::create`/`remove_file` then races the other's
+    /// `fopen()` -- this is exactly what caused `ini_load_loop_matches_glibc` to flake with
+    /// `assertion failed: !f.is_null()` (found by reproducing it ~40 iterations of `cargo
+    /// test --lib` in a row, then reading `micro_scans_match_glibc`, which independently
+    /// traces `""` too). A monotonic counter, matching the pattern `lib.rs`'s
+    /// `test_support::ScratchDir` already uses for the same reason, is real uniqueness.
     fn temp_file(data: &str) -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut path = std::env::temp_dir();
-        path.push(format!("sdlpop_ini_scan_{:p}_{}.tmp", data.as_ptr(), data.len()));
+        path.push(format!("sdlpop_ini_scan_{}_{}.tmp", std::process::id(), n));
         let mut f = std::fs::File::create(&path).unwrap();
         f.write_all(data.as_bytes()).unwrap();
         path
