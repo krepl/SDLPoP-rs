@@ -366,6 +366,15 @@ fn bytes_per_pixel_for_format(format: u32) -> usize {
 /// has a sane screen-buffer size.
 static mut WINDOW_SIZE: (c_int, c_int) = (320, 200);
 
+/// Set by `render_set_logical_size` (`seg009.rs` calls it with `(320*5, 200*6)` or
+/// `(320, 200)` depending on aspect ratio -- both real, meaningful calls, not a no-op to
+/// ignore). Defaulting to `(320, 200)` (rather than `(0, 0)`, real SDL's "never set" value)
+/// matters: `menu.rs`'s `read_mouse_state` divides by this, and a real SDL game booting
+/// straight into the pause menu before its first `render_set_logical_size` call would
+/// otherwise divide by zero -- `(320, 200)` is a safe, faithful stand-in either way, since
+/// it's this game's native resolution.
+static mut LOGICAL_SIZE: (c_int, c_int) = (320, 200);
+
 /// `None` means "the real screen" (matches SDL's `SDL_SetRenderTarget(renderer, NULL)`);
 /// `Some(id)` means render calls act on that texture instead (render-to-texture).
 static mut CURRENT_RENDER_TARGET: Option<usize> = None;
@@ -792,13 +801,20 @@ impl Renderer for WasmRenderer {
         unimplemented!("WasmRenderer::get_window_flags")
     }
     unsafe fn render_get_scale(&mut self, _renderer: *mut crate::SDL_Renderer) -> (f32, f32) {
-        unimplemented!("WasmRenderer::render_get_scale")
+        // No SDL_RenderSetScale equivalent exists here (nothing in this codebase calls one --
+        // confirmed by grep), so this matches real SDL_RenderGetScale's own default of (1.0,
+        // 1.0) before any such call.
+        (1.0, 1.0)
     }
     unsafe fn render_get_logical_size(&mut self, _renderer: *mut crate::SDL_Renderer) -> (c_int, c_int) {
-        unimplemented!("WasmRenderer::render_get_logical_size")
+        LOGICAL_SIZE
     }
     unsafe fn render_get_viewport(&mut self, _renderer: *mut crate::SDL_Renderer) -> SDL_Rect {
-        unimplemented!("WasmRenderer::render_get_viewport")
+        // No SDL_RenderSetViewport equivalent exists here (nothing in this codebase calls
+        // one -- confirmed by grep), so the viewport is always the full logical render
+        // target, matching real SDL's own default.
+        let (w, h) = LOGICAL_SIZE;
+        SDL_Rect { x: 0, y: 0, w, h }
     }
     unsafe fn render_set_integer_scale(&mut self, _renderer: *mut crate::SDL_Renderer, _enable: bool) -> c_int {
         unimplemented!("WasmRenderer::render_set_integer_scale")
@@ -904,9 +920,13 @@ impl Renderer for WasmRenderer {
         post_frame_to_js(s.w, s.h, s.bytes_per_pixel, &s.pixels);
         PRESENTED_FRAME = Some((s.w, s.h, s.bytes_per_pixel, s.pixels.clone()));
     }
-    unsafe fn render_set_logical_size(&mut self, _renderer: *mut crate::SDL_Renderer, _w: c_int, _h: c_int) -> c_int {
-        // Canvas scaling is a JS/CSS concern in the real browser build, not something this
-        // layer manages -- report success and defer actual scaling to that layer.
+    unsafe fn render_set_logical_size(&mut self, _renderer: *mut crate::SDL_Renderer, w: c_int, h: c_int) -> c_int {
+        // Actual canvas *scaling* is a JS/CSS concern in the real browser build, not
+        // something this layer manages -- but the *value* itself must still be stored:
+        // menu.rs's read_mouse_state divides by it (via render_get_logical_size) to convert
+        // raw mouse coordinates into game-logical ones, real math this codebase depends on,
+        // not just a display nicety.
+        LOGICAL_SIZE = (w, h);
         0
     }
     unsafe fn get_renderer_output_size(&mut self, _renderer: *mut crate::SDL_Renderer) -> (c_int, c_int) {
