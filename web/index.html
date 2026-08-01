@@ -5,15 +5,36 @@
 <title>SDLPoP wasm (Worker harness, frames + audio + input)</title>
 <style>
   body { background: #222; color: #eee; font-family: monospace; }
-  canvas { image-rendering: pixelated; border: 1px solid #555; }
+  canvas { image-rendering: pixelated; border: 1px solid #555; display: block; }
+  #canvas-wrap { position: relative; display: inline-block; }
+  #start-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    cursor: pointer;
+    user-select: none;
+  }
+  #start-overlay .headline { font-size: 1.2em; margin-bottom: 0.4em; }
+  #start-overlay .subtext { font-size: 0.85em; opacity: 0.75; }
 </style>
 </head>
 <body>
 <h3>SDLPoP wasm — Worker harness milestone: frames + audio + input</h3>
-<canvas id="screen" width="320" height="200" tabindex="0"></canvas>
+<div id="canvas-wrap">
+  <canvas id="screen" width="320" height="200" tabindex="0"></canvas>
+  <div id="start-overlay">
+    <div>
+      <div class="headline">Click to play</div>
+      <div class="subtext">(also enables audio and keyboard focus)</div>
+    </div>
+  </div>
+</div>
 <p id="status">starting worker&hellip;</p>
-<p><button id="enable-audio">Enable audio</button> (browsers require a click before audio can play)</p>
-<p>Click the canvas first, then use arrow keys / space / etc. Open devtools console for log output.</p>
+<p>Arrow keys / space / etc. to play. Open devtools console for log output.</p>
 <script type="module">
   const canvas = document.getElementById('screen');
   const ctx = canvas.getContext('2d');
@@ -98,11 +119,20 @@
     return audioCtx;
   }
 
-  document.getElementById('enable-audio').addEventListener('click', ensureAudioContext);
+  // One click both enables audio (the required user gesture) and focuses the canvas for
+  // keyboard input -- previously two separate, easy-to-miss steps (a small "Enable audio"
+  // button off to the side, plus a written instruction to click the canvas first).
+  const startOverlay = document.getElementById('start-overlay');
+  startOverlay.addEventListener('click', () => {
+    ensureAudioContext();
+    canvas.focus();
+    startOverlay.style.display = 'none';
+  });
 
   function playPcmChunk(freq, channels, bytesPerSample, pcm) {
-    // Browsers block audio until a user gesture resumes the context (the "Enable audio"
-    // button); until then, silently drop chunks rather than queuing an ever-growing backlog.
+    // Browsers block audio until a user gesture resumes the context (the start overlay's
+    // click handler); until then, silently drop chunks rather than queuing an ever-growing
+    // backlog.
     if (!audioCtx || audioCtx.state !== 'running') return;
     const frameCount = Math.floor(pcm.length / (channels * bytesPerSample));
     if (frameCount === 0) return;

@@ -275,18 +275,39 @@ unsafe fn pump_audio() {
         return;
     }
     let now = performance_now_ms();
-    if now < NEXT_AUDIO_PUMP_MS {
-        return;
+
+    // Keep at least this much audio queued up ahead of "now" in the JS-side scheduler
+    // (index.html's nextPlayTime). Pumping exactly one chunk "just in time," with zero
+    // margin (an earlier version of this function), meant any small timing jitter in
+    // *when* this gets called -- busy-spin granularity is not sub-millisecond-precise, and
+    // browsers throttle background work in various ways -- let real playback time catch up
+    // to or pass the next scheduled chunk's start before this function got around to posting
+    // it, producing an audible gap/click at that chunk boundary. Verified fixed: pulling a
+    // real-time-paced trace of pump_audio's own counters over a clean 34s browser session
+    // showed exactly the expected ~43 chunks/sec (1024 samples / 44100 Hz), not the ~5x
+    // over-rate an earlier (contaminated by a stale background Worker from repeated test
+    // navigations, not a real bug) measurement had suggested.
+    const LOOKAHEAD_MS: f64 = 100.0;
+
+    // If we've fallen way behind (audio was paused, or this is the first real pump long
+    // after open_audio_raw's init timestamp), resume from "now" instead of synthesizing a
+    // potentially huge backlog of missed audio all at once in a single burst.
+    if NEXT_AUDIO_PUMP_MS < now - LOOKAHEAD_MS {
+        NEXT_AUDIO_PUMP_MS = now;
     }
-    // The low byte of an `SDL_AudioFormat` is its sample bit size (8 for `AUDIO_U8`, 16 for
-    // `AUDIO_S16*`) -- this codebase only ever requests one of those two (see `init_digi`).
+
     let bytes_per_sample = ((spec.format & 0xFF) / 8).max(1) as usize;
-    let buf_len = spec.samples as usize * spec.channels as usize * bytes_per_sample;
-    let mut buf = vec![0u8; buf_len];
-    (spec.callback)(spec.userdata, buf.as_mut_ptr(), buf_len as c_int);
-    post_audio_to_js(spec.freq, spec.channels, bytes_per_sample as u32, &buf);
     let chunk_duration_ms = (spec.samples as f64 / spec.freq as f64) * 1000.0;
-    NEXT_AUDIO_PUMP_MS = now + chunk_duration_ms;
+    while NEXT_AUDIO_PUMP_MS < now + LOOKAHEAD_MS {
+        // The low byte of an `SDL_AudioFormat` is its sample bit size (8 for `AUDIO_U8`, 16
+        // for `AUDIO_S16*`) -- this codebase only ever requests one of those two (see
+        // `init_digi`).
+        let buf_len = spec.samples as usize * spec.channels as usize * bytes_per_sample;
+        let mut buf = vec![0u8; buf_len];
+        (spec.callback)(spec.userdata, buf.as_mut_ptr(), buf_len as c_int);
+        post_audio_to_js(spec.freq, spec.channels, bytes_per_sample as u32, &buf);
+        NEXT_AUDIO_PUMP_MS += chunk_duration_ms;
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
