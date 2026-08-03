@@ -1242,6 +1242,16 @@ impl WasmRenderer {
         let (d_rmask, d_gmask, d_bmask, d_amask) = (d.rmask, d.gmask, d.bmask, d.amask);
         let (d_rshift, d_gshift, d_bshift, d_ashift) = (d.rshift, d.gshift, d.bshift, d.ashift);
         let d_is_indexed = d.palette.is_some();
+        // SDL_UpperBlit/SDL_BlitSurface clip the destination write to the destination
+        // surface's own clip rect (set_clip_rect/SDL_SetClipRect), not just its bounds --
+        // seg008.rs's draw_mid relies on exactly this to hide the part of a character
+        // sprite that shouldn't be visible yet (obj_clip_top/bottom/left/right, computed
+        // per-frame by clip_char). Defaulting to the full surface when unset matches "no
+        // clip rect installed" == "clip to the whole surface," same as real SDL.
+        let (clip_x0, clip_y0, clip_x1, clip_y1) = match d.clip_rect {
+            Some(r) => (r.x, r.y, r.x + r.w, r.y + r.h),
+            None => (0, 0, d.w, d.h),
+        };
 
         // Fast path only when no per-pixel reinterpretation is needed at all: same byte
         // width, no palette-to-truecolor resolution needed (indexed source AND indexed dest
@@ -1256,7 +1266,7 @@ impl WasmRenderer {
                 let sx = sx0 + if scaled && dw > 0 { x * sw / dw } else { x };
                 let dyy = dy0 + y;
                 let dxx = dx0 + x;
-                if dyy < 0 || dyy >= d.h || dxx < 0 || dxx >= d.w { continue; }
+                if dyy < clip_y0 || dyy >= clip_y1 || dxx < clip_x0 || dxx >= clip_x1 { continue; }
                 if sy < 0 || sy >= s.h || sx < 0 || sx >= s.w { continue; }
 
                 let s_off = (sy * s_pitch) as usize + (sx as usize) * s_bpp;
