@@ -388,6 +388,7 @@ int play_level_2() {
 		} else {
 			if (next_level == current_level || check_sound_playing()) {
 				draw_game_frame();
+				dump_frame_pixels();
 				flash_if_hurt();
 				remove_flash_if_hurt();
 				do_simple_wait(timer_1);

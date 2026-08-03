@@ -9,6 +9,7 @@
 
 use std::os::raw::{c_char, c_int, c_void};
 use super::*;
+use crate::platform::Renderer;
 
 extern "C" {
     fn fflush(stream: *mut FILE) -> c_int;
@@ -319,6 +320,64 @@ pub unsafe extern "C" fn dump_frame_state() {
     for_each_field!(dump);
 
     fflush(trace_fp);
+}
+
+static mut pixels_fp: *mut FILE = core::ptr::null_mut();
+static mut pixels_initialized: c_int = 0;
+
+/// Appends one `"<tick> <hash>\n"` line to `POPPIXELS_OUT`, hashing the raw bytes
+/// of [`get_final_surface`] with FNV-1a. A cheap per-tick fingerprint of what was
+/// actually drawn, used by the harness to catch rendering regressions the
+/// state-only [`dump_frame_state`] trace can't see. The C oracle has a
+/// byte-identical implementation (`state_dump.c`) reading the same surface
+/// fields, so golden hash files compare directly against this output.
+#[no_mangle]
+pub unsafe extern "C" fn dump_frame_pixels() {
+    if pixels_initialized == 0 {
+        pixels_initialized = 1;
+        let path = getenv(b"POPPIXELS_OUT\0".as_ptr() as *const c_char);
+        if path.is_null() {
+            return;
+        }
+        pixels_fp = fopen(path, b"wb\0".as_ptr() as *const c_char);
+        if pixels_fp.is_null() {
+            eprintln!(
+                "state_dump: could not open {}",
+                std::ffi::CStr::from_ptr(path).to_string_lossy()
+            );
+            return;
+        }
+    }
+    if pixels_fp.is_null() {
+        return;
+    }
+
+    let surf = get_final_surface();
+    let renderer = crate::platform::sdl::shared_renderer();
+    let (w, h) = renderer.surface_size(surf);
+    let pitch = renderer.surface_pitch(surf);
+    let bpp = renderer.surface_format_info(surf).bytes_per_pixel as usize;
+    let pixels = renderer.surface_pixels(surf) as *const u8;
+    let row_len = w as usize * bpp;
+
+    // FNV-1a 64-bit, computed row by row so `pitch` padding bytes (if any)
+    // never enter the hash.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for row in 0..h as isize {
+        let row_ptr = pixels.offset(row * pitch as isize);
+        let row_bytes = core::slice::from_raw_parts(row_ptr, row_len);
+        for &b in row_bytes {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+
+    // dump_frame_state (called earlier this same tick, in play_level_2) already
+    // incremented tick_counter past the tick just simulated -- subtract 1 so
+    // this line's tick number matches the trace record for the same frame.
+    let line = format!("{} {:016x}\n", tick_counter.wrapping_sub(1), hash);
+    fwrite(line.as_ptr() as *const c_void, 1, line.len(), pixels_fp);
+    fflush(pixels_fp);
 }
 
 #[cfg(test)]

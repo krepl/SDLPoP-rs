@@ -2,6 +2,7 @@
 #include "state_dump.h"
 #include <stdio.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -236,4 +237,44 @@ void dump_frame_state(void) {
 #undef DUMP
 
     fflush(trace_fp);
+}
+
+// See state_dump.h. Mirrors dump_frame_pixels() in rust/src/state_dump.rs --
+// same FNV-1a algorithm, same per-row iteration (skipping pitch padding), so
+// golden hash files produced here compare directly against the Rust output.
+static FILE* pixels_fp = NULL;
+static int pixels_initialized = 0;
+
+void dump_frame_pixels(void) {
+    if (!pixels_initialized) {
+        pixels_initialized = 1;
+        const char* path = getenv("POPPIXELS_OUT");
+        if (!path) return;
+        pixels_fp = fopen(path, "wb");
+        if (!pixels_fp) {
+            fprintf(stderr, "state_dump: could not open %s\n", path);
+            return;
+        }
+    }
+    if (!pixels_fp) return;
+
+    SDL_Surface* surf = get_final_surface();
+    int bpp = surf->format->BytesPerPixel;
+    int row_len = surf->w * bpp;
+    const uint8_t* pixels = (const uint8_t*) surf->pixels;
+
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    for (int row = 0; row < surf->h; row++) {
+        const uint8_t* row_ptr = pixels + (size_t)row * surf->pitch;
+        for (int i = 0; i < row_len; i++) {
+            hash ^= row_ptr[i];
+            hash *= 0x100000001b3ULL;
+        }
+    }
+
+    // dump_frame_state() (called earlier this same tick, in play_level_2)
+    // already incremented tick_counter past the tick just simulated -- subtract
+    // 1 so this line's tick number matches the trace record for the same frame.
+    fprintf(pixels_fp, "%u %016" PRIx64 "\n", tick_counter - 1, hash);
+    fflush(pixels_fp);
 }

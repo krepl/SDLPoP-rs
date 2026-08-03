@@ -10,6 +10,15 @@
 # Golden traces are committed under traces/.
 # They were generated from the all-C (cmake) build and are the reference oracle.
 #
+# Each replay also gets a golden *pixel*-hash file under traces/pixels/ (mirrored
+# path, .pixels extension): one FNV-1a hash per tick of the actual rendered
+# surface (see rust/src/state_dump.rs / src/state_dump.c, dump_frame_pixels).
+# The state trace above only proves game *state* matches; this proves the pixels
+# drawn from that state match too -- catching rendering-only regressions the
+# state trace is blind to (see docs: the climb-animation z-order investigation
+# that motivated this). Regenerated/compared automatically alongside the state
+# trace, same replay run, no extra cost.
+#
 
 set -euo pipefail
 
@@ -58,7 +67,16 @@ PAIRS=(
   "doc/replays-testcases/chomper_death_lvl7.p1r|traces/doc/chomper_death_lvl7.trace"
 )
 
-mkdir -p "$ROOT/tmp" "$ROOT/traces/doc"
+# Golden trace path -> golden pixel-hash path: traces/... -> traces/pixels/...,
+# .trace -> .pixels. e.g. traces/golden.trace -> traces/pixels/golden.pixels,
+# traces/doc/foo.trace -> traces/pixels/doc/foo.pixels.
+pixels_path_for() {
+  local trace="$1"
+  trace="${trace/traces\//traces/pixels/}"
+  echo "${trace%.trace}.pixels"
+}
+
+mkdir -p "$ROOT/tmp" "$ROOT/traces/doc" "$ROOT/traces/pixels/doc"
 # The game chdir()s to exe_dir on replay load; symlink data/replays there so it
 # can find assets and so POPTRACE_OUT absolute paths resolve correctly.
 mkdir -p "$ROOT/target/debug"
@@ -86,7 +104,10 @@ run_one() {
   fi
 
   local test="$ROOT/tmp/test.trace"
-  rm -f "$test"
+  local test_pixels="$ROOT/tmp/test.pixels"
+  local golden_pixels
+  golden_pixels="$(pixels_path_for "$golden")"
+  rm -f "$test" "$test_pixels"
   # SDL_AUDIODRIVER=dummy: the harness compares state traces, which audio never
   # affects, so we never want a real audio device here. Deliberately applied on
   # ALL platforms (not gated on WSL): whenever SDL can't reach a working audio
@@ -109,26 +130,41 @@ run_one() {
   # is header-dominated and event-encoded (stores input changes), so its size
   # barely tracks runtime: run_right_and_die is 4125B/263 frames while
   # lvl01_complete is 7623B/3761 frames (2x the file, 14x the frames).
-  timeout 60 env SDL_AUDIODRIVER=dummy POPTRACE_OUT="$test" "$BINARY" validate "$replay" >/dev/null 2>&1
+  timeout 60 env SDL_AUDIODRIVER=dummy POPTRACE_OUT="$test" POPPIXELS_OUT="$test_pixels" \
+    "$BINARY" validate "$replay" >/dev/null 2>&1
   if [ ! -f "$test" ]; then
     echo "FAIL (no trace written): $name"
     return 1
   fi
-  if "${COMPARE[@]}" "${IGNORE_FIELDS[@]}" "$golden" "$test"; then
-    echo "PASS: $name"
-    return 0
-  else
+  if ! "${COMPARE[@]}" "${IGNORE_FIELDS[@]}" "$golden" "$test"; then
     echo "FAIL: $name"
     return 1
   fi
+  if [ -f "$golden_pixels" ]; then
+    if [ ! -f "$test_pixels" ]; then
+      echo "FAIL (no pixel trace written): $name"
+      return 1
+    fi
+    if ! diff -q "$golden_pixels" "$test_pixels" >/dev/null; then
+      local first_diff
+      first_diff=$(diff "$golden_pixels" "$test_pixels" | head -1 || true)
+      echo "FAIL (pixel mismatch): $name -- $first_diff"
+      return 1
+    fi
+  fi
+  echo "PASS: $name"
+  return 0
 }
 
 regen_one() {
   local replay="$ROOT/$1"
   local golden="$ROOT/$2"
-  mkdir -p "$(dirname "$golden")"
+  local golden_pixels
+  golden_pixels="$ROOT/$(pixels_path_for "$2")"
+  mkdir -p "$(dirname "$golden")" "$(dirname "$golden_pixels")"
   echo "  Generating: $(basename "$golden")"
-  SDL_AUDIODRIVER=dummy POPTRACE_OUT="$golden" "$C_BINARY" validate "$replay" >/dev/null 2>&1
+  SDL_AUDIODRIVER=dummy POPTRACE_OUT="$golden" POPPIXELS_OUT="$golden_pixels" \
+    "$C_BINARY" validate "$replay" >/dev/null 2>&1
 }
 
 case "${1:-}" in

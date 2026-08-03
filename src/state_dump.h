@@ -7,4 +7,9 @@
 
 void dump_frame_state(void);
 
+// Per-tick FNV-1a hash of the final rendered surface, for pixel-level
+// regression testing (catches rendering bugs the state-only trace above
+// cannot). Enable by setting env var: POPPIXELS_OUT=/path/to/output.pixels
+void dump_frame_pixels(void);
+
 #endif // STATE_DUMP_H

@@ -43,7 +43,7 @@ use super::*;
 use crate::platform::{InputSource, Renderer};
 use crate::state::State;
 
-extern "C" { fn dump_frame_state(); }
+extern "C" { fn dump_frame_state(); fn dump_frame_pixels(); }
 
 /// How far the Kid is from the mirror's collision line, in pixels, minus two.
 ///
@@ -457,6 +457,7 @@ unsafe fn play_level_2_impl(state: &mut State) -> c_int {
             return *state.current_level() as c_int;
         } else if *state.next_level() == *state.current_level() || check_sound_playing() != 0 {
             draw_game_frame();
+            dump_frame_pixels();
             flash_if_hurt_impl(state);
             remove_flash_if_hurt_impl(state);
             do_simple_wait(timerids_timer_1 as c_int);
