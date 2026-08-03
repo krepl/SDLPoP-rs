@@ -138,6 +138,10 @@ Runtime bug fixes are controlled by the `fixes` pointer (set in `options.c`). Wh
 
 Game assets live in `data/`. `.DAT` files are the original DOS archive format. Music goes in `data/music/` as `.ogg` files (filenames listed in `data/music/names.txt`). Mods go in `mods/<ModName>/` and only need to include files that differ from the base game.
 
+## Blog assets
+
+The user intends to write a blog post about this project eventually. `docs/blog-assets/` holds screenshots and other artifacts worth keeping for that — see its `README.md` for the convention (one dated subdirectory per investigation/milestone). When a session produces a genuinely illustrative image (a visual bug, a before/after comparison, something that tells the story of what was found), save it there before it's lost from `/tmp`/scratch space, and add an entry to the README's index.
+
 ---
 
 ## Port — prime directives
