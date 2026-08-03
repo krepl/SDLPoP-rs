@@ -380,6 +380,60 @@ pub unsafe extern "C" fn dump_frame_pixels() {
     fflush(pixels_fp);
 }
 
+/// One-shot raw-pixel dump for visual debugging: when `POPRAWFRAME_TICK` names the tick
+/// about to be rendered, writes `"<w> <h> <bpp>\n"` followed by the raw (unhashed) bytes
+/// of [`get_final_surface`] to `POPRAWFRAME_OUT` and never fires again this run. Exists
+/// because [`dump_frame_pixels`]'s hash tells you *that* a tick diverges but not *how it
+/// looks* -- this pulls the actual bytes out so a driver script (or a human) can decode
+/// them into a viewable image. Not part of the regular harness; a manual diagnostic tool.
+#[no_mangle]
+pub unsafe extern "C" fn dump_frame_raw() {
+    static mut done: bool = false;
+    static mut target_tick: i64 = -2; // -2: not yet looked up: -1: no target set
+
+    if done {
+        return;
+    }
+    if target_tick == -2 {
+        let t = getenv(b"POPRAWFRAME_TICK\0".as_ptr() as *const c_char);
+        target_tick = if t.is_null() {
+            -1
+        } else {
+            atoi(t) as i64
+        };
+    }
+    if target_tick < 0 || tick_counter.wrapping_sub(1) as i64 != target_tick {
+        return;
+    }
+    done = true;
+
+    let path = getenv(b"POPRAWFRAME_OUT\0".as_ptr() as *const c_char);
+    if path.is_null() {
+        return;
+    }
+    let fp = fopen(path, b"wb\0".as_ptr() as *const c_char);
+    if fp.is_null() {
+        return;
+    }
+
+    let surf = get_final_surface();
+    let renderer = crate::platform::sdl::shared_renderer();
+    let (w, h) = renderer.surface_size(surf);
+    let pitch = renderer.surface_pitch(surf);
+    let bpp = renderer.surface_format_info(surf).bytes_per_pixel as usize;
+    let pixels = renderer.surface_pixels(surf) as *const u8;
+    let row_len = w as usize * bpp;
+
+    let header = format!("{} {} {}\n", w, h, bpp);
+    fwrite(header.as_ptr() as *const c_void, 1, header.len(), fp);
+    for row in 0..h as isize {
+        let row_ptr = pixels.offset(row * pitch as isize);
+        fwrite(row_ptr as *const c_void, row_len, 1, fp);
+    }
+    fflush(fp);
+    fclose(fp);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -359,9 +359,19 @@ pub unsafe extern "C" fn difftime(time1: i64, time0: i64) -> f64 {
 // Process control
 // ============================================================================
 
+/// The JS `Error.message` a clean C-level `exit()` (validate mode ending a replay,
+/// `replay.rs`'s `end_replay`/error paths) is thrown with. Same "throw across the wasm/JS
+/// boundary" mechanism `seg000.rs`'s `RESTART_SIGNAL` uses and for the same reason --
+/// `std::process::abort()`'s `unreachable` trap poisons the wasm instance, but this replay-
+/// harness use of `exit()` is a *normal* "the run is over, come read the results back out of
+/// the VFS" signal, not a crash, so it must unwind cleanly instead. A driver script catches
+/// this specific string to tell "run finished" apart from a real panic, which must still
+/// propagate.
+pub(crate) const EXIT_SIGNAL: &str = "SDLPOP_EXIT";
+
 #[no_mangle]
 pub unsafe extern "C" fn exit(_code: c_int) -> ! {
-    std::process::abort()
+    wasm_bindgen::throw_str(EXIT_SIGNAL)
 }
 
 // ============================================================================
@@ -610,9 +620,36 @@ pub unsafe extern "C" fn remove(path: *const c_char) -> c_int {
     if vfs_remove(&path_str) { 0 } else { -1 }
 }
 
+// A browser has no real process environment; this in-memory map lets JS (via
+// `wasm_setenv`, `lib.rs`) inject the handful of env vars the harness diagnostics
+// (`POPTRACE_OUT`, `POPPIXELS_OUT`, `POPTRACE_TICKS`) already key off of, with zero
+// changes needed to that code -- it just calls `getenv` like the native build does.
+fn env_store() -> &'static mut HashMap<String, std::ffi::CString> {
+    static mut ENV_STORE: Option<HashMap<String, std::ffi::CString>> = None;
+    unsafe {
+        #[allow(static_mut_refs)]
+        ENV_STORE.get_or_insert_with(HashMap::new)
+    }
+}
+
+/// Sets an env var `getenv` will subsequently see. Called from `lib.rs`'s JS-facing
+/// `wasm_setenv` export (that one owns the `#[wasm_bindgen]`/`#[no_mangle]` surface; this
+/// one is a plain internal helper so the two don't collide as the same link symbol).
+pub(crate) fn wasm_setenv(name: *const c_char, value: *const c_char) {
+    unsafe {
+        let name = c_str_to_string(name);
+        let value = c_str_to_string(value);
+        env_store().insert(name, std::ffi::CString::new(value).unwrap_or_default());
+    }
+}
+
 #[no_mangle]
-pub unsafe extern "C" fn getenv(_name: *const c_char) -> *mut c_char {
-    std::ptr::null_mut()
+pub unsafe extern "C" fn getenv(name: *const c_char) -> *mut c_char {
+    let name = c_str_to_string(name);
+    match env_store().get(&name) {
+        Some(v) => v.as_ptr() as *mut c_char,
+        None => std::ptr::null_mut(),
+    }
 }
 
 #[no_mangle]
@@ -672,8 +709,21 @@ pub unsafe extern "C" fn feof(stream: *mut c_void) -> c_int {
     }
 }
 
+/// Syncs a writable file's current buffer into `VFS_STORE` without closing it -- unlike
+/// `fclose`'s one-time write-back, this can run many times over a file's life. Needed for
+/// long-lived diagnostic dumps (`dump_frame_state`/`dump_frame_pixels`, `state_dump.rs`)
+/// that `fflush()` after every tick but rely on process-exit-flushes-stdio semantics
+/// (true natively) rather than ever calling `fclose` themselves -- on wasm, `exit()`
+/// throws instead of running that native cleanup (see `EXIT_SIGNAL`'s doc comment), so
+/// without this, everything written after the last explicit `fflush` (in practice,
+/// everything, since there is no explicit close) would be silently lost.
 #[no_mangle]
-pub unsafe extern "C" fn fflush(_stream: *mut c_void) -> c_int {
+pub unsafe extern "C" fn fflush(stream: *mut c_void) -> c_int {
+    if let Some(f) = open_files().get(&(stream as usize)) {
+        if f.writable {
+            vfs_write(&f.path, f.data.clone());
+        }
+    }
     0
 }
 

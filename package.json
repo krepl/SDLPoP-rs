@@ -1,0 +1,8 @@
+{
+  "name": "sdlpop-wasm-harness",
+  "private": true,
+  "description": "Node/Playwright driver for running the wasm build headlessly against replay files (see scripts/wasm_pixel_harness.mjs). Not part of the game itself.",
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}

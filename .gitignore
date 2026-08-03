@@ -113,3 +113,7 @@ tmp/
 .playwright-mcp/
 
 __pycache__/
+
+# Node deps for scripts/wasm_pixel_harness.mjs (Playwright driver for the wasm replay
+# harness) -- reinstalled via `npm install`, not checked in.
+node_modules/

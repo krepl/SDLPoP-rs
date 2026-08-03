@@ -70,6 +70,24 @@ cargo xtask wasm-serve [--port N]  # serve web/ with the COOP/COEP headers Share
 ```
 `wasm-build` requires the `wasm-bindgen` CLI installed at the exact version pinned in `Cargo.lock` (it checks and tells you the install command if not: `cargo install wasm-bindgen-cli --version X --locked`). Open `http://localhost:8642/` after `wasm-serve`, click the canvas first (for keyboard focus), then play with arrow keys/space/enter — mouse clicks don't register yet. Live input relies on a `SharedArrayBuffer` (hence the COOP/COEP headers); a plain `python3 -m http.server` won't work.
 
+### Headless replay support (wasm)
+
+`web/index.html`/`worker.js` are the interactive live-input build. Separately, `web/headless.html`/`headless.mjs` let the wasm build run one of the harness's real `.p1r` replays in `validate` mode — deterministic recorded input, no canvas/keyboard/SharedArrayBuffer needed — so its rendering can be compared against the native/C-oracle pixel-hash goldens (`traces/pixels/`, see above), not just live-eyeballed in a browser tab.
+
+```sh
+npm install                                          # once; installs Playwright (browsers are usually already cached under ~/.cache/ms-playwright)
+cargo xtask wasm-build                                # build web/pkg/ first — the driver does not rebuild it
+node scripts/wasm_pixel_harness.mjs <replay.p1r> <out.trace> <out.pixels>
+python3 scripts/compare_traces.py traces/doc/<name>.trace <out.trace>
+diff traces/pixels/doc/<name>.pixels <out.pixels>
+```
+
+This is **not** wired into `cargo xtask harness`/`verify` — it's a manual/occasional check (a headless Chromium launch per replay is much heavier than the native binary), run when investigating a suspected wasm-rendering-only bug specifically.
+
+How it works: `run_game_with_args` (`rust/src/lib.rs`) is `run_game` with caller-chosen `argv`, so JS can pass `["prince", "validate", "<path>"]` the same way the native harness invokes `prince validate <replay>`. `wasm_setenv`/`getenv` (`rust/src/wasm_libc.rs`) give the wasm build a fake env so `POPTRACE_OUT`/`POPPIXELS_OUT` work unchanged. `read_vfs_file` reads a file the game wrote back out to JS — note `fflush()` on wasm must actually sync the write-mode file's buffer into the VFS store (not the C-only-cares-about-`fclose` no-op it used to be), since a validated replay ends via C's `exit()`, which on wasm32 throws `wasm_libc::EXIT_SIGNAL` (a catchable JS `Error`, same mechanism as `seg000::RESTART_SIGNAL`) rather than ever calling `fclose`.
+
+For visually inspecting one specific frame rather than just its hash, `dump_frame_raw` (`rust/src/state_dump.rs`, `POPRAWFRAME_TICK`/`POPRAWFRAME_OUT`) writes one uncompressed `"<w> <h> <bpp>\n"` + raw-RGB-bytes capture (both native and wasm, via `headless.mjs`'s `result.raw`) — decode with `PIL.Image.frombytes('RGB', (w, h), data)`. This is how the climb-animation z-order investigation (`project_climb_zorder_bug.md`) found a real wasm-only rendering glitch: a stray sprite-fragment artifact a few pixels wide, present in the wasm frame and completely absent from the byte-identical-otherwise native/C frame at the same tick.
+
 ## Architecture
 
 All source is in `src/`. The codebase is pure C (C99), structured around the original DOS segments:

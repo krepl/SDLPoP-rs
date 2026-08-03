@@ -223,6 +223,56 @@ mod wasm_entry {
         }
     }
 
+    /// Like [`run_game`], but with caller-chosen `argv` instead of the hardcoded
+    /// `["prince"]` -- lets a headless driver pass `["prince", "validate", "<replay path>"]`
+    /// the same way the native harness invokes `prince validate <replay>` (see
+    /// `check_param`, `seg009.rs`), so the wasm build can run one of the harness's existing
+    /// golden replays instead of only ever taking live keyboard input.
+    ///
+    /// A validated replay run ends by calling C's `exit()`, which on wasm32
+    /// (`wasm_libc::exit`) throws [`crate::wasm_libc::EXIT_SIGNAL`] rather than aborting --
+    /// callers must catch that specific string as "run finished cleanly," same as
+    /// `resume_game_after_restart`'s callers already do for `RESTART_SIGNAL`.
+    #[wasm_bindgen]
+    pub fn run_game_with_args(args: Vec<String>) {
+        console_error_panic_hook::set_once();
+        unsafe {
+            // Leaked deliberately: argv must outlive this call (g_argv is read for the
+            // process's entire lifetime, e.g. by check_param on every start_game/restart),
+            // and a wasm module instance only ever runs one game session.
+            let cargs: Vec<std::ffi::CString> = args
+                .into_iter()
+                .map(|s| std::ffi::CString::new(s).expect("arg must not contain a NUL byte"))
+                .collect();
+            let mut argv: Vec<*mut std::os::raw::c_char> =
+                cargs.iter().map(|s| s.as_ptr() as *mut _).collect();
+            std::mem::forget(cargs);
+            crate::g_argc = argv.len() as _;
+            crate::g_argv = argv.as_mut_ptr();
+            std::mem::forget(argv);
+            crate::pop_main();
+        }
+    }
+
+    /// JS-facing: set an env var the game's `getenv` calls will see (`POPTRACE_OUT`,
+    /// `POPPIXELS_OUT`, `POPTRACE_TICKS`, ...). Call before `run_game`/`run_game_with_args`.
+    #[wasm_bindgen]
+    pub fn wasm_setenv(name: String, value: String) {
+        let cname = std::ffi::CString::new(name).expect("name must not contain a NUL byte");
+        let cvalue = std::ffi::CString::new(value).expect("value must not contain a NUL byte");
+        crate::wasm_libc::wasm_setenv(cname.as_ptr(), cvalue.as_ptr());
+    }
+
+    /// JS-facing: read back a file the game wrote into the virtual filesystem (e.g. a
+    /// `POPTRACE_OUT`/`POPPIXELS_OUT` diagnostic dump) -- the write-mode-`fopen` half of the
+    /// same VFS `preload_file` populates for reads. Returns an empty `Vec` if the path was
+    /// never written (indistinguishable from "written but empty"; callers needing to tell
+    /// those apart should check the file's existence some other way first).
+    #[wasm_bindgen]
+    pub fn read_vfs_file(path: String) -> Vec<u8> {
+        crate::wasm_vfs::vfs_read(&path).unwrap_or_default()
+    }
+
     /// The JS-facing re-entry point a restart request unwinds to. `seg000.rs`'s wasm32
     /// `start_game` throws a JS `Error` (`seg000::RESTART_SIGNAL`) to signal a restart --
     /// the only non-local-control mechanism that actually works on this target (`catch_unwind`

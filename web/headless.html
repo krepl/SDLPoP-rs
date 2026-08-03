@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SDLPoP wasm headless replay harness</title>
+</head>
+<body>
+<!--
+  Not part of the real game UI -- this is scripts/wasm_pixel_harness.mjs's driver page.
+  No canvas, no Worker, no live input: a validated replay run drives the Kid from the
+  recorded input in the .p1r file (see replay.rs's do_replay_move), and is_validate_mode
+  short-circuits every real-time wait, so the whole run happens synchronously inside one
+  page.evaluate() call. See web/headless.mjs for what actually runs.
+-->
+<script type="module" src="./headless.mjs"></script>
+</body>
+</html>
