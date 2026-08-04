@@ -475,6 +475,27 @@ pub fn shared_renderer() -> &'static mut WasmRenderer {
 
 impl Renderer for WasmRenderer {
     unsafe fn create_surface(&mut self, width: c_int, height: c_int, depth: c_int, rmask: u32, gmask: u32, bmask: u32, amask: u32) -> *mut SDL_Surface {
+        // Real SDL_CreateRGBSurface picks sensible non-degenerate default masks when asked
+        // for a non-indexed surface with all-zero masks ("just give me a color format at
+        // this depth"); this codebase's own RGB24_bug_check (seg009.rs) relies on exactly
+        // that "auto-pick" behavior for its 1x1 depth-24 probe surface. Storing the literal
+        // zeros instead (the prior behavior here) makes `pack_pixel`'s `if mask != 0` guard
+        // never set any channel bit, so the probe's "did the red channel come back set?"
+        // check degenerates to `0 & 0 == 0`, always true -- RGB24_bug_check always concludes
+        // "channel-order bug present" on wasm and every 24bpp `safe_fill_rect` (palace wall
+        // colours, HP flash, fades, ...) swaps R and B for a bug that doesn't exist in this
+        // software renderer, producing wrong (but structurally intact) colors. Match this
+        // codebase's one real 24bpp caller (`make_offscreen_buffer`, `Rmsk`/`Gmsk`/`Bmsk` in
+        // seg009.rs) rather than inventing a new byte order.
+        let (rmask, gmask, bmask, amask) = if depth != 8 && rmask == 0 && gmask == 0 && bmask == 0 {
+            match depth {
+                24 => (0x000000ffu32, 0x0000ff00u32, 0x00ff0000u32, 0u32),
+                32 => (0x000000ffu32, 0x0000ff00u32, 0x00ff0000u32, 0xff000000u32),
+                _ => (rmask, gmask, bmask, amask),
+            }
+        } else {
+            (rmask, gmask, bmask, amask)
+        };
         let bytes_per_pixel = ((depth.max(0) + 7) / 8) as u8;
         let pitch = width.max(0) * bytes_per_pixel as c_int;
         let pixels = vec![0u8; (pitch as usize) * (height.max(0) as usize)];
