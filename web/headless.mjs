@@ -6,13 +6,24 @@
 // (dump_frame_state/dump_frame_pixels) are "open the output file once" by design, same
 // as the native build's process-per-run model, so a second replay needs a fresh page
 // (fresh wasm instance), not a second call into this same one.
-import init, { preload_file, run_game_with_args, wasm_setenv, read_vfs_file } from './pkg/sdlpop.js';
+import init, { preload_file, run_game_with_args, resume_game_after_restart, wasm_setenv, read_vfs_file } from './pkg/sdlpop.js';
 
 // Matches wasm_libc::EXIT_SIGNAL (rust/src/wasm_libc.rs) exactly.
 const EXIT_SIGNAL = 'SDLPOP_EXIT';
+// Matches seg000::RESTART_SIGNAL exactly -- an ordinary in-game restart (death, a level
+// timer expiring, "press any key" at the title screen, ...), not an error. worker.js's
+// runWithRestartRetries handles this same signal for the live interactive build; a
+// validated replay can trigger it too (e.g. time_limit_expiry_lvl3.p1r's timer running
+// out mid-level), so this driver needs the same retry loop, not just the single
+// run_game_with_args call a restart-free replay would need.
+const RESTART_SIGNAL = 'SDLPOP_RESTART';
 
 function isExitSignal(e) {
     return e instanceof Error && e.message === EXIT_SIGNAL;
+}
+
+function isRestartSignal(e) {
+    return e instanceof Error && e.message === RESTART_SIGNAL;
 }
 
 // Same manifest/preload approach as worker.js -- see that file's comment for why it's
@@ -72,15 +83,29 @@ window.runHeadlessReplay = async function (replayVfsPath, replayBytesBase64, env
         wasm_setenv(k, v);
     }
 
-    try {
-        run_game_with_args(['prince', 'validate', replayVfsPath]);
-        // A validated replay always ends by calling C's exit(), which throws
-        // EXIT_SIGNAL -- returning normally here means pop_main() exited some other
-        // way (a real bug, e.g. the replay file failed to load and validate mode
-        // never even started).
-        throw new Error('run_game_with_args returned without exit() -- did validate mode start?');
-    } catch (e) {
-        if (!isExitSignal(e)) throw e;
+    // Same run-then-retry-on-restart shape as worker.js's runWithRestartRetries: the
+    // first call is run_game_with_args (one-time setup: assets, argv, SDL_Init, ...),
+    // every retry after an in-game restart is resume_game_after_restart (re-enters
+    // directly at the game's restart point, skipping that one-time setup, which must
+    // not run twice -- see that function's doc comment, rust/src/lib.rs).
+    let first = true;
+    for (;;) {
+        try {
+            if (first) {
+                first = false;
+                run_game_with_args(['prince', 'validate', replayVfsPath]);
+            } else {
+                resume_game_after_restart();
+            }
+            // A validated replay always ends by calling C's exit(), which throws
+            // EXIT_SIGNAL -- returning normally means pop_main() exited some other way
+            // (a real bug, e.g. the replay file failed to load and validate mode never
+            // even started).
+            throw new Error('run_game_with_args returned without exit() -- did validate mode start?');
+        } catch (e) {
+            if (isExitSignal(e)) break;
+            if (!isRestartSignal(e)) throw e;
+        }
     }
 
     return {
