@@ -391,6 +391,22 @@ Example usage: `prince validate "replays/replay.p1r"`
 Since version 1.21 you can re-record if you make a mistake:
 While recording, make a quicksave to mark your place, and press quickload to return to that place.
 
+## DEVELOPMENT
+
+This is a Rust port of SDLPoP (see `CLAUDE.md` for the full architecture/porting notes) with
+a `cargo xtask` binary wrapping all of the dev/test tooling. Run `cargo xtask --help` for the
+full list, or `cargo xtask <subcommand> --help` for one command's details. The most useful:
+
+* `cargo xtask verify` — build, unit tests, wasm32 type-check, and the full differential
+  test harness (replay/state/pixel comparisons against a C oracle build, plus smoke tests).
+  Run this before considering a change done.
+* `cargo xtask harness` — just the differential harness portion of the above.
+* `cargo xtask wasm-build` / `cargo xtask wasm-serve [--port N]` — build and serve the
+  browser/wasm build (see `CLAUDE.md`'s "WASM / browser build" section for setup details).
+* `cargo xtask menu-smoke-test` / `cargo xtask wasm-menu-smoke-test` — regression tests for
+  the pause menu specifically (already part of `verify`/`harness` for the native one; the
+  wasm one needs `npm install` first and is run manually — see `CLAUDE.md`).
+
 ## COMPILING
 
 ### Prerequisites for all platforms
