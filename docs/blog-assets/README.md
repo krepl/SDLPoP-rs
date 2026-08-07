@@ -28,3 +28,10 @@ context) to be usable later without re-reading the original conversation.
   real-SDL-quirk workaround (`RGB24_bug_check`) and unconditionally swapping the R/B channels
   on 24bpp fills. Fixed in commit `13bbfd7`; see `project_wasm_rgb24_bug_check_mask_bug`
   memory for the full root-cause writeup.
+
+## Draft write-up notes
+
+- `2026-08-notes-wasm-rendering-bugs.md` — full narrative draft covering both bugs above end
+  to end (report → dead end → pixel-diff breakthrough → permanent harness → wasm replay
+  support → both root causes → full-suite sweep), written for turning into an actual post
+  later. Not polished prose, just the beats and references so nothing has to be re-derived.
