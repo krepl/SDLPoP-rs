@@ -745,3 +745,42 @@ specifically (item 1's most concrete finding) with its own small regression test
 as the Esc-menu one) → 4's capture mechanism (needed to verify anything else in this phase
 beyond "doesn't crash") → the rest of item 1's fixes, each verified via 4 → 3 (mouse) → re-audit
 mouse-driven parity via 4 again.
+
+## Future consideration (deferred, not scheduled): drop the SDL2 build dependency for wasm
+
+Raised 2026-08-07 (README.md review): building for `wasm32-unknown-unknown` currently still
+requires the real `SDL2`/`SDL2_image` development headers to be installed on the host, even
+though the wasm build never links against real SDL2 and `WasmRenderer` never reads or writes an
+`SDL_Surface`/`SDL_PixelFormat`/etc. by its actual field layout (every such type is used only as
+an opaque pointer outside `platform/sdl.rs`, which is `#[cfg(not(target_arch = "wasm32"))]` and
+never compiled for wasm at all — confirmed by a comment already in `build.rs`).
+
+The dependency is a build-time side effect, not a real architectural need:
+`bindgen::Builder::header("src/common.h")` parses that one shared header in a single pass for
+*both* targets, to generate bindings for the thousands of other C declarations both builds
+genuinely need (game structs, globals, function signatures) — and `common.h` unconditionally
+`#include`s `<SDL2/SDL.h>` (via `types.h`). bindgen can't selectively skip a `#include` it can't
+resolve, so if the real SDL2 headers aren't on disk, the whole parse fails — wasm ends up
+needing headers on the host just to get bindgen through the file, even though the SDL-specific
+types it produces from them are then only used as inert opaque pointers on that target.
+
+**Why this matters enough to fix eventually:** the stated goal is for the wasm build to be
+usable with minimal ceremony (e.g. cloning onto a bare server/droplet that only ever serves the
+browser build, never runs anything native) — forcing a full native GUI library's dev headers
+onto that machine for a build that never uses them at runtime is an unnecessary dependency, not
+a real requirement.
+
+**Possible approaches, none attempted yet:**
+- Guard the `#include <SDL2/SDL.h>` in `types.h` behind a preprocessor condition bindgen can be
+  told to set only for the wasm parse (e.g. a `SDLPOP_WASM_BINDGEN` define), paired with a
+  minimal hand-written stub declaring just the SDL type *names* bindgen needs to see (no real
+  field layout required, since wasm only ever uses them as opaque pointers) so the rest of
+  `common.h` still parses cleanly.
+- Or: split the bindgen invocation itself so the wasm target parses a trimmed header that
+  doesn't reach the SDL include at all, if audit shows nothing wasm-relevant actually needs
+  bindings generated from inside the SDL-touching portion of the header chain.
+
+Either way this needs a careful audit first: something in the header chain currently visible to
+bindgen might turn out to matter for wasm bindings generation in a way that isn't obvious until
+tried (e.g. a struct that embeds an `SDL_*` type by value rather than by pointer). Not scheduled
+now; a real but small piece of follow-up work.
