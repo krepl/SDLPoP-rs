@@ -688,14 +688,13 @@ still unimplemented or behaviorally wrong on wasm. Known so far, not yet fixed:
      A real fix needs a JS bridge to the Fullscreen API (`element.requestFullscreen()`).
    - `show_cursor` is a no-op — needs a JS bridge (DOM/CSS `cursor` property on the canvas) to
      ever actually hide the cursor.
-   - `std::env::set_var` (`rust/src/seg000.rs`) panics outright on wasm32-unknown-unknown (no
-     backing environment to mutate) — found while building the Esc-menu regression test
-     (had to avoid passing the native-only `headless` argv flag, which hits this). At least
-     4 other call sites use it for `SDLPOP_SAVE_PATH`, which quicksave/quickload (`F6`/`F9`,
-     also reachable directly from the pause menu) go through — **this is a real, live crash
-     risk today**, not yet reproduced/confirmed with a test, but should be near the top of the
-     list. Quicksave/quickload also don't have real persistent backing storage on wasm yet
-     regardless (`platform/wasm.rs`'s VFS doesn't survive a page reload — noted in Phase C).
+   - ~~`std::env::set_var` panics outright on wasm32-unknown-unknown~~ — **fixed, 2026-08-07,
+     commit `00a674d`.** Only the "headless" CLI flag (`seg000.rs`) was a real risk; the
+     `SDLPOP_SAVE_PATH` call sites turned out to all be `#[cfg(test)]`-only, never compiled
+     into the wasm build, so quicksave/quickload were never actually at risk from this
+     specific bug. Added real `setenv`/`unsetenv` and migrated every call site. Quicksave/
+     quickload still don't have real persistent backing storage on wasm (`platform/wasm.rs`'s
+     VFS doesn't survive a page reload — noted in Phase C) — that's separate, still open.
    - Anything else surfaces during the audit — this list is a known-so-far floor, not a ceiling.
 
 **2. Fix what should work, remove what genuinely can't (expect this to be rare).** The user's
@@ -740,11 +739,10 @@ between:
    in item 1 — via real pixel/state comparison, the same rigor the climb z-order and RGB24 mask
    bugs were found and fixed with, not just eyeballing a screenshot.
 
-**Suggested order:** 1 (audit, cheap, mostly reading) → fix the `std::env::set_var` crash risk
-specifically (item 1's most concrete finding) with its own small regression test (same pattern
-as the Esc-menu one) → 4's capture mechanism (needed to verify anything else in this phase
-beyond "doesn't crash") → the rest of item 1's fixes, each verified via 4 → 3 (mouse) → re-audit
-mouse-driven parity via 4 again.
+**Suggested order:** 1 (audit, cheap, mostly reading; its most concrete finding, the
+`std::env::set_var` crash risk, is already fixed) → 4's capture mechanism (needed to verify
+anything else in this phase beyond "doesn't crash") → the rest of item 1's fixes, each verified
+via 4 → 3 (mouse) → re-audit mouse-driven parity via 4 again.
 
 ## Future consideration (deferred, not scheduled): drop the SDL2 build dependency for wasm
 
