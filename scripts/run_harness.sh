@@ -103,8 +103,13 @@ run_one() {
     return 0
   fi
 
-  local test="$ROOT/tmp/test.trace"
-  local test_pixels="$ROOT/tmp/test.pixels"
+  # Per-replay filenames (not a shared "test.trace"/"test.pixels") -- run_one is called
+  # concurrently by the parallel loop below, and two runs sharing one output path would
+  # clobber each other's trace mid-write.
+  local safe_name
+  safe_name="$(echo "$name" | tr -c 'A-Za-z0-9._-' '_')"
+  local test="$ROOT/tmp/${safe_name}.trace"
+  local test_pixels="$ROOT/tmp/${safe_name}.pixels"
   local golden_pixels
   golden_pixels="$(pixels_path_for "$golden")"
   rm -f "$test" "$test_pixels"
@@ -167,14 +172,57 @@ regen_one() {
     "$C_BINARY" validate "$replay" >/dev/null 2>&1
 }
 
+# Runs $1 (a function name, either run_one or regen_one) over every pair in PAIRS,
+# concurrently, bounded to $JOBS at a time -- each replay run is an independent process
+# (own binary invocation, own trace/pixel output files since run_one's naming fix above),
+# so there's no correctness reason to run them one at a time, only a historical one. Each
+# job's stdout/stderr is captured to a temp file so concurrent output doesn't interleave
+# mid-line; results are printed back in PAIRS order once everything finishes, so output
+# reads identically to the old sequential run. Exit statuses are collected the same way
+# (via each job's own exit-code file), not via `wait`'s own status, since `set -e` would
+# otherwise abort the whole script on the first background failure.
+JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+
+run_parallel() {
+  local fn="$1"
+  local -a outs=() codes=()
+  local i=0 running=0
+  for pair in "${PAIRS[@]}"; do
+    replay="${pair%%|*}"
+    golden="${pair##*|}"
+    local out="$ROOT/tmp/parallel_${i}.out"
+    local code="$ROOT/tmp/parallel_${i}.code"
+    outs+=("$out")
+    codes+=("$code")
+    (
+      set +e
+      "$fn" "$replay" "$golden" >"$out" 2>&1
+      echo $? >"$code"
+    ) &
+    i=$((i + 1))
+    running=$((running + 1))
+    if [ "$running" -ge "$JOBS" ]; then
+      wait -n || true
+      running=$((running - 1))
+    fi
+  done
+  wait
+
+  local failures=0
+  for idx in "${!outs[@]}"; do
+    cat "${outs[$idx]}"
+    if [ "$(cat "${codes[$idx]}")" != "0" ]; then
+      failures=$((failures + 1))
+    fi
+    rm -f "${outs[$idx]}" "${codes[$idx]}"
+  done
+  return "$failures"
+}
+
 case "${1:-}" in
   --regen)
-    echo "Regenerating all golden traces from C oracle ($C_BINARY)..."
-    for pair in "${PAIRS[@]}"; do
-      replay="${pair%%|*}"
-      golden="${pair##*|}"
-      regen_one "$replay" "$golden"
-    done
+    echo "Regenerating all golden traces from C oracle ($C_BINARY), $JOBS at a time..."
+    run_parallel regen_one || true
     echo "Done."
     ;;
   --compare)
@@ -209,12 +257,9 @@ case "${1:-}" in
     "$ROOT/scripts/menu_smoke_test.sh" || exit 1
     echo ""
 
+    echo "Comparing ${#PAIRS[@]} replays, $JOBS at a time..."
     failures=0
-    for pair in "${PAIRS[@]}"; do
-      replay="${pair%%|*}"
-      golden="${pair##*|}"
-      run_one "$replay" "$golden" || failures=$((failures + 1))
-    done
+    run_parallel run_one || failures=$?
     echo ""
     if [ "$failures" -eq 0 ]; then
       echo "All ${#PAIRS[@]} replays passed."
