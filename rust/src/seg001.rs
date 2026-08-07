@@ -1274,7 +1274,7 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("hof");
         setup();
         unsafe {
-            std::env::set_var("SDLPOP_SAVE_PATH", &scratch.0);
+            crate::test_support::set_save_path_env(&scratch.0);
 
             hof_count = 2;
             let mut name0 = [0 as c_char; 25];
@@ -1305,7 +1305,7 @@ mod tests {
             assert_eq!(&hof[0].name[..6], &name0[..6]);
             assert_eq!(&hof[1].name[..4], &name1[..4]);
 
-            std::env::remove_var("SDLPOP_SAVE_PATH");
+            crate::test_support::remove_save_path_env();
         }
     }
 }

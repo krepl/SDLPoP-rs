@@ -64,14 +64,16 @@ async function main() {
         // without it the run sits at the title screen/intro cutscene, where Escape
         // doesn't reach process_key()'s pause-menu handling at all, and this test would
         // pass even against the broken code (confirmed empirically: it did, silently,
-        // before this args fix was added). Deliberately NOT passing "headless" --
-        // that flag makes seg000.rs call std::env::set_var to force dummy SDL video/audio
-        // drivers, a native-only concept (there's no real SDL driver selection on wasm)
-        // whose std::env::set_var call panics outright on wasm32-unknown-unknown (no
-        // backing env to mutate).
+        // before this args fix was added). "headless" is also included -- that flag used
+        // to make seg000.rs call std::env::set_var (no wasm32-unknown-unknown backing,
+        // panicked outright there) to force dummy SDL video/audio drivers; now uses the
+        // shared setenv instead (a correct no-op on wasm, since nothing there ever reads
+        // SDL_VIDEODRIVER/SDL_AUDIODRIVER). Including it here doubles as this fix's
+        // regression test, and matches scripts/gameplay_smoke_test.sh's native invocation
+        // ("headless megahit 3") exactly, rather than a wasm-only subset of the args.
         const run = page.evaluate(
             ([argv, script]) => window.runHeadlessScriptedInput(argv, script, {}),
-            [['prince', 'megahit', '3'], scriptText],
+            [['prince', 'headless', 'megahit', '3'], scriptText],
         );
         const timeout = new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), TIMEOUT_MS));
 

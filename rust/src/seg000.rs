@@ -401,9 +401,16 @@ pub unsafe extern "C" fn pop_main() {
     // skips window creation and most of the input path entirely (see the SdlPlatform
     // event-pump startup panic this gap let through, fixed in commit 4a11238). Must be set
     // before parse_grmode()/set_gr_mode() below, which is where SDL_Init actually runs.
+    //
+    // setenv, not std::env::set_var: the latter has no wasm32-unknown-unknown backing and
+    // panics outright if this code path is ever reached there (it can be -- nothing stops
+    // "headless" from being passed as an argv entry to a wasm run). setenv works on both
+    // targets (real libc natively, wasm_libc's fake env store on wasm) and is a correct
+    // no-op either way on wasm: nothing there ever reads SDL_VIDEODRIVER/SDL_AUDIODRIVER,
+    // since WasmRenderer never calls a real SDL_Init to consult them.
     if !cp(b"headless\0").is_null() {
-        std::env::set_var("SDL_VIDEODRIVER", "dummy");
-        std::env::set_var("SDL_AUDIODRIVER", "dummy");
+        setenv(b"SDL_VIDEODRIVER\0".as_ptr() as *const c_char, b"dummy\0".as_ptr() as *const c_char, 1);
+        setenv(b"SDL_AUDIODRIVER\0".as_ptr() as *const c_char, b"dummy\0".as_ptr() as *const c_char, 1);
     }
 
     parse_grmode();
@@ -3248,7 +3255,7 @@ pub unsafe extern "C" fn get_writable_file_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{ScratchDir, ENV_LOCK};
+    use crate::test_support::{ScratchDir, ENV_LOCK, set_save_path_env, remove_save_path_env};
 
     fn setup() {
         unsafe { set_options_to_default(); }
@@ -3268,7 +3275,7 @@ mod tests {
         let scratch = ScratchDir::new("quicksave");
         setup();
         unsafe {
-            std::env::set_var("SDLPOP_SAVE_PATH", &scratch.0);
+            set_save_path_env(&scratch.0);
 
             current_level = 7;
             hitp_curr = 2;
@@ -3299,7 +3306,7 @@ mod tests {
             assert_eq!(hitp_curr, 2);
             assert_eq!(Kid.x, 111);
 
-            std::env::remove_var("SDLPOP_SAVE_PATH");
+            remove_save_path_env();
         }
     }
 
@@ -3312,7 +3319,7 @@ mod tests {
         let scratch = ScratchDir::new("quicksave-version-mismatch");
         setup();
         unsafe {
-            std::env::set_var("SDLPOP_SAVE_PATH", &scratch.0);
+            set_save_path_env(&scratch.0);
 
             let mut path_buf = [0i8; POP_MAX_PATH as usize];
             let path = get_quick_path(path_buf.as_mut_ptr(), path_buf.len());
@@ -3333,7 +3340,7 @@ mod tests {
             fclose(quick_fp);
             quick_fp = null_mut();
 
-            std::env::remove_var("SDLPOP_SAVE_PATH");
+            remove_save_path_env();
         }
     }
 
@@ -3358,7 +3365,7 @@ mod tests {
             );
             std::fs::copy(fixture, scratch.0.join("QUICKSAVE.SAV"))
                 .expect("copy committed C-oracle fixture into scratch dir");
-            std::env::set_var("SDLPOP_SAVE_PATH", &scratch.0);
+            set_save_path_env(&scratch.0);
 
             current_level = 0;
             hitp_curr = 0;
@@ -3383,7 +3390,7 @@ mod tests {
             assert_eq!(hitp_curr, 2, "hitp_curr from the C-written fixture");
             assert_eq!(Kid.x, 111, "Kid.x from the C-written fixture");
 
-            std::env::remove_var("SDLPOP_SAVE_PATH");
+            remove_save_path_env();
         }
     }
 
@@ -3400,7 +3407,7 @@ mod tests {
         let scratch = ScratchDir::new("long-term-save");
         setup();
         unsafe {
-            std::env::set_var("SDLPOP_SAVE_PATH", &scratch.0);
+            set_save_path_env(&scratch.0);
 
             let mut path_buf = [0i8; POP_MAX_PATH as usize];
             let path = get_save_path(path_buf.as_mut_ptr(), path_buf.len());
@@ -3423,7 +3430,7 @@ mod tests {
             assert_eq!(start_level, 9);
             assert_eq!(hitp_beg_lev, 3);
 
-            std::env::remove_var("SDLPOP_SAVE_PATH");
+            remove_save_path_env();
         }
     }
 }

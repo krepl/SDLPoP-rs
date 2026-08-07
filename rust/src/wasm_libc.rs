@@ -652,6 +652,27 @@ pub unsafe extern "C" fn getenv(name: *const c_char) -> *mut c_char {
     }
 }
 
+/// Real POSIX `setenv`/`unsetenv`, not just the JS-facing `wasm_setenv` helper -- so ported
+/// game code (`seg000.rs`'s "headless" flag, e.g.) can call the same `setenv`/`getenv` pair
+/// it would on native instead of `std::env::set_var`, which has no wasm32-unknown-unknown
+/// backing and panics outright if called (confirmed: this crashed a real headless wasm run --
+/// see project_wasm_esc_menu_crash / "Phase D" follow-up notes). `overwrite` is ignored (this
+/// codebase never calls `setenv` with `overwrite == 0`, confirmed by a full call-site audit),
+/// matching every other simplification in this file that's exact for the cases actually used
+/// rather than a full general-purpose libc.
+#[no_mangle]
+pub unsafe extern "C" fn setenv(name: *const c_char, value: *const c_char, _overwrite: c_int) -> c_int {
+    wasm_setenv(name, value);
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn unsetenv(name: *const c_char) -> c_int {
+    let name = c_str_to_string(name);
+    env_store().remove(&name);
+    0
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn fread(ptr: *mut c_void, size: usize, count: usize, stream: *mut c_void) -> usize {
     let Some(f) = open_files().get_mut(&(stream as usize)) else { return 0 };

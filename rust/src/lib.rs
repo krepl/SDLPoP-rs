@@ -27,6 +27,8 @@ extern "C" {
     pub fn remove(path: *const c_char) -> c_int;
     pub fn perror(s: *const c_char);
     pub fn getenv(name: *const c_char) -> *mut c_char;
+    pub fn setenv(name: *const c_char, value: *const c_char, overwrite: c_int) -> c_int;
+    pub fn unsetenv(name: *const c_char) -> c_int;
 }
 
 // Shared replacements for the C variadic print/format family (printf/fprintf/snprintf).
@@ -322,6 +324,19 @@ pub(crate) mod test_support {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// Points `SDLPOP_SAVE_PATH` (read by `get_writable_file_path`, seg000.rs) at `path`, via
+    /// the shared `setenv` (not `std::env::set_var`, which has no wasm32-unknown-unknown
+    /// backing) so this exercises the exact same env-var mechanism the real "headless" flag
+    /// startup path now uses too, not a native-only shortcut.
+    pub(crate) unsafe fn set_save_path_env(path: &std::path::Path) {
+        let value = std::ffi::CString::new(path.to_str().expect("scratch path must be UTF-8")).unwrap();
+        crate::setenv(c"SDLPOP_SAVE_PATH".as_ptr(), value.as_ptr(), 1);
+    }
+
+    pub(crate) unsafe fn remove_save_path_env() {
+        crate::unsetenv(c"SDLPOP_SAVE_PATH".as_ptr());
     }
 }
 
