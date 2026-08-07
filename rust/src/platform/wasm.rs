@@ -737,10 +737,22 @@ impl Renderer for WasmRenderer {
         unimplemented!("WasmRenderer::present")
     }
     unsafe fn set_fullscreen(&mut self, _fullscreen: bool) {
-        unimplemented!("WasmRenderer::set_fullscreen")
+        // Reachable from the in-game settings menu's fullscreen toggle (menu.rs) and
+        // seg009.rs's startup fullscreen handling. Real fullscreen needs the browser's
+        // Fullscreen API (`element.requestFullscreen()`), which needs a JS bridge that
+        // doesn't exist yet -- a no-op here is an honest "not supported yet," matching
+        // get_window_flags always reporting "not fullscreen," rather than a placeholder
+        // masking a real bug. Toggling the setting still works (it's stored regardless);
+        // it just has no visible effect until a real bridge is wired up.
     }
     unsafe fn show_cursor(&mut self, _show: bool) {
-        unimplemented!("WasmRenderer::show_cursor")
+        // Real cursor hiding needs DOM/CSS control over the canvas element (e.g. toggling
+        // a `cursor: none` class), which no JS bridge exists for yet -- the browser's
+        // default cursor is a reasonable interim behavior, not a placeholder that needs
+        // fixing urgently. A no-op here (matching menu.rs's only caller,
+        // process_additional_menu_input/menu_was_closed, which only ever hides the cursor
+        // while the window is fullscreen -- get_window_flags always reports "not
+        // fullscreen" on wasm, so `show(false)` is unreachable in practice today anyway).
     }
     unsafe fn delay(&mut self, ms: u32) {
         // Real busy-spin, the accepted first-pass tradeoff for frame pacing (see the plan
@@ -836,11 +848,57 @@ impl Renderer for WasmRenderer {
         rw_handles().insert(id, WasmRw { data, pos: 0, write_back_path });
         id as *mut SDL_RWops
     }
-    unsafe fn get_scancode_name(&mut self, _scancode: u32) -> *const std::os::raw::c_char {
-        unimplemented!("WasmRenderer::get_scancode_name")
+    unsafe fn get_scancode_name(&mut self, scancode: u32) -> *const std::os::raw::c_char {
+        // Only reachable from the in-game key-rebinding settings row (menu.rs), which
+        // immediately CStr::from_ptr's the result -- must return a real, non-null,
+        // NUL-terminated string, not a stub. Named the scancodes web/index.html's own
+        // SCANCODE map actually forwards from the keyboard (the only ones a wasm build's
+        // key-rebind screen could ever show as "already bound" or let you rebind to);
+        // matches real SDL_GetScancodeName's naming, e.g. "Left Ctrl" not "LCtrl". Falls
+        // back to a generic numbered name for anything else, formatted into a thread-local
+        // buffer -- real SDL_GetScancodeName also returns a pointer into static/internal
+        // storage the caller never frees, so a 'static buffer here matches that contract.
+        let name: std::borrow::Cow<'static, str> = match scancode {
+            80 => "Left".into(),
+            79 => "Right".into(),
+            82 => "Up".into(),
+            81 => "Down".into(),
+            44 => "Space".into(),
+            40 => "Return".into(),
+            41 => "Escape".into(),
+            42 => "Backspace".into(),
+            43 => "Tab".into(),
+            76 => "Delete".into(),
+            225 => "Left Shift".into(),
+            229 => "Right Shift".into(),
+            224 => "Left Ctrl".into(),
+            228 => "Right Ctrl".into(),
+            226 => "Left Alt".into(),
+            230 => "Right Alt".into(),
+            53 => "Grave".into(),
+            58..=69 => format!("F{}", scancode - 57).into(),
+            0 => "".into(),
+            _ => format!("Key {}", scancode).into(),
+        };
+        thread_local! {
+            static NAME_BUF: std::cell::RefCell<std::ffi::CString> =
+                std::cell::RefCell::new(std::ffi::CString::default());
+        }
+        NAME_BUF.with(|buf| {
+            let mut buf = buf.borrow_mut();
+            *buf = std::ffi::CString::new(name.into_owned()).unwrap_or_default();
+            buf.as_ptr()
+        })
     }
     unsafe fn get_window_flags(&mut self, _window: *mut crate::SDL_Window) -> u32 {
-        unimplemented!("WasmRenderer::get_window_flags")
+        // Both call sites (menu.rs's process_additional_menu_input/menu_was_closed) only
+        // ever check the SDL_WINDOW_FULLSCREEN_DESKTOP bit, to decide whether to hide the
+        // mouse cursor while idle. No real OS window exists here -- the canvas is never
+        // "fullscreen" in that sense (this build doesn't implement the Fullscreen API
+        // either; set_fullscreen is its own separate unimplemented stub) -- so always
+        // reporting no flags set is exactly correct, not a placeholder: it makes the game
+        // always show the cursor, the right behavior for a normal browser tab.
+        0
     }
     unsafe fn render_get_scale(&mut self, _renderer: *mut crate::SDL_Renderer) -> (f32, f32) {
         // No SDL_RenderSetScale equivalent exists here (nothing in this codebase calls one --
