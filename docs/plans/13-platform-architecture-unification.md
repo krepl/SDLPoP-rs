@@ -663,3 +663,85 @@ migrating those too if a good pure-Rust alternative exists) produces more idioma
 maintainable code without sacrificing native fidelity. This is real, valuable follow-up work
 if it turns out clean — but it's a windowing-layer replacement, not a rendering-semantics one,
 and should be scoped and decided on its own once there's a working baseline to compare against.
+
+## Phase D — Menu/input completeness for wasm (not started)
+
+Prompted by the Esc-menu crash (2026-08-06, commit `d20c68e`, memory
+`project_wasm_esc_menu_crash`): nobody had opened the pause menu in the wasm build before a
+live user did, and `WasmRenderer` still had real `unimplemented!()` stubs on that code path
+(`get_window_flags`, `show_cursor`, `set_fullscreen`, `get_scancode_name` — the first four
+fixed; see that memory and commit `68eb7b9`'s regression test). The pause menu — and
+everything reachable from it — is a whole area of the game the replay-based harness structurally
+cannot cover (replays are deterministic recorded *gameplay* input; opening a menu isn't part
+of that stream at all, and even scripted-input testing can only crudely poke at it — see
+`open_menu.txt`'s header for why a scripted close isn't even feasible). Expect more gaps than
+the four already found. This phase is: find them methodically, decide fix vs. remove for each,
+and build real test coverage for the ones worth having, rather than waiting for the next one to
+surface via another live crash.
+
+**1. Audit every menu action for wasm reachability.** Walk `menu.rs`'s setting/action tables
+(General, Gameplay, Visuals, Mods, Controls, plus the top-level pause menu itself — quicksave/
+quickload/restart level/restart game/quit) and, for each, check whether it calls anything
+still unimplemented or behaviorally wrong on wasm. Known so far, not yet fixed:
+   - `set_fullscreen`/`get_window_flags` are no-ops (correct "not supported yet" behavior, not
+     placeholders, but genuinely inert — toggling "fullscreen" in Visuals does nothing visible).
+     A real fix needs a JS bridge to the Fullscreen API (`element.requestFullscreen()`).
+   - `show_cursor` is a no-op — needs a JS bridge (DOM/CSS `cursor` property on the canvas) to
+     ever actually hide the cursor.
+   - `std::env::set_var` (`rust/src/seg000.rs`) panics outright on wasm32-unknown-unknown (no
+     backing environment to mutate) — found while building the Esc-menu regression test
+     (had to avoid passing the native-only `headless` argv flag, which hits this). At least
+     4 other call sites use it for `SDLPOP_SAVE_PATH`, which quicksave/quickload (`F6`/`F9`,
+     also reachable directly from the pause menu) go through — **this is a real, live crash
+     risk today**, not yet reproduced/confirmed with a test, but should be near the top of the
+     list. Quicksave/quickload also don't have real persistent backing storage on wasm yet
+     regardless (`platform/wasm.rs`'s VFS doesn't survive a page reload — noted in Phase C).
+   - Anything else surfaces during the audit — this list is a known-so-far floor, not a ceiling.
+
+**2. Fix what should work, remove what genuinely can't (expect this to be rare).** The user's
+own expectation, and a reasonable one: "We can probably make everything work" — most of these
+are missing JS bridges (Fullscreen API, cursor CSS, real persistent storage), not fundamental
+platform impossibilities. Only remove/hide a menu action from the wasm build if it's genuinely
+inapplicable there (nothing identified so far is), not just because it needs new plumbing.
+
+**3. Mouse input.** Explicitly still a TODO, called out separately from the above (not blocking
+it): `web/index.html`'s live-input path forwards keyboard events but not mouse clicks yet (see
+existing notes elsewhere in this doc and in session history). The pause menu supports full
+mouse interaction (`process_additional_menu_input`'s `read_mouse_state`, hover-highlight,
+click-to-select) — none of it is currently reachable in the browser build. Wire up real mouse
+event forwarding (mousemove/mousedown/mouseup, coordinate-mapped through the canvas the same
+way keyboard scancodes are mapped today) as its own scoped piece of work, then re-run the
+audit above specifically checking mouse-driven interaction parity with keyboard.
+
+**4. Native-vs-wasm comparison coverage for menu frames specifically.** The pixel-hash harness
+(`traces/pixels/`) and the wasm pixel-comparison tooling (`scripts/wasm_pixel_harness.mjs`,
+`dump_frame_raw`) both only ever capture frames from the *outer* per-tick loop
+(`dump_frame_pixels`/`dump_frame_state`, called from `play_level_2_impl` after `play_frame()`
+returns) — while the pause menu is open, execution is inside `do_paused()`'s own blocking
+inner loop (`draw_menu`), which never reaches that call site at all (this is also *why* the
+Esc-crash regression test can't cleanly close the menu again — see `open_menu.txt`'s header).
+So today there is **no** pixel/state capture mechanism for "what does the menu actually look
+like" on either build, native or wasm — the new regression test only proves "doesn't crash,"
+not "renders correctly" or "looks the same as native." Two viable directions, not yet decided
+between:
+   - Add a parallel capture call inside `draw_menu`'s loop (or wherever it redraws), gated the
+     same way (`POPPIXELS_OUT`/`POPRAWFRAME_TICK`-style), producing its own tick-like counter
+     independent of the frozen outer `tick_counter` so menu frames get their own comparable
+     sequence.
+   - Or: since the menu can't be scripted to close cleanly via keyboard today, extend the
+     scripted-input mechanism (or add a dedicated test-only escape hatch) enough to script a
+     *specific* sequence of menu navigation (open → down → down → select → back → close) once
+     mouse/keyboard-in-menu is fully audited (item 1) and reliable, capturing frames along the
+     way. This is more work but gives real behavioral parity coverage, not just "didn't crash."
+
+   Whichever direction, the end goal (matching the user's ask): confirm the menu actually
+   *appears* and *renders correctly* on wasm (not just "didn't panic"), and that keyboard and
+   (once implemented) mouse input produce the *same effect* as native for every action audited
+   in item 1 — via real pixel/state comparison, the same rigor the climb z-order and RGB24 mask
+   bugs were found and fixed with, not just eyeballing a screenshot.
+
+**Suggested order:** 1 (audit, cheap, mostly reading) → fix the `std::env::set_var` crash risk
+specifically (item 1's most concrete finding) with its own small regression test (same pattern
+as the Esc-menu one) → 4's capture mechanism (needed to verify anything else in this phase
+beyond "doesn't crash") → the rest of item 1's fixes, each verified via 4 → 3 (mouse) → re-audit
+mouse-driven parity via 4 again.
