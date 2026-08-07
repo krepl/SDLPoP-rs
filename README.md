@@ -10,15 +10,28 @@ side: how to build it and where to look for more.
 
 ## Quick start
 
+These three builds are independent; pick whichever one you want.
+
+### Native (Rust)
+
 ```sh
-cargo run              # native
-cargo xtask wasm-serve # browser (builds first automatically)
+cargo run   # builds and launches the game
 ```
 
-The original C build is also kept around, as the test harness's reference oracle:
+### Browser (wasm)
 
 ```sh
-cd src/build && cmake -G Ninja .. && ninja
+cargo xtask wasm-serve   # builds the wasm bundle if needed, then serves it
+```
+
+Then open the URL it prints (`http://localhost:8642/` by default).
+
+### Original C build
+
+Kept as the test harness's reference oracle, not for everyday use.
+
+```sh
+cd src/build && cmake -G Ninja .. && ninja   # builds ../prince
 ```
 
 ### Dependencies
