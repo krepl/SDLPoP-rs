@@ -94,6 +94,51 @@ pub fn wasm_menu_smoke_test(root: &Path) -> Result<(), String> {
     )
 }
 
+/// Confirms `node` and the Playwright package are actually available before trying to run
+/// anything that needs them, with an error message that names the exact fix -- the failure
+/// mode without this check is a much less legible `Error: Cannot find module 'playwright'`
+/// buried inside a Node stack trace.
+fn check_wasm_test_deps(root: &Path) -> Result<(), String> {
+    if Command::new("node").arg("--version").output().is_err() {
+        return Err(
+            "wasm tests require Node.js, which was not found on PATH. Install Node, then run \
+             `npm install` in the project root.".to_string(),
+        );
+    }
+    // stdout/stderr suppressed: on failure this prints a raw "Cannot find module" stack
+    // trace, which would just be noise ahead of the actionable message below.
+    let has_playwright = Command::new("node")
+        .arg("-e")
+        .arg("require.resolve('playwright')")
+        .current_dir(root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !has_playwright {
+        return Err(
+            "wasm tests require the Playwright npm package, which isn't installed. Run \
+             `npm install` in the project root.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// `cargo xtask wasm-verify`: dependency check, then a fresh wasm build (same as `wasm-build`
+/// -- the wasm tests need current `web/pkg/`, not whatever was last built), then the wasm
+/// test suite. Currently just `wasm_menu_smoke_test`; add further wasm-only regression tests
+/// here as they're built (see docs/plans/13-platform-architecture-unification.md's Phase D).
+/// Deliberately does NOT include the full native-vs-wasm pixel-hash sweep
+/// (`scripts/wasm_pixel_harness.mjs` run across all golden replays) -- that takes minutes
+/// (a headless Chromium launch + full asset preload per replay), appropriate for an
+/// occasional deep check but not every `cargo xtask verify` run.
+pub fn wasm_verify(root: &Path) -> Result<(), String> {
+    check_wasm_test_deps(root)?;
+    crate::wasm::build(root)?;
+    wasm_menu_smoke_test(root)
+}
+
 pub fn quicksave_fixture(root: &Path) -> Result<(), String> {
     run_status(
         Command::new(script(root, "gen_quicksave_fixture.sh")).current_dir(root),

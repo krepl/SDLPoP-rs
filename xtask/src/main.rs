@@ -56,8 +56,13 @@ enum Command {
     MenuSmokeTest,
     /// Open the pause menu in the wasm build via scripted input and confirm the Worker
     /// doesn't crash -- requires `npm install` (Playwright) and a current `cargo xtask
-    /// wasm-build`. Not part of `harness`/`verify` (extra dependencies), run manually.
+    /// wasm-build`. Part of `wasm-verify` (and so of `verify`); standalone mainly for fast
+    /// iteration.
     WasmMenuSmokeTest,
+    /// Check Node/Playwright are installed, rebuild the wasm bundle, then run the wasm test
+    /// suite (currently just `wasm-menu-smoke-test`). Part of `verify`. Requires `npm
+    /// install` -- fails with a clear message naming the fix if that hasn't been run.
+    WasmVerify,
     /// Compile the standalone C oracle binary and capture a fresh quicksave fixture.
     QuicksaveFixture,
     /// Run everything: cargo build, cargo test --lib, cargo check --target
@@ -104,6 +109,7 @@ fn main() -> ExitCode {
         Command::GameplaySmokeTest => harness::gameplay_smoke_test(&root),
         Command::MenuSmokeTest => harness::menu_smoke_test(&root),
         Command::WasmMenuSmokeTest => harness::wasm_menu_smoke_test(&root),
+        Command::WasmVerify => harness::wasm_verify(&root),
         Command::QuicksaveFixture => harness::quicksave_fixture(&root),
         Command::Verify => verify(&root),
     };
@@ -137,7 +143,8 @@ fn verify(root: &Path) -> Result<(), String> {
             .current_dir(root),
         "cargo check --target wasm32-unknown-unknown",
     )?;
-    harness::run_full(root)
+    harness::run_full(root)?;
+    harness::wasm_verify(root)
 }
 
 /// Runs a `Command`, mapping a nonzero exit or spawn failure into a plain `Err` with the
