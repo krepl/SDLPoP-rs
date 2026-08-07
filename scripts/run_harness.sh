@@ -201,6 +201,14 @@ case "${1:-}" in
     "$ROOT/scripts/gameplay_smoke_test.sh" || exit 1
     echo ""
 
+    # Opening the pause menu specifically -- none of the above ever does. See
+    # menu_smoke_test.sh's header for why this exists (native was never actually
+    # at risk; the wasm counterpart, scripts/wasm_menu_smoke_test.mjs, is the one
+    # that caught the real bug, but needs Node/Playwright so it isn't run here --
+    # see CLAUDE.md's wasm testing section).
+    "$ROOT/scripts/menu_smoke_test.sh" || exit 1
+    echo ""
+
     failures=0
     for pair in "${PAIRS[@]}"; do
       replay="${pair%%|*}"

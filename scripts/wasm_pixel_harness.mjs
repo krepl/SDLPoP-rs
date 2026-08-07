@@ -14,53 +14,13 @@
 // scripts/run_harness.sh not rebuilding the Rust binary itself).
 
 import { chromium } from 'playwright';
-import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { serve } from './wasm_test_server.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB_DIR = path.join(ROOT, 'web');
-
-const MIME = {
-    '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript',
-    '.wasm': 'application/wasm', '.json': 'application/json', '.txt': 'text/plain',
-    '.ini': 'text/plain', '.dat': 'application/octet-stream', '.DAT': 'application/octet-stream',
-};
-
-// Same COOP/COEP headers xtask/src/wasm.rs's serve() sets -- see that file for why
-// they're required (SharedArrayBuffer's cross-origin-isolation requirement). This
-// harness doesn't use SharedArrayBuffer itself, but the wasm module is the same binary
-// that expects them absent no harm in setting them; harmless either way for this path.
-function serve(webDir) {
-    const server = http.createServer((req, res) => {
-        const urlPath = decodeURIComponent(req.url.split('?')[0]);
-        let filePath = path.join(webDir, urlPath === '/' ? '/headless.html' : urlPath);
-        if (!filePath.startsWith(webDir)) {
-            res.writeHead(403);
-            res.end();
-            return;
-        }
-        fs.readFile(filePath, (err, data) => {
-            if (err) {
-                res.writeHead(404);
-                res.end();
-                return;
-            }
-            const ext = path.extname(filePath);
-            res.writeHead(200, {
-                'Content-Type': MIME[ext] || 'application/octet-stream',
-                'Cross-Origin-Opener-Policy': 'same-origin',
-                'Cross-Origin-Embedder-Policy': 'require-corp',
-                'Cache-Control': 'no-store',
-            });
-            res.end(data);
-        });
-    });
-    return new Promise((resolve) => {
-        server.listen(0, '127.0.0.1', () => resolve(server));
-    });
-}
 
 async function main() {
     const [replayArg, traceOutArg, pixelsOutArg] = process.argv.slice(2);
@@ -76,7 +36,7 @@ async function main() {
         process.exit(2);
     }
 
-    const server = await serve(WEB_DIR);
+    const server = await serve(WEB_DIR, 'headless.html');
     const port = server.address().port;
     const browser = await chromium.launch();
     try {

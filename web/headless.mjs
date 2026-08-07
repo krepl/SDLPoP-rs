@@ -118,4 +118,63 @@ window.runHeadlessReplay = async function (replayVfsPath, replayBytesBase64, env
     };
 };
 
+// Live scripted-keyboard-input mode, for exercising code paths a recorded replay can't
+// reach (anything that isn't part of normal deterministic gameplay -- the pause menu is
+// the motivating case: see project_wasm_esc_menu_crash memory / commit d20c68e). Reuses
+// the same POPTRACE_INPUT mechanism the native build's scripts/scripted_inputs/*.txt
+// scripts already use (load_scripted_input, rust/src/seg009.rs -- ported this session to
+// read via getenv/fopen instead of std::env/std::fs specifically so it would work here
+// unchanged). argv is passed straight to run_game_with_args, e.g.
+// ['prince', 'headless', 'megahit', '3'] to match a native scripted-input invocation.
+//
+// Unlike runHeadlessReplay, this deliberately does NOT wait for EXIT_SIGNAL as the
+// success signal -- a script that opens the pause menu and never closes it again (the
+// common case; see scripts/scripted_inputs/open_menu.txt's header comment for why a
+// scripted close isn't feasible) makes the game hang forever on purpose, the same way it
+// would waiting for a real keyboard. wasm is single-threaded: once run_game_with_args is
+// called, this promise never settles and the JS event loop never gets to run anything
+// else on this page again, including a JS-side timeout -- so a hang here is only
+// detectable from OUTSIDE the page. scripts/wasm_menu_smoke_test.mjs races this call
+// against a Node-side timer instead, which works because Node's timer runs in a
+// different process from the (blocked) browser tab. Only call this for scripts you
+// expect to end this way; if a script fully exits (EXIT_SIGNAL), the promise resolves
+// normally, but that's an unusual case for this function's callers today.
+window.runHeadlessScriptedInput = async function (argv, scriptText, env) {
+    await init();
+
+    const paths = await fetchManifest();
+    const CONCURRENCY = 24;
+    let next = 0;
+    async function worker() {
+        while (next < paths.length) {
+            const path = paths[next++];
+            await preloadAsset(path);
+        }
+    }
+    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+    const scriptVfsPath = 'input.txt';
+    preload_file(scriptVfsPath, new TextEncoder().encode(scriptText));
+    wasm_setenv('POPTRACE_INPUT', scriptVfsPath);
+    for (const [k, v] of Object.entries(env || {})) {
+        wasm_setenv(k, v);
+    }
+
+    let first = true;
+    for (;;) {
+        try {
+            if (first) {
+                first = false;
+                run_game_with_args(argv);
+            } else {
+                resume_game_after_restart();
+            }
+            return { exited: true };
+        } catch (e) {
+            if (isExitSignal(e)) return { exited: true };
+            if (!isRestartSignal(e)) throw e;
+        }
+    }
+};
+
 window.__headlessReady = true;

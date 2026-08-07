@@ -49,6 +49,15 @@ enum Command {
     /// Run scripted-input scenarios (walk right, walk-then-stop) and assert the Kid's position
     /// moved the way real keyboard input should drive it.
     GameplaySmokeTest,
+    /// Open the pause menu via scripted input and confirm the native build doesn't crash.
+    /// Already part of `harness`/`verify`; standalone mainly for fast iteration. See
+    /// `wasm-menu-smoke-test` for the wasm counterpart, which is the side that actually
+    /// caught the real Esc-menu crash bug (commit d20c68e).
+    MenuSmokeTest,
+    /// Open the pause menu in the wasm build via scripted input and confirm the Worker
+    /// doesn't crash -- requires `npm install` (Playwright) and a current `cargo xtask
+    /// wasm-build`. Not part of `harness`/`verify` (extra dependencies), run manually.
+    WasmMenuSmokeTest,
     /// Compile the standalone C oracle binary and capture a fresh quicksave fixture.
     QuicksaveFixture,
     /// Run everything: cargo build, cargo test --lib, cargo check --target
@@ -93,6 +102,8 @@ fn main() -> ExitCode {
         Command::Harness { command: Some(HarnessCommand::Build) } => harness::build_binary(&root),
         Command::SmokeTest { duration_seconds } => harness::smoke_test(&root, duration_seconds),
         Command::GameplaySmokeTest => harness::gameplay_smoke_test(&root),
+        Command::MenuSmokeTest => harness::menu_smoke_test(&root),
+        Command::WasmMenuSmokeTest => harness::wasm_menu_smoke_test(&root),
         Command::QuicksaveFixture => harness::quicksave_fixture(&root),
         Command::Verify => verify(&root),
     };

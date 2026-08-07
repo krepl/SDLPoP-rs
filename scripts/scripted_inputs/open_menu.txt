@@ -1,0 +1,18 @@
+# Opens the pause menu. Regression test for the wasm Esc-menu crash
+# (WasmRenderer::get_window_flags/show_cursor/set_fullscreen/get_scancode_name were
+# unimplemented!() stubs -- see project_wasm_esc_menu_crash memory / commit d20c68e).
+# Native never hit this (real SDL implements all four), but nothing previously
+# exercised the pause menu at all in headless testing, native or wasm --
+# run_harness.sh's replays never open it either.
+#
+# Deliberately does NOT try to close the menu again: do_paused()'s own inner loop
+# (draw_menu) blocks the outer per-tick loop for as long as the menu is open and
+# keeps polling for real input every iteration, so once open it just waits
+# peacefully for a keypress that (with no further scripted events queued) never
+# comes -- the test harness bounds this with an external timeout and treats
+# "still running, no panic" as success, same as "hung waiting for real input"
+# would look with a real keyboard. The crash this guards against was an immediate
+# abort on the very first render pass, not a hang, so "ran for the timeout window
+# without aborting" is exactly the right signal.
+0 escape down
+0 escape up

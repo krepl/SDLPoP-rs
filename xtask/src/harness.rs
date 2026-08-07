@@ -78,6 +78,22 @@ pub fn gameplay_smoke_test(root: &Path) -> Result<(), String> {
     )
 }
 
+pub fn menu_smoke_test(root: &Path) -> Result<(), String> {
+    run_status(
+        Command::new(script(root, "menu_smoke_test.sh")).current_dir(root),
+        "scripts/menu_smoke_test.sh",
+    )
+}
+
+pub fn wasm_menu_smoke_test(root: &Path) -> Result<(), String> {
+    run_status(
+        Command::new("node")
+            .arg(script(root, "wasm_menu_smoke_test.mjs"))
+            .current_dir(root),
+        "scripts/wasm_menu_smoke_test.mjs",
+    )
+}
+
 pub fn quicksave_fixture(root: &Path) -> Result<(), String> {
     run_status(
         Command::new(script(root, "gen_quicksave_fixture.sh")).current_dir(root),

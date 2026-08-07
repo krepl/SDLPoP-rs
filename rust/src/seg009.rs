@@ -361,6 +361,10 @@ extern "C" {
     static mut hc_small_font_data: [u8; 0];
 }
 
+extern "C" {
+    fn ftell(stream: *mut FILE) -> c_long;
+}
+
 // SDL_BlitSurface and SDL_BlitScaled are macros for SDL_UpperBlit / SDL_UpperBlitScaled.
 #[inline]
 unsafe fn SDL_BlitSurface(src: *mut SDL_Surface, srcrect: *const SDL_Rect,
@@ -4521,13 +4525,34 @@ fn scancode_from_key_name(name: &str) -> Option<c_int> {
 ///
 /// Malformed lines are reported and skipped rather than fatal, so a typo in a
 /// long script does not lose the rest of it.
+///
+/// Reads via the shared `getenv`/`fopen`-family primitives (not `std::env`/`std::fs`,
+/// which have no wasm32-unknown-unknown backing) so this same code path works
+/// unchanged on both native and wasm: natively `getenv` is the real libc call and
+/// `fopen` opens a real file; on wasm they resolve to `wasm_libc`'s fake-env table
+/// (`wasm_setenv`) and virtual filesystem (`preload_file`) instead -- see
+/// `web/headless.mjs`'s scripted-input mode for the wasm-side setup.
 unsafe fn load_scripted_input() {
     SCRIPT_LOADED = true;
-    let Ok(path) = std::env::var("POPTRACE_INPUT") else { return };
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        eprintln!("scripted_input: could not read {}", path);
+    let path_ptr = getenv(b"POPTRACE_INPUT\0".as_ptr() as *const c_char);
+    if path_ptr.is_null() {
         return;
-    };
+    }
+    let path = std::ffi::CStr::from_ptr(path_ptr).to_string_lossy().into_owned();
+    let fp = fopen(path_ptr, b"rb\0".as_ptr() as *const c_char);
+    if fp.is_null() {
+        eprintln!("scripted_input: could not open {}", path);
+        return;
+    }
+    fseek(fp, 0, 2 /* SEEK_END */);
+    let size = ftell(fp);
+    fseek(fp, 0, 0 /* SEEK_SET */);
+    let mut buf = vec![0u8; size.max(0) as usize];
+    if !buf.is_empty() {
+        fread(buf.as_mut_ptr() as *mut c_void, 1, buf.len(), fp);
+    }
+    fclose(fp);
+    let contents = String::from_utf8_lossy(&buf).into_owned();
     for (lineno, line) in contents.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
