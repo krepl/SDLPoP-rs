@@ -33,8 +33,8 @@ enum Command {
         #[arg(long, default_value_t = 8642)]
         port: u16,
     },
-    /// Run the differential harness (smoke test + gameplay smoke test + all replay/golden-trace
-    /// comparisons). With no subcommand, runs the full default suite.
+    /// Run the differential harness (smoke test + gameplay smoke test + menu smoke test + all
+    /// replay/golden-trace comparisons). With no subcommand, runs the full default suite.
     Harness {
         #[command(subcommand)]
         command: Option<HarnessCommand>,
@@ -66,8 +66,8 @@ enum Command {
     /// Compile the standalone C oracle binary and capture a fresh quicksave fixture.
     QuicksaveFixture,
     /// Run everything: cargo build, cargo test --lib, cargo check --target
-    /// wasm32-unknown-unknown, then the full harness suite. The one command to run before
-    /// considering a change done.
+    /// wasm32-unknown-unknown, the full harness suite, then wasm-verify (wasm test suite).
+    /// The one command to run before considering a change done.
     Verify,
 }
 
