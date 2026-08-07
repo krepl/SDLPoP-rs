@@ -117,3 +117,9 @@ __pycache__/
 # Node deps for scripts/wasm_pixel_harness.mjs (Playwright driver for the wasm replay
 # harness) -- reinstalled via `npm install`, not checked in.
 node_modules/
+
+# Scratch checkouts from Claude Code's isolation:"worktree" agent runs (real `git worktree`
+# checkouts under .git/worktrees/, not just plain copies) -- not project state, never meant
+# to be committed. Only hidden from `git status` here before this entry existed by a
+# personal global gitignore rule, which doesn't help other contributors.
+.claude/worktrees/
