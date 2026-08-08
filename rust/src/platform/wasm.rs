@@ -910,10 +910,27 @@ impl Renderer for WasmRenderer {
         0
     }
     unsafe fn render_get_scale(&mut self, _renderer: *mut crate::SDL_Renderer) -> (f32, f32) {
-        // No SDL_RenderSetScale equivalent exists here (nothing in this codebase calls one --
-        // confirmed by grep), so this matches real SDL_RenderGetScale's own default of (1.0,
-        // 1.0) before any such call.
-        (1.0, 1.0)
+        // Found wrong during the Phase D mouse-input followup (2026-08-08): this used to
+        // hardcode (1.0, 1.0) on the theory that nothing here calls SDL_RenderSetScale, but
+        // that missed that real SDL_RenderGetScale also reflects SDL_RenderSetLogicalSize
+        // (apply_aspect_ratio, seg009.rs, always called at startup with 320x200 or 1600x1200)
+        // -- SDL computes and applies a real output/logical scale factor internally, it isn't
+        // just a passthrough for an explicit SetScale call. Native's own render_get_scale
+        // (platform/sdl.rs) is a thin call to the real SDL_RenderGetScale, so it was already
+        // correct; this wasm shim needs to compute the same ratio by hand: window output
+        // pixels per logical unit. The mismatch was invisible until a real mouse click was
+        // exercised in the browser for the first time (this session) -- `menu.rs`'s
+        // `read_mouse_state` multiplies raw mouse coordinates (in real 640x400 output-pixel
+        // space) by this scale to convert them into the 320x200-logical space menu item hit
+        // rects are defined in; with a hardcoded 1.0, clicks landed roughly 2x too far from
+        // the actual target, so hover/click never matched the row the cursor was visually
+        // over.
+        let (win_w, win_h) = WINDOW_SIZE;
+        let (log_w, log_h) = LOGICAL_SIZE;
+        if log_w == 0 || log_h == 0 {
+            return (1.0, 1.0);
+        }
+        (win_w as f32 / log_w as f32, win_h as f32 / log_h as f32)
     }
     unsafe fn render_get_logical_size(&mut self, _renderer: *mut crate::SDL_Renderer) -> (c_int, c_int) {
         LOGICAL_SIZE
@@ -1149,6 +1166,7 @@ impl Renderer for WasmRenderer {
         // feed the same queue.
         sync_shared_input();
         synthesize_key_edge_events();
+        synthesize_mouse_edge_events();
         let Some(bytes) = event_queue().pop_front() else { return 0 };
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), event as *mut u8, SDL_EVENT_SIZE);
         1
@@ -1654,6 +1672,50 @@ fn synthesize_key_edge_events() {
     }
 }
 
+/// Same edge-triggering idea as `synthesize_key_edge_events`, for mouse buttons.
+/// `process_events` (`seg009.rs`) only ever matches on `SDL_MOUSEBUTTONDOWN` (never
+/// `SDL_MOUSEBUTTONUP`/`SDL_MOUSEMOTION` -- confirmed by grep; mouse *position* is polled
+/// separately via `InputSource::mouse_state`/`read_mouse_state`, not delivered as motion
+/// events), so this only needs to queue a down event on the false->true edge, matching a real
+/// "click" rather than "held" semantics -- there is no corresponding up-edge event to
+/// synthesize. Before this, `web/index.html` already wrote button state into the shared
+/// buffer (mousedown/mouseup listeners, present since the input-buffer format was designed),
+/// and `sync_shared_input` already copied it into `mouse_state_mut()`, but nothing ever
+/// turned that level state into the discrete event `menu.rs`'s `mouse_clicked`/
+/// `mouse_button_clicked_right` need -- so mouse position/hover worked in the browser build
+/// but clicks never registered, until this fix.
+#[allow(static_mut_refs)]
+fn synthesize_mouse_edge_events() {
+    static mut PREV_LEFT: bool = false;
+    static mut PREV_RIGHT: bool = false;
+    const SDL_MOUSEBUTTONDOWN: u32 = 0x401;
+    const SDL_BUTTON_LEFT: u8 = 1;
+    const SDL_BUTTON_RIGHT: u8 = 3;
+    unsafe {
+        let m = mouse_state_mut();
+        let (x, y, left, right) = (m.x, m.y, m.left, m.right);
+        let queue_click = |button: u8| {
+            let mut bytes = [0u8; SDL_EVENT_SIZE];
+            bytes[0..4].copy_from_slice(&SDL_MOUSEBUTTONDOWN.to_ne_bytes());
+            // timestamp (4..8), windowID (8..12), which (12..16) stay 0 -- unread.
+            bytes[16] = button;
+            bytes[17] = 1; // SDL_PRESSED -- unread by process_events, set for fidelity.
+            // clicks (18), padding1 (19) stay 0.
+            bytes[20..24].copy_from_slice(&x.to_ne_bytes());
+            bytes[24..28].copy_from_slice(&y.to_ne_bytes());
+            event_queue().push_back(bytes);
+        };
+        if left && !PREV_LEFT {
+            queue_click(SDL_BUTTON_LEFT);
+        }
+        if right && !PREV_RIGHT {
+            queue_click(SDL_BUTTON_RIGHT);
+        }
+        PREV_LEFT = left;
+        PREV_RIGHT = right;
+    }
+}
+
 impl WasmInput {
     /// Mirrors `SdlInput::init` -- an inherent method (not part of `InputSource`) that
     /// `seg009.rs`'s startup path calls directly on `shared_input()`. Nothing to actually
@@ -1716,6 +1778,31 @@ impl FileSystem for WasmFiles {
 mod tests {
     use super::*;
 
+    // Regression test for a real coordinate-mapping bug found live-testing the mouse-click
+    // fix below (2026-08-08): render_get_scale used to hardcode (1.0, 1.0) on the theory that
+    // nothing here calls SDL_RenderSetScale directly, missing that real SDL_RenderGetScale
+    // also reflects SDL_RenderSetLogicalSize (which this codebase always calls at startup,
+    // apply_aspect_ratio in seg009.rs). With window output 640x400 and the default 320x200
+    // logical size, real SDL reports scale (2.0, 2.0); the wasm shim's stale (1.0, 1.0)
+    // caused every menu mouse click to be computed against the wrong logical position --
+    // confirmed live: clicking a visually correct row landed 2 rows off. Saves/restores the
+    // module statics since they're shared mutable state other tests could also touch.
+    #[test]
+    fn render_get_scale_reflects_window_to_logical_ratio() {
+        unsafe {
+            let (saved_window, saved_logical) = (WINDOW_SIZE, LOGICAL_SIZE);
+            WINDOW_SIZE = (640, 400);
+            LOGICAL_SIZE = (320, 200);
+            assert_eq!(shared_renderer().render_get_scale(std::ptr::null_mut()), (2.0, 2.0));
+            LOGICAL_SIZE = (1600, 1200); // "correct aspect ratio" mode
+            assert_eq!(shared_renderer().render_get_scale(std::ptr::null_mut()), (0.4, 1.0 / 3.0));
+            LOGICAL_SIZE = (0, 0); // guards a div-by-zero rather than a real state
+            assert_eq!(shared_renderer().render_get_scale(std::ptr::null_mut()), (1.0, 1.0));
+            WINDOW_SIZE = saved_window;
+            LOGICAL_SIZE = saved_logical;
+        }
+    }
+
     #[test]
     fn render_set_integer_scale_does_not_panic_either_direction() {
         let r = shared_renderer();
@@ -1732,5 +1819,57 @@ mod tests {
             let path = std::ffi::CString::new("screenshot.png").unwrap();
             assert_eq!(r.save_png(std::ptr::null_mut(), &path), -1);
         }
+    }
+
+    // Regression test for the mouse-click gap found during the Phase D reachability audit's
+    // mouse-input followup (2026-08-08): mouse *position* already worked in the browser build
+    // (web/index.html wrote it into the shared buffer, sync_shared_input copied it into
+    // mouse_state_mut, menu.rs's read_mouse_state/is_mouse_over_rect consumed it), but nothing
+    // ever turned a button going down into the SDL_MOUSEBUTTONDOWN event menu.rs's
+    // mouse_clicked/mouse_button_clicked_right actually key off -- so hover-highlight worked
+    // and clicking silently did nothing. Drives mouse_state_mut() directly (bypassing
+    // sync_shared_input, which is only real on wasm32) since this only needs to verify
+    // poll_event's edge detection, not the shared-buffer transport.
+    #[test]
+    fn mouse_click_synthesizes_one_down_event_per_press() {
+        const SDL_MOUSEBUTTONDOWN: u32 = 0x401;
+        const SDL_BUTTON_LEFT: u8 = 1;
+        const SDL_BUTTON_RIGHT: u8 = 3;
+        fn poll() -> Option<[u8; SDL_EVENT_SIZE]> {
+            let mut bytes = [0u8; SDL_EVENT_SIZE];
+            let n = unsafe {
+                shared_renderer().poll_event(bytes.as_mut_ptr() as *mut std::os::raw::c_void)
+            };
+            (n != 0).then_some(bytes)
+        }
+        let m = mouse_state_mut();
+        m.x = 0;
+        m.y = 0;
+        m.left = false;
+        m.right = false;
+        // Drain any event left over from a previous test's state transition (e.g. releasing
+        // a button held at the end of another test) before asserting on fresh edges.
+        while poll().is_some() {}
+
+        m.x = 42;
+        m.y = 7;
+        m.left = true;
+        let ev = poll().expect("left press must synthesize a down event");
+        assert_eq!(u32::from_ne_bytes(ev[0..4].try_into().unwrap()), SDL_MOUSEBUTTONDOWN);
+        assert_eq!(ev[16], SDL_BUTTON_LEFT);
+        assert_eq!(i32::from_ne_bytes(ev[20..24].try_into().unwrap()), 42);
+        assert_eq!(i32::from_ne_bytes(ev[24..28].try_into().unwrap()), 7);
+        assert!(poll().is_none(), "holding the button must not re-fire");
+
+        let m = mouse_state_mut();
+        m.left = false;
+        assert!(poll().is_none(), "release must not synthesize its own event");
+        m.right = true;
+        let ev = poll().expect("right press must synthesize a down event");
+        assert_eq!(ev[16], SDL_BUTTON_RIGHT);
+
+        let m = mouse_state_mut();
+        m.left = false;
+        m.right = false;
     }
 }
