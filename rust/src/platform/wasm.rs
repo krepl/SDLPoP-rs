@@ -698,7 +698,16 @@ impl Renderer for WasmRenderer {
     }
 
     unsafe fn save_png(&mut self, _surf: *mut SDL_Surface, _path: &std::ffi::CStr) -> c_int {
-        unimplemented!("WasmRenderer::save_png")
+        // Reachable from live gameplay (F12 / Shift+F12 screenshot keys, screenshot.rs) --
+        // was a real crash before this fix. Encoding itself would be easy (the `png` crate
+        // is already a dependency, used by load_image_from_file/from_memory), but there's
+        // nowhere on this target to put the result yet: no virtual filesystem write path
+        // wired up for it (WasmFiles is unwired entirely -- see mod.rs) and no JS bridge to
+        // trigger a browser download. Fail gracefully instead of panicking; the caller
+        // (save_screenshot/save_level_screenshot, via show_result) already handles a
+        // nonzero return by logging "Error saving screenshot" instead of crashing -- same
+        // outcome a real disk-full/permission error would produce on native.
+        -1
     }
 
     unsafe fn get_error(&mut self) -> *const std::os::raw::c_char {
@@ -917,7 +926,14 @@ impl Renderer for WasmRenderer {
         SDL_Rect { x: 0, y: 0, w, h }
     }
     unsafe fn render_set_integer_scale(&mut self, _renderer: *mut crate::SDL_Renderer, _enable: bool) -> c_int {
-        unimplemented!("WasmRenderer::render_set_integer_scale")
+        // Reachable from the pause menu's "Use integer scaling" toggle (menu.rs, both
+        // turning it on and off) -- was a real crash before this fix. Same reasoning as
+        // render_set_logical_size just above: display scaling of the presented frame is a
+        // JS/CSS concern on this target (render_present hands the raw logical-size pixel
+        // buffer to JS and stops), not something this layer applies itself, so there is no
+        // real scale-mode state here to set. A no-op success return matches real SDL's own
+        // behavior when integer scaling isn't supported for the current renderer/target.
+        0
     }
 
     unsafe fn set_clip_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect) -> c_int {
@@ -1684,5 +1700,37 @@ impl FileSystem for WasmFiles {
     }
     fn file_exists(&self, _path: &str) -> bool {
         unimplemented!("WasmFiles::file_exists")
+    }
+}
+
+// Regression tests for the Phase D menu/keyboard reachability audit (2026-08-08, memory
+// project_wasm_esc_menu_crash / docs/plans/13-platform-architecture-unification.md): both
+// render_set_integer_scale (pause menu "Use integer scaling" toggle, both directions) and
+// save_png (F12/Shift+F12 screenshot keys) were unimplemented!() stubs that would have
+// panicked the first time a live user hit them, same class of bug as the original Esc
+// crash. Unlike that fix, these two don't need the browser-only scripted-input harness --
+// they're pure trait-method calls with no menu-navigation/event-loop involvement, so a
+// plain #[test] against WasmRenderer directly (compiled on native under `cfg(test)`, see
+// platform/mod.rs) is a faster, equally real regression check.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_set_integer_scale_does_not_panic_either_direction() {
+        let r = shared_renderer();
+        unsafe {
+            assert_eq!(r.render_set_integer_scale(std::ptr::null_mut(), true), 0);
+            assert_eq!(r.render_set_integer_scale(std::ptr::null_mut(), false), 0);
+        }
+    }
+
+    #[test]
+    fn save_png_fails_gracefully_instead_of_panicking() {
+        let r = shared_renderer();
+        unsafe {
+            let path = std::ffi::CString::new("screenshot.png").unwrap();
+            assert_eq!(r.save_png(std::ptr::null_mut(), &path), -1);
+        }
     }
 }
