@@ -25,36 +25,30 @@ fn main() {
     println!("cargo:rerun-if-changed=rust/src/opl3.rs");
     println!("cargo:rerun-if-changed=rust/src/midi.rs");
 
-    // wasm32-unknown-unknown has no real SDL2 to link against -- bindgen still needs the
-    // headers (on the host) to parse common.h's struct layouts, so the probe itself still
-    // runs, but with cargo_metadata(false) so it doesn't emit cargo:rustc-link-lib/-search
-    // directives that would break the wasm32 link step.
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let is_wasm = target_arch == "wasm32";
 
-    // pkg-config refuses to probe host .pc files when TARGET != HOST unless explicitly
-    // told it's OK -- we only want the include paths for bindgen to parse types.h's real
-    // `#include <SDL2/SDL.h>` (there is no wasm32 SDL2 to actually link against, hence
-    // cargo_metadata(false) above), so allowing the cross-probe here is safe.
-    if is_wasm {
-        env::set_var("PKG_CONFIG_ALLOW_CROSS", "1");
-    }
-
-    let sdl2 = pkg_config::Config::new()
-        .cargo_metadata(!is_wasm)
-        .probe("sdl2")
-        .expect("sdl2 not found via pkg-config; install libsdl2-dev");
-    let sdl2_image = pkg_config::Config::new()
-        .cargo_metadata(!is_wasm)
-        .probe("SDL2_image")
-        .expect("SDL2_image not found via pkg-config; install libsdl2-image-dev");
-
-    let include_paths: Vec<PathBuf> = sdl2
-        .include_paths
-        .iter()
-        .chain(sdl2_image.include_paths.iter())
-        .cloned()
-        .collect();
+    // wasm32-unknown-unknown never links against real SDL2 (WasmRenderer is a from-scratch
+    // reimplementation, rust/src/platform/wasm.rs) and no C sources are compiled by this
+    // build.rs at all anymore (`sources` below is empty -- every file is ported to Rust) --
+    // so the pkg-config probe below exists purely to hand bindgen real SDL2 include paths
+    // to parse types.h's `#include <SDL2/SDL.h>` chain. For wasm32 that's replaced by
+    // types.h's SDLPOP_BINDGEN_WASM_STUB guard (src/sdl_stub.h, a minimal hand-written
+    // stand-in -- see its header comment for what it covers and why), so the real probe is
+    // skipped entirely: a bare-metal wasm-only build/deploy environment shouldn't need
+    // libsdl2-dev/libsdl2-image-dev installed just so bindgen can parse a header chain the
+    // wasm build never actually needs real SDL types from.
+    let include_paths: Vec<PathBuf> = if is_wasm {
+        Vec::new()
+    } else {
+        let sdl2 = pkg_config::Config::new()
+            .probe("sdl2")
+            .expect("sdl2 not found via pkg-config; install libsdl2-dev");
+        let sdl2_image = pkg_config::Config::new()
+            .probe("SDL2_image")
+            .expect("SDL2_image not found via pkg-config; install libsdl2-image-dev");
+        sdl2.include_paths.iter().chain(sdl2_image.include_paths.iter()).cloned().collect()
+    };
 
     // Compile all C sources except main.c (Rust provides main)
     // Ported to Rust: seg004
@@ -128,14 +122,26 @@ fn main() {
     // has no real glibc/SDL2 to begin with, so there's no correct wasm32 header parse to
     // have here anyway.
     //
-    // Fix: force clang back to the *host* target explicitly when cross-compiling. This is
-    // safe because every bindgen'd SDL_* type (SDL_Surface/SDL_Window/SDL_Renderer/...) is
-    // used *only* as an opaque pointer outside `platform/sdl.rs` (which is
-    // `#[cfg(not(target_arch = "wasm32"))]` and never compiled for this target) -- nothing
-    // in the wasm32 build reads/writes one of these structs by value using bindgen's
-    // (host-derived) field offsets. If a future `platform/wasm.rs` implementation ever
-    // needs to dereference a bindgen SDL struct's fields directly, revisit this.
+    // Fix: force clang back to the *host* target explicitly when cross-compiling. Most
+    // bindgen'd SDL_* types (SDL_Surface/SDL_Window/SDL_Renderer/...) are used only as
+    // opaque pointers outside `platform/sdl.rs` (`#[cfg(not(target_arch = "wasm32"))]`,
+    // never compiled for this target), so host-vs-wasm field-offset differences don't
+    // matter for those. A few (SDL_Rect/SDL_Color/SDL_Palette/SDL_PixelFormat -- audited via
+    // grep for `SDL_Foo {` struct-literal construction across rust/src) ARE constructed by
+    // value in cross-platform code, but that's still safe here: bindgen emits one fixed
+    // Rust struct definition (field list, including any host-computed padding fields) that
+    // both targets' rustc then lays out target-natively from -- there's no real wasm32 C
+    // ABI these need to match (the wasm build never links a real C-compiled SDL2), so
+    // internal Rust-to-Rust consistency across both targets is all that's required, and
+    // that holds since both targets' bindgen invocations parse under this same host target.
     if is_wasm {
+        // See types.h's SDLPOP_BINDGEN_WASM_STUB guard / src/sdl_stub.h's header comment:
+        // routes the `#include <SDL2/SDL.h>` chain to a minimal hand-written stand-in
+        // instead of real SDL2 headers, so this parse no longer needs libsdl2-dev/
+        // libsdl2-image-dev installed at all (the pkg-config probe above is skipped
+        // entirely for wasm now).
+        builder = builder.clang_arg("-DSDLPOP_BINDGEN_WASM_STUB=1");
+
         let host = env::var("HOST").unwrap();
         builder = builder.clang_arg(format!("--target={host}"));
         // bindgen's generated `size_of::<T>() - N` self-check assertions hardcode N from

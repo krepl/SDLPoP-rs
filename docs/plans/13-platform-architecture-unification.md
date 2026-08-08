@@ -804,41 +804,47 @@ functionality gap found in the audit is fixed and live-verified, and menu-frame 
 capture coverage exists on both platforms. The one explicitly acknowledged remaining gap is
 C-oracle parity for menu frames specifically (see item 4's scope-limitation note above).
 
-## Future consideration (deferred, not scheduled): drop the SDL2 build dependency for wasm
+## Dropped the SDL2 build dependency for wasm (done, 2026-08-09)
 
-Raised 2026-08-07 (README.md review): building for `wasm32-unknown-unknown` currently still
-requires the real `SDL2`/`SDL2_image` development headers to be installed on the host, even
-though the wasm build never links against real SDL2 and `WasmRenderer` never reads or writes an
-`SDL_Surface`/`SDL_PixelFormat`/etc. by its actual field layout (every such type is used only as
-an opaque pointer outside `platform/sdl.rs`, which is `#[cfg(not(target_arch = "wasm32"))]` and
-never compiled for wasm at all — confirmed by a comment already in `build.rs`).
+Raised 2026-08-07 (README.md review), fixed 2026-08-09. Building for
+`wasm32-unknown-unknown` used to require the real `SDL2`/`SDL2_image` development headers on
+the host, purely so bindgen could parse `common.h`'s shared header chain (which unconditionally
+`#include`s `<SDL2/SDL.h>` via `types.h`) — the wasm build itself never links real SDL2.
 
-The dependency is a build-time side effect, not a real architectural need:
-`bindgen::Builder::header("src/common.h")` parses that one shared header in a single pass for
-*both* targets, to generate bindings for the thousands of other C declarations both builds
-genuinely need (game structs, globals, function signatures) — and `common.h` unconditionally
-`#include`s `<SDL2/SDL.h>` (via `types.h`). bindgen can't selectively skip a `#include` it can't
-resolve, so if the real SDL2 headers aren't on disk, the whole parse fails — wasm ends up
-needing headers on the host just to get bindgen through the file, even though the SDL-specific
-types it produces from them are then only used as inert opaque pointers on that target.
+**The audit the deferred note called for** found the original framing ("every SDL_* type is
+used only as an opaque pointer") was *not quite* right: a grep for `SDL_Foo {` struct-literal
+construction across `rust/src` turned up four types — `SDL_Rect`, `SDL_Color`, `SDL_Palette`,
+`SDL_PixelFormat` — genuinely constructed by value with named fields in cross-platform code
+(`seg000.rs`, `seg008.rs`, `seg009.rs`, `lighting.rs`, `menu.rs`, `screenshot.rs`,
+`platform/{mod,wasm}.rs`), not just held as opaque pointers. Everything else
+(`SDL_Surface`/`Window`/`Renderer`/`Texture`/`RWops`/`GameController`/`Joystick`/`Haptic`) really
+is opaque-pointer-only, confirming the rest of the original assumption.
 
-**Why this matters enough to fix eventually:** the stated goal is for the wasm build to be
-usable with minimal ceremony (e.g. cloning onto a bare server/droplet that only ever serves the
-browser build, never runs anything native) — forcing a full native GUI library's dev headers
-onto that machine for a build that never uses them at runtime is an unnecessary dependency, not
-a real requirement.
+**Fix:** `src/sdl_stub.h` (new) — a minimal, hand-written stand-in covering exactly what
+`common.h`'s parse needs: the basic `Uint8`/`Sint8`/etc. typedefs, `SDL_BYTEORDER`/
+`SDL_COMPILE_TIME_ASSERT` (which `types.h` calls for real, size-check assertions on several game
+structs), opaque forward-declarations for the pointer-only types, and real field-for-field
+copies (verified against the installed libsdl2-dev headers, SDL2 2.32) of the four by-value
+structs. `types.h` gained an `SDLPOP_BINDGEN_WASM_STUB` guard routing to this stub instead of
+the real headers; `build.rs` sets that define (and skips the `pkg_config` SDL2/SDL2_image probe
+entirely) only for the wasm32 target — the native build's bindgen parse, and the actual C
+oracle compile, are both completely unchanged.
 
-**Possible approaches, none attempted yet:**
-- Guard the `#include <SDL2/SDL.h>` in `types.h` behind a preprocessor condition bindgen can be
-  told to set only for the wasm parse (e.g. a `SDLPOP_WASM_BINDGEN` define), paired with a
-  minimal hand-written stub declaring just the SDL type *names* bindgen needs to see (no real
-  field layout required, since wasm only ever uses them as opaque pointers) so the rest of
-  `common.h` still parses cleanly.
-- Or: split the bindgen invocation itself so the wasm target parses a trimmed header that
-  doesn't reach the SDL include at all, if audit shows nothing wasm-relevant actually needs
-  bindings generated from inside the SDL-touching portion of the header chain.
+**Why the by-value structs are still safe under the existing `--target={host}` bindgen
+workaround** (forcing clang back to the host target to dodge an unrelated glibc-multilib issue
+when cross-parsing for wasm32): bindgen emits one fixed Rust struct definition per type
+(field list, including any host-computed padding), and each target's own `rustc` then lays that
+same struct out target-natively (`#[repr(C)]`) from those field declarations. There's no real
+wasm32-compiled-C ABI these need to match — the wasm build never links a real C-compiled SDL2 —
+so internal Rust-to-Rust consistency across both targets is all that's required, and that holds
+because both targets' bindgen invocations parse under the identical host target.
 
-Either way this needs a careful audit first: something in the header chain currently visible to
-bindgen might turn out to matter for wasm bindings generation in a way that isn't obvious until
-tried (e.g. a struct that embeds an `SDL_*` type by value rather than by pointer). Not scheduled
-now; a real but small piece of follow-up work.
+**Verified:** `cargo xtask verify` green end to end (native build, unit tests,
+`cargo check --target wasm32-unknown-unknown`, the full 30-replay harness, both native and wasm
+menu smoke tests — the latter two exercising the real compiled wasm binary in a browser via
+Playwright, not just confirming it builds). Directly confirmed the stub is what's actually
+used, not a silent fallback to real headers: inspected the generated
+`target/wasm32-unknown-unknown/.../out/bindings.rs` (4068 lines, vs. ~28700 for the real-SDL2
+native parse) and grepped for symbols that only exist in real SDL2 headers
+(`SDL_GL_CONTEXT_*`, `SDL_RENDERER_PRESENTVSYNC`, `SDL_HAPTIC_CONSTANT`) — none present.
+README.md's Dependencies section updated to reflect SDL2 is no longer needed for the wasm build.

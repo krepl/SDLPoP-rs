@@ -24,13 +24,20 @@ The authors of this program may be contacted at https://forum.princed.org
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
 
-#if !defined(_MSC_VER)
+#if defined(SDLPOP_BINDGEN_WASM_STUB)
+// Set only by build.rs's wasm32 bindgen invocation -- see sdl_stub.h's own header comment
+// for why: the wasm build never links real SDL2, so a bare-metal wasm-only build/deploy
+// environment shouldn't need libsdl2-dev/libsdl2-image-dev installed just so bindgen can
+// parse this shared header chain. Never defined for the actual C compile (native oracle
+// binary), which always uses real SDL2 below, same as before.
+# include "sdl_stub.h"
+#elif !defined(_MSC_VER)
 # include <SDL2/SDL.h>
 # include <SDL2/SDL_image.h>
 #else
 // These headers for SDL seem to be the pkgconfig/meson standard as per the
 // latest versions. If the old ones should be used, the ifdef must be used
-// to compare versions. 
+// to compare versions.
 # include <SDL.h>
 # include <SDL_image.h>
 #endif

@@ -36,10 +36,12 @@ cd src/build && cmake -G Ninja .. && ninja   # builds ../prince
 
 ### Dependencies
 
-* `SDL2` and `SDL2_image` development libraries: needed by all three builds, including the wasm
-  one (its headers are needed to generate Rust bindings, even though nothing links against them
-  at runtime). See [README.upstream.md's COMPILING section](README.upstream.md#compiling) for
-  per-OS install instructions.
+* `SDL2` and `SDL2_image` development libraries: needed by the native Rust build and the
+  original C build. The wasm build does *not* need them — it never links against real SDL2, and
+  a minimal stand-in header (`src/sdl_stub.h`) covers what the build needs to generate Rust
+  bindings, so a machine that only ever builds/serves the browser version needs nothing here.
+  See [README.upstream.md's COMPILING section](README.upstream.md#compiling) for per-OS install
+  instructions.
 * `wasm-bindgen-cli`, pinned version: needed to build the wasm bundle. `cargo xtask wasm-build`
   prints the install command if the installed version doesn't match.
 * Node.js and `npm install`: only needed to run the wasm regression tests, not to build or
