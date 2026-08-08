@@ -695,7 +695,34 @@ still unimplemented or behaviorally wrong on wasm. Known so far, not yet fixed:
      specific bug. Added real `setenv`/`unsetenv` and migrated every call site. Quicksave/
      quickload still don't have real persistent backing storage on wasm (`platform/wasm.rs`'s
      VFS doesn't survive a page reload — noted in Phase C) — that's separate, still open.
-   - Anything else surfaces during the audit — this list is a known-so-far floor, not a ceiling.
+   - ~~`render_set_integer_scale` panics outright~~ — **fixed, 2026-08-08, commit `4fdf86b`.**
+     Reachable from the pause menu's "Use integer scaling" toggle in both directions (turning
+     it on calls it via `window_resized()`; turning it off calls it directly). Fixed as a
+     no-op success, same reasoning as `render_set_logical_size` right above it in the source:
+     display scaling of the presented frame is a JS/CSS concern this layer never applies
+     itself (`render_present` hands the raw logical-size buffer to JS and stops), so there's
+     no real scale-mode state to set yet.
+   - ~~`save_png` panics outright~~ — **fixed, 2026-08-08, commit `4fdf86b`.** Reachable from
+     live gameplay (F12 / Shift+F12 screenshot keys), not the menu itself, but found during
+     the same audit pass. Fixed as a graceful failure return (`-1`) rather than a real PNG
+     write — encoding is easy (the `png` crate is already a dependency), but there's nowhere
+     to put the bytes yet: no VFS write path wired up and no JS bridge to trigger a browser
+     download. `save_screenshot`/`save_level_screenshot` already handle a nonzero return by
+     logging "Error saving screenshot" instead of crashing, so this is a real feature gap, not
+     a lurking crash. A follow-up (not scheduled) would wire real PNG-to-download support.
+   - Audited every other remaining `unimplemented!()` in `platform/wasm.rs` for reachability
+     from the pause menu and from live gameplay keys (2026-08-08): `present`,
+     `show_message_box`, all game-controller/joystick/haptic stubs, `WasmAudio::open`, and all
+     three `WasmFiles` methods are confirmed **dead code on wasm32** — no call path reaches
+     them (traced explicitly, not assumed; e.g. `num_joysticks()` hardcoding `0` is what keeps
+     the controller/joystick/haptic stubs unreachable, and `WasmFiles`/`WasmAudio::open` have
+     zero call sites anywhere in the crate). None are behind a compile-time target gate — they
+     genuinely could be called, they just never are by anything the wasm build's input/event
+     flow can trigger today. Leaving them as `unimplemented!()` is correct: a real caller
+     appearing later (e.g. wiring up `WasmFiles` for real persistent storage) should still
+     panic loudly rather than silently do the wrong thing.
+   - Anything else surfaces during further review — this list is a known-so-far floor, not a
+     ceiling, but item 1's concrete crash-risk findings are now all resolved.
 
 **2. Fix what should work, remove what genuinely can't (expect this to be rare).** The user's
 own expectation, and a reasonable one: "We can probably make everything work" — most of these
@@ -739,10 +766,13 @@ between:
    in item 1 — via real pixel/state comparison, the same rigor the climb z-order and RGB24 mask
    bugs were found and fixed with, not just eyeballing a screenshot.
 
-**Suggested order:** 1 (audit, cheap, mostly reading; its most concrete finding, the
-`std::env::set_var` crash risk, is already fixed) → 4's capture mechanism (needed to verify
-anything else in this phase beyond "doesn't crash") → the rest of item 1's fixes, each verified
-via 4 → 3 (mouse) → re-audit mouse-driven parity via 4 again.
+**Suggested order:** 1 (audit, cheap, mostly reading — complete as of 2026-08-08; all three
+crash-risk findings fixed: `std::env::set_var`, `render_set_integer_scale`, `save_png`, the
+last two via unit tests against `WasmRenderer` directly rather than the browser harness, since
+they're pure trait-method calls with no menu-navigation/event-loop involvement) → 4's capture
+mechanism (needed to verify anything else in this phase beyond "doesn't crash", and to
+eventually confirm the remaining item-1 gaps — `set_fullscreen`/`show_cursor` JS bridges — once
+built) → 3 (mouse) → re-audit mouse-driven parity via 4 again.
 
 ## Future consideration (deferred, not scheduled): drop the SDL2 build dependency for wasm
 
