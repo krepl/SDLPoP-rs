@@ -127,18 +127,24 @@ window.runHeadlessReplay = async function (replayVfsPath, replayBytesBase64, env
 // unchanged). argv is passed straight to run_game_with_args, e.g.
 // ['prince', 'headless', 'megahit', '3'] to match a native scripted-input invocation.
 //
-// Unlike runHeadlessReplay, this deliberately does NOT wait for EXIT_SIGNAL as the
-// success signal -- a script that opens the pause menu and never closes it again (the
-// common case; see scripts/scripted_inputs/open_menu.txt's header comment for why a
-// scripted close isn't feasible) makes the game hang forever on purpose, the same way it
-// would waiting for a real keyboard. wasm is single-threaded: once run_game_with_args is
-// called, this promise never settles and the JS event loop never gets to run anything
-// else on this page again, including a JS-side timeout -- so a hang here is only
-// detectable from OUTSIDE the page. scripts/wasm_menu_smoke_test.mjs races this call
-// against a Node-side timer instead, which works because Node's timer runs in a
-// different process from the (blocked) browser tab. Only call this for scripts you
-// expect to end this way; if a script fully exits (EXIT_SIGNAL), the promise resolves
-// normally, but that's an unusual case for this function's callers today.
+// Unlike runHeadlessReplay, this deliberately does NOT *require* EXIT_SIGNAL as the success
+// signal -- a script that opens the pause menu and never closes it again (the common case;
+// see scripts/scripted_inputs/open_menu.txt's header comment for why a scripted close wasn't
+// feasible there) makes the game hang forever on purpose, the same way it would waiting for a
+// real keyboard. wasm is single-threaded: once run_game_with_args is called, a promise that
+// never settles means the JS event loop never gets to run anything else on this page again,
+// including a JS-side timeout -- so a hang here is only detectable from OUTSIDE the page.
+// scripts/wasm_menu_smoke_test.mjs races this call against a Node-side timer instead, which
+// works because Node's timer runs in a different process from the (blocked) browser tab.
+//
+// A script CAN end with a real exit now (scripts/scripted_inputs/menu_mouse_navigation.txt,
+// Phase D item 4 -- mouse-driven menu navigation all the way to a real QUIT GAME + confirm),
+// and that path resolves normally with `env`'s output files read back via read_vfs_file,
+// mirroring runHeadlessReplay -- this is the ONLY way to retrieve POPMENUPIXELS_OUT/etc.
+// contents from a scripted-input run on wasm: read_vfs_file is itself a wasm_bindgen call,
+// and nothing (including it) can run again on this page once run_game_with_args is
+// permanently blocked inside a script that never exits, so a hanging script's caller must
+// still race this promise externally and cannot recover its output afterward.
 window.runHeadlessScriptedInput = async function (argv, scriptText, env) {
     await init();
 
@@ -169,12 +175,20 @@ window.runHeadlessScriptedInput = async function (argv, scriptText, env) {
             } else {
                 resume_game_after_restart();
             }
-            return { exited: true };
+            break; // pop_main() itself returned -- not the usual EXIT_SIGNAL path, but still "exited"
         } catch (e) {
-            if (isExitSignal(e)) return { exited: true };
+            if (isExitSignal(e)) break;
             if (!isRestartSignal(e)) throw e;
         }
     }
+
+    const files = {};
+    for (const [k, v] of Object.entries(env || {})) {
+        if (k.endsWith('_OUT')) {
+            files[k] = bytesToBase64(read_vfs_file(v));
+        }
+    }
+    return { exited: true, files };
 };
 
 window.__headlessReady = true;

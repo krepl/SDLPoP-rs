@@ -380,6 +380,67 @@ pub unsafe extern "C" fn dump_frame_pixels() {
     fflush(pixels_fp);
 }
 
+static mut menu_pixels_fp: *mut FILE = core::ptr::null_mut();
+static mut menu_pixels_initialized: c_int = 0;
+static mut menu_frame_counter: u32 = 0;
+
+/// [`dump_frame_pixels`]'s counterpart for the pause menu specifically (Phase D item 4,
+/// `docs/plans/13-platform-architecture-unification.md`). The outer per-tick capture points
+/// (`dump_frame_pixels`/`dump_frame_state`) are only ever reached from `play_level_2_impl`'s
+/// per-tick loop -- while the menu is open, execution is inside `do_paused`'s own blocking
+/// inner loop (`draw_menu`), which never reaches that call site at all, so before this there
+/// was no way to capture "what does the menu actually look like" on either build. Appends one
+/// `"<menu_frame> <hash>\n"` line to `POPMENUPIXELS_OUT`, same FNV-1a-over-`get_final_surface`
+/// hash `dump_frame_pixels` uses, so the two are byte-comparable in method even though they're
+/// separate files -- `menu_frame_counter` is its own monotonic sequence, independent of
+/// `tick_counter` (which is frozen solid the whole time the menu is open), incrementing once
+/// per call, i.e. once per `draw_menu` redraw (called right after `update_screen()`, so only
+/// on iterations that actually redrew, not every blocked poll while idling for input).
+pub(crate) unsafe fn dump_menu_frame_pixels() {
+    if menu_pixels_initialized == 0 {
+        menu_pixels_initialized = 1;
+        let path = getenv(b"POPMENUPIXELS_OUT\0".as_ptr() as *const c_char);
+        if path.is_null() {
+            return;
+        }
+        menu_pixels_fp = fopen(path, b"wb\0".as_ptr() as *const c_char);
+        if menu_pixels_fp.is_null() {
+            eprintln!(
+                "state_dump: could not open {}",
+                std::ffi::CStr::from_ptr(path).to_string_lossy()
+            );
+            return;
+        }
+    }
+    if menu_pixels_fp.is_null() {
+        return;
+    }
+
+    let surf = get_final_surface();
+    let renderer = crate::platform::sdl::shared_renderer();
+    let (w, h) = renderer.surface_size(surf);
+    let pitch = renderer.surface_pitch(surf);
+    let bpp = renderer.surface_format_info(surf).bytes_per_pixel as usize;
+    let pixels = renderer.surface_pixels(surf) as *const u8;
+    let row_len = w as usize * bpp;
+
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for row in 0..h as isize {
+        let row_ptr = pixels.offset(row * pitch as isize);
+        let row_bytes = core::slice::from_raw_parts(row_ptr, row_len);
+        for &b in row_bytes {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+
+    let line = format!("{} {:016x}\n", menu_frame_counter, hash);
+    fwrite(line.as_ptr() as *const c_void, 1, line.len(), menu_pixels_fp);
+    fflush(menu_pixels_fp);
+    dump_menu_frame_raw();
+    menu_frame_counter = menu_frame_counter.wrapping_add(1);
+}
+
 /// One-shot raw-pixel dump for visual debugging: when `POPRAWFRAME_TICK` names the tick
 /// about to be rendered, writes `"<w> <h> <bpp>\n"` followed by the raw (unhashed) bytes
 /// of [`get_final_surface`] to `POPRAWFRAME_OUT` and never fires again this run. Exists
@@ -408,6 +469,55 @@ pub unsafe extern "C" fn dump_frame_raw() {
     done = true;
 
     let path = getenv(b"POPRAWFRAME_OUT\0".as_ptr() as *const c_char);
+    if path.is_null() {
+        return;
+    }
+    let fp = fopen(path, b"wb\0".as_ptr() as *const c_char);
+    if fp.is_null() {
+        return;
+    }
+
+    let surf = get_final_surface();
+    let renderer = crate::platform::sdl::shared_renderer();
+    let (w, h) = renderer.surface_size(surf);
+    let pitch = renderer.surface_pitch(surf);
+    let bpp = renderer.surface_format_info(surf).bytes_per_pixel as usize;
+    let pixels = renderer.surface_pixels(surf) as *const u8;
+    let row_len = w as usize * bpp;
+
+    let header = format!("{} {} {}\n", w, h, bpp);
+    fwrite(header.as_ptr() as *const c_void, 1, header.len(), fp);
+    for row in 0..h as isize {
+        let row_ptr = pixels.offset(row * pitch as isize);
+        fwrite(row_ptr as *const c_void, row_len, 1, fp);
+    }
+    fflush(fp);
+    fclose(fp);
+}
+
+/// [`dump_frame_raw`]'s counterpart for [`dump_menu_frame_pixels`]: when `POPMENURAWFRAME_TICK`
+/// names a `menu_frame_counter` value, writes that menu frame's raw bytes to
+/// `POPMENURAWFRAME_OUT` (same `"<w> <h> <bpp>\n"` + raw-bytes format) the next time
+/// `dump_menu_frame_pixels` is called with that counter value. A manual diagnostic tool, not
+/// part of the regular harness -- for decoding *why* two `POPMENUPIXELS_OUT` hashes disagree,
+/// the same role `dump_frame_raw` plays for `POPPIXELS_OUT`.
+unsafe fn dump_menu_frame_raw() {
+    static mut done: bool = false;
+    static mut target: i64 = -2; // -2: not yet looked up; -1: no target set
+
+    if done {
+        return;
+    }
+    if target == -2 {
+        let t = getenv(b"POPMENURAWFRAME_TICK\0".as_ptr() as *const c_char);
+        target = if t.is_null() { -1 } else { atoi(t) as i64 };
+    }
+    if target < 0 || menu_frame_counter as i64 != target {
+        return;
+    }
+    done = true;
+
+    let path = getenv(b"POPMENURAWFRAME_OUT\0".as_ptr() as *const c_char);
     if path.is_null() {
         return;
     }

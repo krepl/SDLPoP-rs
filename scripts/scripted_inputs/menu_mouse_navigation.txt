@@ -1,0 +1,36 @@
+# Real mouse-driven pause-menu navigation, exercised end to end: open the menu, hover and
+# click SETTINGS, back out with Escape, hover and click QUIT GAME, hover and click OK on the
+# confirmation dialog -- ending in a genuine process exit (SDLPOP_EXIT), unlike open_menu.txt
+# (which deliberately hangs open forever -- see that file's header for why a scripted close
+# wasn't feasible there). This one *can* close and exit cleanly because mouse-driven
+# navigation actually works now (Phase D item 3, docs/plans/13-platform-architecture-
+# unification.md), and a clean exit matters here specifically: on wasm, run_game_with_args()
+# never returns to JS until the process actually exits (EXIT_SIGNAL) -- read_vfs_file can't
+# retrieve POPMENUPIXELS_OUT's contents from a script that just hangs forever the way
+# open_menu.txt's does, since wasm is single-threaded and a permanently-blocked call never
+# yields back to JS at all.
+#
+# Coordinates are raw mouse_state() values (640x400 output pixel space, matching this game's
+# default window/canvas size on both native and wasm -- see render_get_scale's doc comment,
+# platform/*.rs, for why a raw click coordinate needs dividing by 2 to land in the 320x200
+# logical space menu item hit-rects are defined in; empirically confirmed against real pause-
+# menu/settings-menu/confirm-dialog layouts during Phase D item 4's development, both via a
+# live Playwright session (wasm) and this same scripted-input mechanism (native)).
+#
+# The "menu poll counter" mechanism (inject_scripted_input, seg009.rs) is what makes this
+# possible at all: the pause menu's own inner loop (draw_menu) freezes the outer per-tick
+# clock scripted input is normally keyed on solid for as long as it's open, so without it
+# every event past the menu opening would land on the exact same frozen tick and fire in one
+# indistinguishable burst. Each tick number below past "0" is really "the Nth poll since the
+# menu opened", not a real simulated game tick -- see that mechanism's doc comment for why
+# this is backward compatible with every existing (menu-free) scripted-input script.
+0 escape down
+0 escape up
+1 mousemove 320 220
+2 mouseleft down
+3 escape down
+3 escape up
+4 mousemove 320 270
+5 mouseleft down
+6 mousemove 381 268
+7 mouseleft down

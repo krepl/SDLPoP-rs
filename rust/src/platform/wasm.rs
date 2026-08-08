@@ -1452,12 +1452,28 @@ impl WasmRenderer {
                     };
                     let (dr, dg, db) = (dchannel(d_rmask, d_rshift), dchannel(d_gmask, d_gshift), dchannel(d_bmask, d_bshift));
                     let da = if d_amask != 0 { ((draw >> d_ashift) & 0xFF) as u8 } else { 255 };
-                    let af = a as u32;
-                    let over = |sc: u8, dc: u8| (((sc as u32 * af) + (dc as u32 * (255 - af))) / 255) as u8;
+                    // Found during the Phase D item 4 menu-frame capture followup
+                    // (2026-08-08): a "same-value alpha over" formula, mathematically
+                    // equivalent to real SDL's blend in exact arithmetic but NOT bit-exact
+                    // with it under integer truncation -- confirmed by comparing a native vs
+                    // wasm menu-frame pixel dump byte-for-byte, which showed the overwhelming
+                    // majority of pixels off by exactly 1 (near-invisible visually, but a
+                    // real, systematic divergence, the same class of bug the RGB24 mask fix
+                    // and climb z-order fix were). Real SDL2's actual blend macro
+                    // (SDL_blit.h's ALPHA_BLEND) computes the *delta* first --
+                    // `dst + (src - dst) * alpha / 255` -- not `(src*alpha + dst*(255-alpha))
+                    // / 255`; C's truncating integer division rounds these two algebraically-
+                    // equivalent forms differently, so matching SDL bit-for-bit means matching
+                    // its exact operation order, not just its exact-arithmetic result. This
+                    // code path was never exercised by the regular per-tick gameplay harness
+                    // (draw_rect_with_alpha, the pause menu's dimmed background, is a menu-
+                    // only call site) -- see project_wasm_menu_alpha_blend_bug memory.
+                    let af = a as i32;
+                    let over = |sc: u8, dc: u8| ((dc as i32) + ((sc as i32 - dc as i32) * af) / 255) as u8;
                     r = over(r, dr);
                     g = over(g, dg);
                     b = over(b, db);
-                    a = (af + (da as u32 * (255 - af)) / 255).min(255) as u8;
+                    a = (af as u32 + ((255 - af as u32) * da as u32) / 255).min(255) as u8;
                 }
 
                 let packed = pack_pixel(d_rmask, d_gmask, d_bmask, d_amask, r, g, b, a);
@@ -1773,6 +1789,16 @@ impl InputSource for WasmInput {
     fn mouse_state(&self) -> (c_int, c_int, bool, bool) {
         let m = mouse_state_mut();
         (m.x, m.y, m.left, m.right)
+    }
+    fn warp_mouse(&mut self, x: c_int, y: c_int) {
+        // Only meaningful for scripted-input tests (see the trait doc comment) -- a live
+        // browser session's real mousemove already writes position into the shared buffer,
+        // which sync_shared_input copies into this same MouseState on every poll_event; this
+        // just sets it directly. Not overwritten by a live session's actual mouse activity
+        // unless/until the next real mousemove event arrives, same as real SDL_WarpMouseInWindow.
+        let m = mouse_state_mut();
+        m.x = x;
+        m.y = y;
     }
     fn start_text_input(&mut self, _x: c_int, _y: c_int, _w: c_int, _h: c_int) {
         // IME/on-screen-keyboard hinting has no equivalent worth implementing yet --

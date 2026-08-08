@@ -2524,6 +2524,7 @@ pub unsafe extern "C" fn draw_menu() {
         textstate.ptr_font = saved_font;
         if !need_close_menu {
             update_screen();
+            crate::state_dump::dump_menu_frame_pixels();
         }
 
         need_full_menu_redraw_count -= 1;

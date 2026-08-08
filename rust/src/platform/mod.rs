@@ -268,6 +268,16 @@ pub trait InputSource {
     /// Raw scancode-indexed key-down state (`SDL_GetKeyboardState` today).
     fn key_state(&self, scancode: c_int) -> bool;
     fn mouse_state(&self) -> (c_int, c_int, bool, bool);
+    /// Moves the tracked mouse position, for scripted-input testing only (`seg009.rs`'s
+    /// `inject_scripted_input`, `mousemove` script lines). Real interactive input never calls
+    /// this -- native SDL tracks real OS mouse motion internally (`SDL_GetMouseState`), and a
+    /// browser's real `mousemove` writes straight into the shared input buffer -- both bypass
+    /// this method entirely. It exists because neither of those paths can be driven
+    /// synthetically: pushing a raw `SDL_MOUSEMOTION` event via `Renderer::push_event` does
+    /// NOT update what `SDL_GetMouseState` returns (confirmed empirically -- real SDL updates
+    /// its internal mouse-position cache via `SDL_SendMouseMotion`, not generic event
+    /// delivery), so scripted tests need a real position-setting primitive instead.
+    fn warp_mouse(&mut self, x: c_int, y: c_int);
     fn start_text_input(&mut self, x: c_int, y: c_int, w: c_int, h: c_int);
     fn stop_text_input(&mut self);
     /// One-shot timer (the level-skip shift-key debounce is the only current caller --

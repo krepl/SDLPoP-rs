@@ -94,6 +94,22 @@ pub fn wasm_menu_smoke_test(root: &Path) -> Result<(), String> {
     )
 }
 
+pub fn menu_mouse_navigation_test(root: &Path) -> Result<(), String> {
+    run_status(
+        Command::new(script(root, "menu_mouse_navigation_test.sh")).current_dir(root),
+        "scripts/menu_mouse_navigation_test.sh",
+    )
+}
+
+pub fn wasm_menu_mouse_navigation_test(root: &Path) -> Result<(), String> {
+    run_status(
+        Command::new("node")
+            .arg(script(root, "wasm_menu_mouse_navigation_test.mjs"))
+            .current_dir(root),
+        "scripts/wasm_menu_mouse_navigation_test.mjs",
+    )
+}
+
 /// Confirms `node` and the Playwright package are actually available before trying to run
 /// anything that needs them, with an error message that names the exact fix -- the failure
 /// mode without this check is a much less legible `Error: Cannot find module 'playwright'`
@@ -127,8 +143,9 @@ fn check_wasm_test_deps(root: &Path) -> Result<(), String> {
 
 /// `cargo xtask wasm-verify`: dependency check, then a fresh wasm build (same as `wasm-build`
 /// -- the wasm tests need current `web/pkg/`, not whatever was last built), then the wasm
-/// test suite. Currently just `wasm_menu_smoke_test`; add further wasm-only regression tests
-/// here as they're built (see docs/plans/13-platform-architecture-unification.md's Phase D).
+/// test suite (`wasm_menu_smoke_test`, `wasm_menu_mouse_navigation_test`); add further
+/// wasm-only regression tests here as they're built (see
+/// docs/plans/13-platform-architecture-unification.md's Phase D).
 /// Deliberately does NOT include the full native-vs-wasm pixel-hash sweep
 /// (`scripts/wasm_pixel_harness.mjs` run across all golden replays) -- that takes minutes
 /// (a headless Chromium launch + full asset preload per replay), appropriate for an
@@ -136,7 +153,8 @@ fn check_wasm_test_deps(root: &Path) -> Result<(), String> {
 pub fn wasm_verify(root: &Path) -> Result<(), String> {
     check_wasm_test_deps(root)?;
     crate::wasm::build(root)?;
-    wasm_menu_smoke_test(root)
+    wasm_menu_smoke_test(root)?;
+    wasm_menu_mouse_navigation_test(root)
 }
 
 pub fn quicksave_fixture(root: &Path) -> Result<(), String> {

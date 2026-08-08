@@ -4492,6 +4492,9 @@ unsafe fn toggle_fullscreen() {
 //
 // Script format (path from the POPTRACE_INPUT env var, one event per line):
 //     <tick> <key> <down|up>
+//     <tick> mousemove <x> <y>
+//     <tick> mouseleft <down|up>
+//     <tick> mouseright <down|up>
 //     # blank lines and lines starting with '#' are ignored
 // <tick> is the same per-simulation-tick clock the POPTRACE_OUT trace uses
 // (state_dump.rs's tick_counter, exposed via next_tick()) -- NOT a count of
@@ -4500,8 +4503,21 @@ unsafe fn toggle_fullscreen() {
 // instead keeps a script's behavior identical regardless of how fast the
 // machine running it is.
 // <key> is one of: left right up down shift lshift rshift space return escape
+//
+// `mousemove` sets the tracked mouse position directly (`InputSource::warp_mouse` -- see its
+// doc comment for why a pushed SDL_MOUSEMOTION event can't do this on native). `mouseleft`/
+// `mouseright` only need a `down` line to have an effect: menu.rs's mouse_clicked/
+// mouse_button_clicked_right are set from the discrete SDL_MOUSEBUTTONDOWN event alone (real
+// SDL never delivers/consumes a corresponding BUTTONUP for this codebase's purposes --
+// confirmed by grep, process_events has no SDL_MOUSEBUTTONUP arm), so `up` lines exist only
+// for script readability/symmetry with the `<key> down/up` pairs and inject nothing.
 // ============================================================================
-static mut SCRIPT_EVENTS: Vec<(u32, c_int, bool)> = Vec::new();
+enum ScriptedEvent {
+    Key { scancode: c_int, down: bool },
+    MouseMove { x: c_int, y: c_int },
+    MouseButton { button: u8 },
+}
+static mut SCRIPT_EVENTS: Vec<(u32, ScriptedEvent)> = Vec::new();
 static mut SCRIPT_LOADED: bool = false;
 static mut SCRIPT_INDEX: usize = 0;
 
@@ -4559,24 +4575,48 @@ unsafe fn load_scripted_input() {
             continue;
         }
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() != 3 {
-            eprintln!("scripted_input: {}:{}: expected '<tick> <key> <down|up>'", path, lineno + 1);
-            continue;
-        }
-        let tick = match parts[0].parse::<u32>() {
-            Ok(t) => t,
-            Err(_) => { eprintln!("scripted_input: {}:{}: bad tick number", path, lineno + 1); continue; }
-        };
-        let Some(scancode) = scancode_from_key_name(parts[1]) else {
-            eprintln!("scripted_input: {}:{}: unknown key name '{}'", path, lineno + 1, parts[1]);
+        let Some(tick) = parts.first().and_then(|s| s.parse::<u32>().ok()) else {
+            eprintln!("scripted_input: {}:{}: bad tick number", path, lineno + 1);
             continue;
         };
-        let down = match parts[2] {
-            "down" => true,
-            "up" => false,
-            _ => { eprintln!("scripted_input: {}:{}: expected 'down' or 'up'", path, lineno + 1); continue; }
+        let event = match parts.get(1).copied() {
+            Some("mousemove") => {
+                let (Some(x), Some(y)) = (
+                    parts.get(2).and_then(|s| s.parse::<c_int>().ok()),
+                    parts.get(3).and_then(|s| s.parse::<c_int>().ok()),
+                ) else {
+                    eprintln!("scripted_input: {}:{}: expected '<tick> mousemove <x> <y>'", path, lineno + 1);
+                    continue;
+                };
+                ScriptedEvent::MouseMove { x, y }
+            }
+            Some(name @ ("mouseleft" | "mouseright")) => {
+                match parts.get(2).copied() {
+                    Some("down") => ScriptedEvent::MouseButton {
+                        button: if name == "mouseleft" { SDL_BUTTON_LEFT } else { SDL_BUTTON_RIGHT },
+                    },
+                    Some("up") => continue, // no event to inject -- see the format doc comment
+                    _ => { eprintln!("scripted_input: {}:{}: expected 'down' or 'up'", path, lineno + 1); continue; }
+                }
+            }
+            Some(key_name) => {
+                let Some(scancode) = scancode_from_key_name(key_name) else {
+                    eprintln!("scripted_input: {}:{}: unknown key name '{}'", path, lineno + 1, key_name);
+                    continue;
+                };
+                let down = match parts.get(2).copied() {
+                    Some("down") => true,
+                    Some("up") => false,
+                    _ => { eprintln!("scripted_input: {}:{}: expected 'down' or 'up'", path, lineno + 1); continue; }
+                };
+                ScriptedEvent::Key { scancode, down }
+            }
+            None => {
+                eprintln!("scripted_input: {}:{}: expected '<tick> <key> <down|up>'", path, lineno + 1);
+                continue;
+            }
         };
-        SCRIPT_EVENTS.push((tick, scancode, down));
+        SCRIPT_EVENTS.push((tick, event));
     }
     SCRIPT_EVENTS.sort_by_key(|e| e.0);
 }
@@ -4594,21 +4634,60 @@ unsafe fn inject_scripted_input() {
     if SCRIPT_EVENTS.is_empty() {
         return;
     }
-    let tick = crate::state_dump::next_tick();
+    // The pause menu's own inner loop (draw_menu) blocks the outer per-tick loop for as long
+    // as it's open, freezing next_tick() solid -- so a menu-navigation script (open, click,
+    // click, close) could never schedule more than one action, all of it landing on whatever
+    // tick the menu happened to open at (see project_wasm_esc_menu_crash memory / the
+    // open_menu.txt header for the original discovery of this). MENU_POLL_COUNTER gives
+    // menu-internal scripts their own advancing clock riding on top of the frozen tick:
+    // it's 0 whenever the menu is closed (so effective_tick == next_tick() exactly,
+    // identical to every existing gameplay script's behavior -- nothing here changes outside
+    // a menu), and increments by 1 on every process_events() call while the menu is open
+    // (draw_menu calls process_events() once per loop iteration), letting a script simply
+    // keep counting up ticks past the menu's opening tick to schedule a sequence of steps.
+    static mut MENU_POLL_COUNTER: u32 = 0;
+    if is_menu_shown != 0 {
+        MENU_POLL_COUNTER += 1;
+    } else {
+        MENU_POLL_COUNTER = 0;
+    }
+    let tick = crate::state_dump::next_tick() + MENU_POLL_COUNTER;
     while SCRIPT_INDEX < SCRIPT_EVENTS.len() && SCRIPT_EVENTS[SCRIPT_INDEX].0 <= tick {
-        let (_, scancode, down) = SCRIPT_EVENTS[SCRIPT_INDEX];
-        let mut event: SDL_Event = core::mem::zeroed();
-        event.key = SDL_KeyboardEvent {
-            type_: if down { SDL_KEYDOWN } else { SDL_KEYUP },
-            timestamp: 0,
-            windowID: 0,
-            state: if down { 1 } else { 0 },
-            repeat: 0,
-            padding2: 0,
-            padding3: 0,
-            keysym: SDL_Keysym { scancode: scancode as u32, sym: 0, r#mod: 0, unused: 0 },
-        };
-        crate::platform::sdl::shared_renderer().push_event(&mut event as *mut SDL_Event as *mut c_void);
+        match &SCRIPT_EVENTS[SCRIPT_INDEX].1 {
+            ScriptedEvent::Key { scancode, down } => {
+                let mut event: SDL_Event = core::mem::zeroed();
+                event.key = SDL_KeyboardEvent {
+                    type_: if *down { SDL_KEYDOWN } else { SDL_KEYUP },
+                    timestamp: 0,
+                    windowID: 0,
+                    state: if *down { 1 } else { 0 },
+                    repeat: 0,
+                    padding2: 0,
+                    padding3: 0,
+                    keysym: SDL_Keysym { scancode: *scancode as u32, sym: 0, r#mod: 0, unused: 0 },
+                };
+                crate::platform::sdl::shared_renderer().push_event(&mut event as *mut SDL_Event as *mut c_void);
+            }
+            ScriptedEvent::MouseMove { x, y } => {
+                crate::platform::sdl::shared_input().warp_mouse(*x, *y);
+            }
+            ScriptedEvent::MouseButton { button } => {
+                let mut event: SDL_Event = core::mem::zeroed();
+                event.button = SDL_MouseButtonEvent {
+                    type_: SDL_MOUSEBUTTONDOWN,
+                    timestamp: 0,
+                    windowID: 0,
+                    which: 0,
+                    button: *button,
+                    state: 1,
+                    clicks: 1,
+                    padding1: 0,
+                    x: 0,
+                    y: 0,
+                };
+                crate::platform::sdl::shared_renderer().push_event(&mut event as *mut SDL_Event as *mut c_void);
+            }
+        }
         SCRIPT_INDEX += 1;
     }
 }

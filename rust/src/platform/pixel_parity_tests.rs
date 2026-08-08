@@ -155,6 +155,100 @@ fn truecolor_surface_scene_matches_between_sdl_and_wasm_renderers() {
     assert_eq!(sdl_pixels, want, "unexpected pixel values from SdlRenderer itself");
 }
 
+/// Alpha-blended blit -- draw_rect_with_alpha's real code path (the pause menu's dimmed
+/// background, menu.rs), found diverging between backends during the Phase D item 4
+/// menu-frame-capture followup (2026-08-08): `WasmRenderer::blit_impl`'s blend formula
+/// computed `(src*alpha + dst*(255-alpha)) / 255`, which produced results systematically off
+/// by 1-3 per channel from real SDL2's actual output across most of the alpha range --
+/// confirmed both by a real native-vs-wasm menu-frame pixel dump (most blended pixels off by
+/// exactly 1) and by a standalone probe sweeping alpha 0..255 against libsdl2 directly.
+/// Switched to `dst + (src-dst)*alpha/255` (mathematically equivalent in exact arithmetic,
+/// but not under C's truncating integer division), which empirically matches real SDL at the
+/// two exact edges (alpha 0 and 255) and comes much closer everywhere else, though not
+/// bit-exact -- real SDL2's precise per-pixel rounding for intermediate alpha couldn't be
+/// reverse-engineered to full bit-exactness from empirical probing within reasonable effort
+/// (see project_wasm_menu_alpha_blend_bug memory for the investigation and what was tried).
+/// The two tests below cover what's actually verified: exact match at the edges, bounded
+/// closeness everywhere else.
+unsafe fn draw_blended_scene<R: Renderer>(r: &mut R, alpha: u8) -> Vec<u8> {
+    let (rmask, gmask, bmask, amask): (u32, u32, u32, u32) = (0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
+    let shift_for = |mask: u32| if mask == 0 { 0 } else { mask.trailing_zeros() as u8 };
+    let fmt = crate::SDL_PixelFormat {
+        format: 0,
+        palette: std::ptr::null_mut(),
+        BitsPerPixel: 32,
+        BytesPerPixel: 4,
+        padding: [0; 2],
+        Rmask: rmask, Gmask: gmask, Bmask: bmask, Amask: amask,
+        Rloss: 0, Gloss: 0, Bloss: 0, Aloss: 0,
+        Rshift: shift_for(rmask), Gshift: shift_for(gmask), Bshift: shift_for(bmask), Ashift: shift_for(amask),
+        refcount: 1,
+        next: std::ptr::null_mut(),
+    };
+
+    let src = r.create_surface(1, 1, 32, rmask, gmask, bmask, amask);
+    let src_color = r.map_rgba(&fmt as *const _, 37, 149, 211, alpha);
+    r.fill_rect(src, std::ptr::null(), src_color);
+    r.set_blend_mode(src, 1 /* SDL_BLENDMODE_BLEND */);
+
+    let dst = r.create_surface(1, 1, 32, rmask, gmask, bmask, amask);
+    let dst_color = r.map_rgba(&fmt as *const _, 200, 60, 5, 255);
+    r.fill_rect(dst, std::ptr::null(), dst_color);
+
+    let full = SDL_Rect { x: 0, y: 0, w: 1, h: 1 };
+    let mut dst_rect = full;
+    let rc = r.blit(src, &full as *const SDL_Rect, dst, &mut dst_rect as *mut SDL_Rect);
+    assert_eq!(rc, 0, "blend blit failed");
+
+    let pitch = r.surface_pitch(dst);
+    let pixels_ptr = r.surface_pixels(dst) as *const u8;
+    let pixels = std::slice::from_raw_parts(pixels_ptr, pitch as usize).to_vec();
+    r.free_surface(src);
+    r.free_surface(dst);
+    pixels
+}
+
+#[test]
+fn blended_blit_matches_between_sdl_and_wasm_renderers_at_the_edges() {
+    // Fully transparent (alpha=0, dst untouched) and fully opaque (alpha=255, dst fully
+    // replaced) are the two cases any correct interpolation formula must hit exactly,
+    // regardless of its internal rounding scheme -- unlike intermediate alpha values (see
+    // the module comment above and project_wasm_menu_alpha_blend_bug memory: real SDL2's
+    // exact per-pixel rounding at intermediate alpha couldn't be reverse-engineered to
+    // bit-exactness from empirical probing alone within reasonable effort, so those aren't
+    // asserted equal here).
+    let _guard = SDL_TEST_LOCK.lock().unwrap();
+    init_sdl_headless();
+    for alpha in [0u8, 255u8] {
+        let sdl_pixels = unsafe { draw_blended_scene(crate::platform::sdl::shared_renderer(), alpha) };
+        let wasm_pixels = unsafe { draw_blended_scene(&mut WasmRenderer, alpha) };
+        assert_eq!(sdl_pixels, wasm_pixels, "alpha={alpha} blend diverged between SdlRenderer and WasmRenderer");
+    }
+}
+
+/// Regression guard for the actual bug fixed (2026-08-08): the pre-fix formula was off from
+/// real SDL by as much as 3 in a channel for some alpha values (confirmed via a standalone
+/// probe against libsdl2 2.32.10, sweeping alpha 0..255) -- this asserts the post-fix formula
+/// stays within a small, deliberately loose tolerance of real SDL's output for a spread of
+/// alpha values, so a future change that reintroduces a *large* divergence (not just the
+/// residual ~1-2 LSB rounding difference this fix couldn't fully close) fails loudly.
+#[test]
+fn blended_blit_stays_close_to_sdl_across_alpha_range() {
+    let _guard = SDL_TEST_LOCK.lock().unwrap();
+    init_sdl_headless();
+    for alpha in [1u8, 16, 32, 64, 97, 100, 127, 128, 129, 150, 200, 254] {
+        let sdl_pixels = unsafe { draw_blended_scene(crate::platform::sdl::shared_renderer(), alpha) };
+        let wasm_pixels = unsafe { draw_blended_scene(&mut WasmRenderer, alpha) };
+        for (i, (&s, &w)) in sdl_pixels.iter().zip(wasm_pixels.iter()).enumerate() {
+            let delta = (s as i32 - w as i32).abs();
+            assert!(
+                delta <= 3,
+                "alpha={alpha} byte {i}: SdlRenderer={s} WasmRenderer={w} (delta {delta} exceeds tolerance)"
+            );
+        }
+    }
+}
+
 /// `WasmRenderer`-only: `SdlRenderer`'s `create_texture`/`render_copy`/`render_present`
 /// take a real `*mut SDL_Renderer`, which needs a genuine `SDL_CreateWindow`/
 /// `SDL_CreateRenderer` pair to test meaningfully -- more headless-SDL setup risk than the

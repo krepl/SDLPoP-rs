@@ -664,7 +664,7 @@ maintainable code without sacrificing native fidelity. This is real, valuable fo
 if it turns out clean — but it's a windowing-layer replacement, not a rendering-semantics one,
 and should be scoped and decided on its own once there's a working baseline to compare against.
 
-## Phase D — Menu/input completeness for wasm (items 1-3 done, item 4 open)
+## Phase D — Menu/input completeness for wasm (items 1-4 substantively done; C-oracle parity for menu frames is the one open gap)
 
 Prompted by the Esc-menu crash (2026-08-06, commit `d20c68e`, memory
 `project_wasm_esc_menu_crash`): nobody had opened the pause menu in the wasm build before a
@@ -755,39 +755,54 @@ confirmation dialog in a real browser session, not just unit tests. Re-running t
 parity audit (this item's own last sentence, previously) folded into that same live-testing
 pass — no further gaps found.
 
-**4. Native-vs-wasm comparison coverage for menu frames specifically.** The pixel-hash harness
-(`traces/pixels/`) and the wasm pixel-comparison tooling (`scripts/wasm_pixel_harness.mjs`,
-`dump_frame_raw`) both only ever capture frames from the *outer* per-tick loop
-(`dump_frame_pixels`/`dump_frame_state`, called from `play_level_2_impl` after `play_frame()`
-returns) — while the pause menu is open, execution is inside `do_paused()`'s own blocking
-inner loop (`draw_menu`), which never reaches that call site at all (this is also *why* the
-Esc-crash regression test can't cleanly close the menu again — see `open_menu.txt`'s header).
-So today there is **no** pixel/state capture mechanism for "what does the menu actually look
-like" on either build, native or wasm — the new regression test only proves "doesn't crash,"
-not "renders correctly" or "looks the same as native." Two viable directions, not yet decided
-between:
-   - Add a parallel capture call inside `draw_menu`'s loop (or wherever it redraws), gated the
-     same way (`POPPIXELS_OUT`/`POPRAWFRAME_TICK`-style), producing its own tick-like counter
-     independent of the frozen outer `tick_counter` so menu frames get their own comparable
-     sequence.
-   - Or: since the menu can't be scripted to close cleanly via keyboard today, extend the
-     scripted-input mechanism (or add a dedicated test-only escape hatch) enough to script a
-     *specific* sequence of menu navigation (open → down → down → select → back → close) once
-     mouse/keyboard-in-menu is fully audited (item 1) and reliable, capturing frames along the
-     way. This is more work but gives real behavioral parity coverage, not just "didn't crash."
+**4. Native-vs-wasm comparison coverage for menu frames specifically.** ~~Built, 2026-08-08.~~
+Chose the "script a specific navigation sequence" direction (user's explicit choice over the
+simpler parallel-capture-only alternative), which needed more supporting infrastructure than
+either original option anticipated:
+   - `InputSource::warp_mouse` (`platform/mod.rs`/`sdl.rs`/`wasm.rs`): scripted mouse
+     *position* needs a real primitive distinct from event injection — pushing a synthetic
+     `SDL_MOUSEMOTION` event does NOT update what real SDL's `SDL_GetMouseState` returns
+     (confirmed via a standalone `sdl2-sys` probe), so native uses `SDL_WarpMouseInWindow`
+     (verified working even under `SDL_VIDEODRIVER=dummy`, the harness's real environment).
+   - The scripted-input format gained `mousemove <x> <y>` / `mouseleft`/`mouseright
+     <down|up>` lines (`seg009.rs`), and a `MENU_POLL_COUNTER` so a script can schedule more
+     than one action once inside the menu — its own frozen-tick problem (the reason a
+     scripted close was originally thought infeasible at all) turned out to need its own
+     small fix, not just working mouse input.
+   - `dump_menu_frame_pixels`/`dump_menu_frame_raw` (`state_dump.rs`), called from
+     `draw_menu` right after `update_screen()`: `POPMENUPIXELS_OUT`/`POPMENURAWFRAME_OUT`,
+     siblings of the existing per-tick dump functions.
+   - `scripts/scripted_inputs/menu_mouse_navigation.txt`: a real navigation — open, click
+     Settings, back out, click Quit Game, click OK — ending in a genuine process exit (needed
+     for the wasm side specifically: `runHeadlessScriptedInput` can only retrieve captured
+     output via a script that actually exits, since wasm is single-threaded and a hung script
+     leaves the tab permanently unable to run any further JS at all, including the readback
+     call itself).
+   - Wired into the harness: `scripts/menu_mouse_navigation_test.sh` (native,
+     `run_harness.sh`'s default flow) and `scripts/wasm_menu_mouse_navigation_test.mjs`
+     (wasm, `cargo xtask wasm-verify`).
 
-   Whichever direction, the end goal (matching the user's ask): confirm the menu actually
-   *appears* and *renders correctly* on wasm (not just "didn't panic"), and that keyboard and
-   (once implemented) mouse input produce the *same effect* as native for every action audited
-   in item 1 — via real pixel/state comparison, the same rigor the climb z-order and RGB24 mask
-   bugs were found and fixed with, not just eyeballing a screenshot.
+   **This immediately found a real bug**: `WasmRenderer::blit_impl`'s alpha-blend formula was
+   off from real SDL2 by up to 3/255 per channel across most of the alpha range — invisible
+   to the eye, genuine and systematic, the pause menu's dimmed background specifically
+   (never exercised by the regular per-tick gameplay harness). Fixed to a much closer
+   formula (not fully bit-exact — real SDL2's precise rounding couldn't be reverse-engineered
+   from empirical probing within reasonable effort); see project_wasm_menu_alpha_blend_bug
+   memory for the full investigation, and `rust/src/platform/pixel_parity_tests.rs`'s
+   `blended_blit_*` tests for the new headless regression coverage. Exactly the outcome this
+   item was built to enable.
 
-**Suggested order:** 1, 2, and 3 are all done as of 2026-08-08 (commits `4fdf86b`, `ba29640`,
-`afd4aca`) — every concrete crash risk and functionality gap found in the audit is fixed and
-live-verified in a real browser session. Only 4 (menu-frame pixel/state capture coverage)
-remains, and it's now easier than originally scoped: mouse clicks work, so the "script a
-specific navigation sequence" direction is viable, not just the "add a parallel capture call"
-direction — see item 4's two options above, still not decided between.
+   **Deliberate scope limitation:** the new capture mechanism was NOT added to the C oracle
+   (`src/state_dump.c`/`src/menu.c`), so today's comparison is native-Rust-vs-wasm-Rust only,
+   not the three-way (C oracle / native Rust / wasm) parity the rest of the project's
+   "golden" methodology uses elsewhere. A real follow-up if menu-frame regressions turn out
+   to matter enough to want that stronger guarantee — not scheduled.
+
+**Suggested order:** all four items are now substantively done as of 2026-08-08 (commits
+`4fdf86b`, `ba29640`, `afd4aca`, plus item 4's commit) — every concrete crash risk and
+functionality gap found in the audit is fixed and live-verified, and menu-frame pixel/state
+capture coverage exists on both platforms. The one explicitly acknowledged remaining gap is
+C-oracle parity for menu frames specifically (see item 4's scope-limitation note above).
 
 ## Future consideration (deferred, not scheduled): drop the SDL2 build dependency for wasm
 

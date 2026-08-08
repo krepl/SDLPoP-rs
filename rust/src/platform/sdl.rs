@@ -542,6 +542,14 @@ impl InputSource for SdlInput {
         let state = event_pump.mouse_state();
         (state.x(), state.y(), state.left(), state.right())
     }
+    fn warp_mouse(&mut self, x: c_int, y: c_int) {
+        // Raw FFI against the real SDL_Window (crate::window_), same pattern as
+        // set_fullscreen/show_cursor just above -- verified empirically (a standalone probe
+        // under SDL_VIDEODRIVER=dummy, the harness's real environment) that this really does
+        // update what event_pump.mouse_state() subsequently returns, unlike a pushed
+        // SDL_MOUSEMOTION event.
+        unsafe { sdl2::sys::SDL_WarpMouseInWindow(crate::window_ as *mut sdl2::sys::SDL_Window, x, y) };
+    }
     fn start_text_input(&mut self, x: c_int, y: c_int, w: c_int, h: c_int) {
         let video = self.video.as_ref().expect("start_text_input: no video subsystem (SdlPlatform not constructed yet)");
         video.text_input().set_rect(Rect::new(x, y, w as u32, h as u32));

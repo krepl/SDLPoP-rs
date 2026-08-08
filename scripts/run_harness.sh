@@ -257,6 +257,12 @@ case "${1:-}" in
     "$ROOT/scripts/menu_smoke_test.sh" || exit 1
     echo ""
 
+    # Mouse-driven menu navigation actually working, not just "doesn't crash" -- see
+    # menu_mouse_navigation_test.sh's header. Same Node/Playwright caveat as above for
+    # the wasm counterpart (wasm_menu_mouse_navigation_test.mjs).
+    "$ROOT/scripts/menu_mouse_navigation_test.sh" || exit 1
+    echo ""
+
     echo "Comparing ${#PAIRS[@]} replays, $JOBS at a time..."
     failures=0
     run_parallel run_one || failures=$?

@@ -59,9 +59,19 @@ enum Command {
     /// wasm-build`. Part of `wasm-verify` (and so of `verify`); standalone mainly for fast
     /// iteration.
     WasmMenuSmokeTest,
+    /// Navigate the pause menu with scripted mouse input (open, click Settings, back out,
+    /// click Quit Game, click OK) and confirm it actually works -- not just "doesn't crash"
+    /// (that's menu-smoke-test's job). Already part of `harness`/`verify`; standalone mainly
+    /// for fast iteration. See `wasm-menu-mouse-navigation-test` for the wasm counterpart.
+    MenuMouseNavigationTest,
+    /// Same mouse-driven menu navigation as `menu-mouse-navigation-test`, in the wasm build
+    /// -- requires `npm install` (Playwright) and a current `cargo xtask wasm-build`. Part of
+    /// `wasm-verify` (and so of `verify`); standalone mainly for fast iteration.
+    WasmMenuMouseNavigationTest,
     /// Check Node/Playwright are installed, rebuild the wasm bundle, then run the wasm test
-    /// suite (currently just `wasm-menu-smoke-test`). Part of `verify`. Requires `npm
-    /// install` -- fails with a clear message naming the fix if that hasn't been run.
+    /// suite (`wasm-menu-smoke-test` and `wasm-menu-mouse-navigation-test`). Part of
+    /// `verify`. Requires `npm install` -- fails with a clear message naming the fix if that
+    /// hasn't been run.
     WasmVerify,
     /// Compile the standalone C oracle binary and capture a fresh quicksave fixture.
     QuicksaveFixture,
@@ -109,6 +119,8 @@ fn main() -> ExitCode {
         Command::GameplaySmokeTest => harness::gameplay_smoke_test(&root),
         Command::MenuSmokeTest => harness::menu_smoke_test(&root),
         Command::WasmMenuSmokeTest => harness::wasm_menu_smoke_test(&root),
+        Command::MenuMouseNavigationTest => harness::menu_mouse_navigation_test(&root),
+        Command::WasmMenuMouseNavigationTest => harness::wasm_menu_mouse_navigation_test(&root),
         Command::WasmVerify => harness::wasm_verify(&root),
         Command::QuicksaveFixture => harness::quicksave_fixture(&root),
         Command::Verify => verify(&root),
