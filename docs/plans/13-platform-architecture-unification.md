@@ -799,7 +799,7 @@ either original option anticipated:
    to matter enough to want that stronger guarantee — not scheduled.
 
 **Suggested order:** all four items are now substantively done as of 2026-08-08 (commits
-`4fdf86b`, `ba29640`, `afd4aca`, plus item 4's commit) — every concrete crash risk and
+`4fdf86b`, `ba29640`, `afd4aca`, `69a17ef`) — every concrete crash risk and
 functionality gap found in the audit is fixed and live-verified, and menu-frame pixel/state
 capture coverage exists on both platforms. The one explicitly acknowledged remaining gap is
 C-oracle parity for menu frames specifically (see item 4's scope-limitation note above).
