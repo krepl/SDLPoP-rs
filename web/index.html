@@ -53,10 +53,11 @@
       '(see scripts/build_wasm.sh).';
     throw new Error('SharedArrayBuffer unavailable');
   }
-  const INPUT_BUFFER_SIZE = 521; // 512 key-state bytes + mouse x/y (i32 each) + button bitmask
+  const INPUT_BUFFER_SIZE = 522; // 512 key-state bytes + mouse x/y (i32 each) + button bitmask + fullscreen flag
   const sharedInput = new SharedArrayBuffer(INPUT_BUFFER_SIZE);
   const keyState = new Uint8Array(sharedInput, 0, 512);
   const mouseView = new DataView(sharedInput, 512, 9);
+  const fullscreenState = new Uint8Array(sharedInput, 521, 1);
 
   // Standard SDL2 scancodes (USB HID usage IDs) for the keys this game's controls actually
   // use, keyed by the physical-key identifier browsers report in KeyboardEvent.code (layout-
@@ -98,6 +99,16 @@
   canvas.addEventListener('mousedown', (e) => setMouseButton(e, true));
   canvas.addEventListener('mouseup', (e) => setMouseButton(e, false));
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Real browser fullscreen state, written into the shared buffer the same way keyboard/
+  // mouse state is -- WasmRenderer::get_window_flags (rust/src/platform/wasm.rs) reads it to
+  // report SDL_WINDOW_FULLSCREEN_DESKTOP accurately. Needed because the Fullscreen API
+  // request in the 'fullscreen' worker message below can be silently refused, and the user
+  // can also exit fullscreen out-of-band (Escape, F11) -- so the Worker can't just assume its
+  // last request succeeded, it has to poll the real DOM state.
+  document.addEventListener('fullscreenchange', () => {
+    fullscreenState[0] = document.fullscreenElement === canvas ? 1 : 0;
+  });
 
   // Real Web Audio API playback of PCM chunks posted from the Worker (see pump_audio /
   // post_audio_to_js in rust/src/platform/wasm.rs). Chunks are scheduled back-to-back via
@@ -188,6 +199,21 @@
       console.error('worker error', msg.message);
     } else if (msg.type === 'status') {
       status.textContent = msg.message;
+    } else if (msg.type === 'fullscreen') {
+      // Requested by WasmRenderer::set_fullscreen (rust/src/platform/wasm.rs) -- the
+      // Fullscreen API is only callable from the main thread (no DOM in a Worker), and
+      // requestFullscreen() requires a real user gesture to have happened recently, so this
+      // can fail silently; the 'fullscreenchange' listener above is what actually reports
+      // the resulting state back, not this call succeeding or not.
+      if (msg.enable) {
+        canvas.requestFullscreen().catch((err) => console.warn('requestFullscreen failed', err));
+      } else if (document.fullscreenElement) {
+        document.exitFullscreen().catch((err) => console.warn('exitFullscreen failed', err));
+      }
+    } else if (msg.type === 'cursor') {
+      // Requested by WasmRenderer::show_cursor (rust/src/platform/wasm.rs) -- same
+      // Worker-has-no-DOM reason as 'fullscreen' above.
+      canvas.style.cursor = msg.show ? '' : 'none';
     }
   };
 

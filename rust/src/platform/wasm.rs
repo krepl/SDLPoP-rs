@@ -225,6 +225,30 @@ fn post_frame_to_js(w: c_int, h: c_int, bpp: usize, pixels: &[u8]) {
 #[cfg(not(target_arch = "wasm32"))]
 fn post_frame_to_js(_w: c_int, _h: c_int, _bpp: usize, _pixels: &[u8]) {}
 
+/// Posts a `{type: "cursor", show: bool}`/`{type: "fullscreen", enable: bool}` message out,
+/// same reflective-`postMessage` pattern as `post_frame_to_js` -- both `show_cursor` and
+/// `set_fullscreen` need this: neither DOM API (`canvas.style.cursor`, `Element.
+/// requestFullscreen`/`document.exitFullscreen`) is reachable from here directly, since this
+/// code runs inside the Worker, which has no DOM access at all (no `document`, no `canvas`).
+/// `web/index.html`'s `worker.onmessage` handler does the actual DOM call on the main thread.
+#[cfg(target_arch = "wasm32")]
+fn post_simple_message_to_js(msg_type: &str, key: &str, value: bool) {
+    use wasm_bindgen::JsCast;
+    (|| -> Option<()> {
+        let global = js_sys::global();
+        let post_message: js_sys::Function =
+            js_sys::Reflect::get(&global, &"postMessage".into()).ok()?.dyn_into().ok()?;
+        let msg = js_sys::Object::new();
+        js_sys::Reflect::set(&msg, &"type".into(), &msg_type.into()).ok()?;
+        js_sys::Reflect::set(&msg, &key.into(), &value.into()).ok()?;
+        post_message.call1(&global, &msg).ok()?;
+        Some(())
+    })();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn post_simple_message_to_js(_msg_type: &str, _key: &str, _value: bool) {}
+
 // ============================================================================
 // Audio. Real SDL pulls `SDL_AudioSpec.callback` from a dedicated realtime audio thread,
 // completely decoupled from the game's own timing -- there's no such thread here (wasm32 is
@@ -745,23 +769,26 @@ impl Renderer for WasmRenderer {
         // integration to know when a frame is actually ready to show); not implemented yet.
         unimplemented!("WasmRenderer::present")
     }
-    unsafe fn set_fullscreen(&mut self, _fullscreen: bool) {
+    unsafe fn set_fullscreen(&mut self, fullscreen: bool) {
         // Reachable from the in-game settings menu's fullscreen toggle (menu.rs) and
         // seg009.rs's startup fullscreen handling. Real fullscreen needs the browser's
-        // Fullscreen API (`element.requestFullscreen()`), which needs a JS bridge that
-        // doesn't exist yet -- a no-op here is an honest "not supported yet," matching
-        // get_window_flags always reporting "not fullscreen," rather than a placeholder
-        // masking a real bug. Toggling the setting still works (it's stored regardless);
-        // it just has no visible effect until a real bridge is wired up.
+        // Fullscreen API (`element.requestFullscreen()`/`document.exitFullscreen()`), only
+        // reachable from the main thread (this code runs in the Worker, no DOM access) --
+        // Phase D item 2's JS bridge, added 2026-08-08: post a request, `web/index.html`'s
+        // `worker.onmessage` performs the actual call. The browser's Fullscreen API is
+        // request-based and can be silently refused (no prior user gesture, embedded iframe,
+        // etc.), and the user can also exit fullscreen out-of-band (Escape key, F11) -- so
+        // this can only ever request, never guarantee; `get_window_flags` reports the *real*
+        // resulting state via `FULLSCREEN_ACTIVE` (kept current by a `fullscreenchange`
+        // listener over the shared input buffer), not an optimistic assumption that the
+        // request succeeded.
+        post_simple_message_to_js("fullscreen", "enable", fullscreen);
     }
-    unsafe fn show_cursor(&mut self, _show: bool) {
-        // Real cursor hiding needs DOM/CSS control over the canvas element (e.g. toggling
-        // a `cursor: none` class), which no JS bridge exists for yet -- the browser's
-        // default cursor is a reasonable interim behavior, not a placeholder that needs
-        // fixing urgently. A no-op here (matching menu.rs's only caller,
-        // process_additional_menu_input/menu_was_closed, which only ever hides the cursor
-        // while the window is fullscreen -- get_window_flags always reports "not
-        // fullscreen" on wasm, so `show(false)` is unreachable in practice today anyway).
+    unsafe fn show_cursor(&mut self, show: bool) {
+        // Real cursor hiding needs DOM/CSS control over the canvas element (`canvas.style.
+        // cursor`), only reachable from the main thread -- same Worker-has-no-DOM constraint
+        // as set_fullscreen just above, same Phase D item 2 JS bridge fix (2026-08-08).
+        post_simple_message_to_js("cursor", "show", show);
     }
     unsafe fn delay(&mut self, ms: u32) {
         // Real busy-spin, the accepted first-pass tradeoff for frame pacing (see the plan
@@ -902,12 +929,15 @@ impl Renderer for WasmRenderer {
     unsafe fn get_window_flags(&mut self, _window: *mut crate::SDL_Window) -> u32 {
         // Both call sites (menu.rs's process_additional_menu_input/menu_was_closed) only
         // ever check the SDL_WINDOW_FULLSCREEN_DESKTOP bit, to decide whether to hide the
-        // mouse cursor while idle. No real OS window exists here -- the canvas is never
-        // "fullscreen" in that sense (this build doesn't implement the Fullscreen API
-        // either; set_fullscreen is its own separate unimplemented stub) -- so always
-        // reporting no flags set is exactly correct, not a placeholder: it makes the game
-        // always show the cursor, the right behavior for a normal browser tab.
-        0
+        // mouse cursor while idle. Phase D item 2 (2026-08-08): now reports the *real*
+        // browser fullscreen state (FULLSCREEN_ACTIVE, kept current by web/index.html's
+        // `fullscreenchange` listener writing into the shared input buffer, synced the same
+        // way keyboard/mouse state is) rather than a hardcoded "never fullscreen" -- the
+        // Fullscreen API request in set_fullscreen can be refused, and the user can exit
+        // fullscreen out-of-band (Escape, F11), so this has to reflect the actual DOM state,
+        // not just mirror whatever set_fullscreen was last asked to do.
+        const SDL_WINDOW_FULLSCREEN_DESKTOP: u32 = 0x1001;
+        if FULLSCREEN_ACTIVE { SDL_WINDOW_FULLSCREEN_DESKTOP } else { 0 }
     }
     unsafe fn render_get_scale(&mut self, _renderer: *mut crate::SDL_Renderer) -> (f32, f32) {
         // Found wrong during the Phase D mouse-input followup (2026-08-08): this used to
@@ -1529,6 +1559,13 @@ fn mouse_state_mut() -> &'static mut MouseState {
     unsafe { &mut MOUSE }
 }
 
+/// The real, current browser fullscreen state -- kept up to date by `web/index.html`'s
+/// `fullscreenchange` listener writing into the shared input buffer (see below), read by
+/// `get_window_flags`. `set_fullscreen`'s Fullscreen API request can be silently refused, and
+/// the user can exit fullscreen out-of-band (Escape, F11), so this can't just mirror the last
+/// requested value -- it has to reflect the actual DOM state.
+static mut FULLSCREEN_ACTIVE: bool = false;
+
 /// JS-facing: report a key transition (SDL scancode + pressed/released), called from
 /// whatever relays browser `keydown`/`keyup` events into the wasm module.
 pub fn set_key_state(scancode: u32, pressed: bool) {
@@ -1559,11 +1596,13 @@ pub fn set_mouse_state(x: c_int, y: c_int, left: bool, right: bool) {
 // isn't a real correctness concern for polled input tolerant of at-most-one-frame staleness,
 // so plain reads/writes are fine and simpler than `Atomics.load`/`store` per field.
 //
-// Buffer layout (521 bytes total), written by `web/index.html`, read by `sync_shared_input`:
+// Buffer layout (522 bytes total), written by `web/index.html`, read by `sync_shared_input`:
 //   [0..512)   one byte per SDL scancode, 1 = held, 0 = released
 //   [512..516) mouse x, i32 little-endian
 //   [516..520) mouse y, i32 little-endian
 //   [520]      mouse buttons bitmask: bit0 = left, bit1 = right
+//   [521]      fullscreen state: 1 = document.fullscreenElement is the canvas, 0 = not
+//              (Phase D item 2, 2026-08-08 -- see FULLSCREEN_ACTIVE)
 //
 // The user has explicitly said they'd like to move off `SharedArrayBuffer` eventually (see
 // the plan doc) in favor of the `advance_one_frame()` redesign, where a non-blocking per-tick
@@ -1597,7 +1636,7 @@ unsafe fn sync_shared_input() {
     #[cfg(target_arch = "wasm32")]
     {
         let Some(buf) = SHARED_INPUT_BUFFER.as_ref() else { return };
-        let mut raw = [0u8; 521];
+        let mut raw = [0u8; 522];
         buf.copy_to(&mut raw);
         let states = key_states();
         for i in 0..512 {
@@ -1608,6 +1647,7 @@ unsafe fn sync_shared_input() {
         m.y = i32::from_le_bytes([raw[516], raw[517], raw[518], raw[519]]);
         m.left = raw[520] & 1 != 0;
         m.right = raw[520] & 2 != 0;
+        FULLSCREEN_ACTIVE = raw[521] != 0;
     }
 }
 
@@ -1871,5 +1911,28 @@ mod tests {
         let m = mouse_state_mut();
         m.left = false;
         m.right = false;
+    }
+
+    // Regression test for Phase D item 2's JS-bridge fix (2026-08-08): get_window_flags used
+    // to hardcode "never fullscreen." Now it reports FULLSCREEN_ACTIVE, which
+    // sync_shared_input populates from the real browser fullscreenchange state on wasm32 --
+    // this only exercises the flag-reporting side directly (set_fullscreen/show_cursor just
+    // post a message on wasm32 and are no-ops on native, so there's nothing to assert on
+    // there beyond "doesn't panic," covered implicitly by every other test in this module
+    // calling shared_renderer() successfully).
+    #[test]
+    fn get_window_flags_reflects_fullscreen_active() {
+        const SDL_WINDOW_FULLSCREEN_DESKTOP: u32 = 0x1001;
+        unsafe {
+            let saved = FULLSCREEN_ACTIVE;
+            FULLSCREEN_ACTIVE = false;
+            assert_eq!(shared_renderer().get_window_flags(std::ptr::null_mut()), 0);
+            FULLSCREEN_ACTIVE = true;
+            assert_eq!(
+                shared_renderer().get_window_flags(std::ptr::null_mut()),
+                SDL_WINDOW_FULLSCREEN_DESKTOP
+            );
+            FULLSCREEN_ACTIVE = saved;
+        }
     }
 }
