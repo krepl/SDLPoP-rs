@@ -664,7 +664,7 @@ maintainable code without sacrificing native fidelity. This is real, valuable fo
 if it turns out clean — but it's a windowing-layer replacement, not a rendering-semantics one,
 and should be scoped and decided on its own once there's a working baseline to compare against.
 
-## Phase D — Menu/input completeness for wasm (not started)
+## Phase D — Menu/input completeness for wasm (items 1-3 done, item 4 open)
 
 Prompted by the Esc-menu crash (2026-08-06, commit `d20c68e`, memory
 `project_wasm_esc_menu_crash`): nobody had opened the pause menu in the wasm build before a
@@ -724,20 +724,36 @@ still unimplemented or behaviorally wrong on wasm. Known so far, not yet fixed:
    - Anything else surfaces during further review — this list is a known-so-far floor, not a
      ceiling, but item 1's concrete crash-risk findings are now all resolved.
 
-**2. Fix what should work, remove what genuinely can't (expect this to be rare).** The user's
-own expectation, and a reasonable one: "We can probably make everything work" — most of these
-are missing JS bridges (Fullscreen API, cursor CSS, real persistent storage), not fundamental
-platform impossibilities. Only remove/hide a menu action from the wasm build if it's genuinely
-inapplicable there (nothing identified so far is), not just because it needs new plumbing.
+**2. Fix what should work, remove what genuinely can't (expect this to be rare).** ~~Done,
+2026-08-08, commit `ba29640`.~~ The user's own expectation, and a reasonable one: "We can
+probably make everything work" — both remaining items were missing JS bridges, not
+fundamental platform impossibilities. `set_fullscreen`/`show_cursor` now post a message
+(mirroring the existing `post_frame_to_js`/`post_audio_to_js` pattern) that
+`web/index.html`'s `worker.onmessage` turns into a real `canvas.requestFullscreen()`/
+`document.exitFullscreen()`/`canvas.style.cursor` call on the main thread (the Worker itself
+has no DOM access). `get_window_flags` now reports the *real* browser fullscreen state
+(`FULLSCREEN_ACTIVE`, synced through a new byte in the existing shared input buffer, updated
+by a `fullscreenchange` listener) rather than hardcoding "never fullscreen" — the Fullscreen
+API request can be silently refused and the user can exit out-of-band (Escape, F11), so this
+has to reflect actual DOM state, not the last request. Live-verified end-to-end via
+Playwright: Alt+Enter toggled `document.fullscreenElement` on and off correctly through the
+full round trip. Nothing was found that's genuinely inapplicable to wasm and needs removing.
 
-**3. Mouse input.** Explicitly still a TODO, called out separately from the above (not blocking
-it): `web/index.html`'s live-input path forwards keyboard events but not mouse clicks yet (see
-existing notes elsewhere in this doc and in session history). The pause menu supports full
-mouse interaction (`process_additional_menu_input`'s `read_mouse_state`, hover-highlight,
-click-to-select) — none of it is currently reachable in the browser build. Wire up real mouse
-event forwarding (mousemove/mousedown/mouseup, coordinate-mapped through the canvas the same
-way keyboard scancodes are mapped today) as its own scoped piece of work, then re-run the
-audit above specifically checking mouse-driven interaction parity with keyboard.
+**3. Mouse input.** ~~Done, 2026-08-08, commit `afd4aca`.~~ `web/index.html` already forwarded
+mousemove/mousedown/mouseup into the shared input buffer (present since the buffer format was
+designed), and `sync_shared_input` already copied it into `mouse_state_mut()` — but nothing
+ever turned a button going down into the `SDL_MOUSEBUTTONDOWN` event `menu.rs`'s
+`mouse_clicked`/`mouse_button_clicked_right` actually key off, so hover/highlight worked but
+clicking silently did nothing. Fixed with edge-triggered event synthesis in
+`WasmRenderer::poll_event`, mirroring the existing keyboard edge detection. Found and fixed a
+second, unrelated bug live-testing this: `render_get_scale` hardcoded `(1.0, 1.0)`, missing
+that real `SDL_RenderGetScale` also reflects `SDL_RenderSetLogicalSize` (which this codebase
+always calls at startup) — with a 640x400 window and 320x200 logical size, real SDL reports
+`(2.0, 2.0)`; the stale `(1.0, 1.0)` made every click land roughly 2x off from the cursor's
+visual position. Both fixes live-verified against the actual pause menu and its OK/Cancel
+confirmation dialog in a real browser session, not just unit tests. Re-running the mouse-driven
+parity audit (this item's own last sentence, previously) folded into that same live-testing
+pass — no further gaps found.
 
 **4. Native-vs-wasm comparison coverage for menu frames specifically.** The pixel-hash harness
 (`traces/pixels/`) and the wasm pixel-comparison tooling (`scripts/wasm_pixel_harness.mjs`,
@@ -766,13 +782,12 @@ between:
    in item 1 — via real pixel/state comparison, the same rigor the climb z-order and RGB24 mask
    bugs were found and fixed with, not just eyeballing a screenshot.
 
-**Suggested order:** 1 (audit, cheap, mostly reading — complete as of 2026-08-08; all three
-crash-risk findings fixed: `std::env::set_var`, `render_set_integer_scale`, `save_png`, the
-last two via unit tests against `WasmRenderer` directly rather than the browser harness, since
-they're pure trait-method calls with no menu-navigation/event-loop involvement) → 4's capture
-mechanism (needed to verify anything else in this phase beyond "doesn't crash", and to
-eventually confirm the remaining item-1 gaps — `set_fullscreen`/`show_cursor` JS bridges — once
-built) → 3 (mouse) → re-audit mouse-driven parity via 4 again.
+**Suggested order:** 1, 2, and 3 are all done as of 2026-08-08 (commits `4fdf86b`, `ba29640`,
+`afd4aca`) — every concrete crash risk and functionality gap found in the audit is fixed and
+live-verified in a real browser session. Only 4 (menu-frame pixel/state capture coverage)
+remains, and it's now easier than originally scoped: mouse clicks work, so the "script a
+specific navigation sequence" direction is viable, not just the "add a parallel capture call"
+direction — see item 4's two options above, still not decided between.
 
 ## Future consideration (deferred, not scheduled): drop the SDL2 build dependency for wasm
 
