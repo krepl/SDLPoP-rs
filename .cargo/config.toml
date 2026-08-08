@@ -2,3 +2,13 @@
 # Project-local dev tooling -- see xtask/src/main.rs. Run `cargo xtask --help` for the full
 # subcommand list.
 xtask = "run --package xtask --"
+
+[env]
+# Tests share one process's C globals (static mut, via FFI) with no synchronization, so
+# std's default multi-threaded test runner produces real data races between unrelated
+# tests -- confirmed by stress-testing (see memory project_flaky_test_isolation.md). The
+# suite is small (under a hundred tests, subsecond), so serializing it costs nothing
+# measurable. This forces every `cargo test` invocation (direct or via `cargo xtask
+# verify`) to run single-threaded; RUST_TEST_THREADS can still be overridden on the
+# command line if ever needed.
+RUST_TEST_THREADS = "1"
