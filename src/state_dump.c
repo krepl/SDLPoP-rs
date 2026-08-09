@@ -172,6 +172,10 @@ static uint32_t     frame_size   = 0;
 static uint32_t     num_fields   = 0;
 static field_desc_t field_table[256];
 
+unsigned int state_dump_next_tick(void) {
+    return tick_counter;
+}
+
 static void build_field_table(void) {
     uint32_t offset = 0;
 #define REG(fname, ptr, sz) \
@@ -277,4 +281,43 @@ void dump_frame_pixels(void) {
     // 1 so this line's tick number matches the trace record for the same frame.
     fprintf(pixels_fp, "%u %016" PRIx64 "\n", tick_counter - 1, hash);
     fflush(pixels_fp);
+}
+
+// See state_dump.h. Mirrors dump_menu_frame_pixels() in rust/src/state_dump.rs -- same
+// FNV-1a algorithm and per-row iteration as dump_frame_pixels() above, just against its own
+// menu_frame_counter and output file.
+static FILE* menu_pixels_fp = NULL;
+static int menu_pixels_initialized = 0;
+static unsigned int menu_frame_counter = 0;
+
+void dump_menu_frame_pixels(void) {
+    if (!menu_pixels_initialized) {
+        menu_pixels_initialized = 1;
+        const char* path = getenv("POPMENUPIXELS_OUT");
+        if (!path) return;
+        menu_pixels_fp = fopen(path, "wb");
+        if (!menu_pixels_fp) {
+            fprintf(stderr, "state_dump: could not open %s\n", path);
+            return;
+        }
+    }
+    if (!menu_pixels_fp) return;
+
+    SDL_Surface* surf = get_final_surface();
+    int bpp = surf->format->BytesPerPixel;
+    int row_len = surf->w * bpp;
+    const uint8_t* pixels = (const uint8_t*) surf->pixels;
+
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    for (int row = 0; row < surf->h; row++) {
+        const uint8_t* row_ptr = pixels + (size_t)row * surf->pitch;
+        for (int i = 0; i < row_len; i++) {
+            hash ^= row_ptr[i];
+            hash *= 0x100000001b3ULL;
+        }
+    }
+
+    fprintf(menu_pixels_fp, "%u %016" PRIx64 "\n", menu_frame_counter, hash);
+    fflush(menu_pixels_fp);
+    menu_frame_counter++;
 }

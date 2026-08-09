@@ -9,13 +9,15 @@
 // frames -- the same mechanism that caught a real alpha-blend rounding bug in WasmRenderer
 // during this feature's own development (project_wasm_menu_alpha_blend_bug memory).
 //
-// Deliberately does NOT assert the captured hashes match scripts/menu_mouse_navigation_test.sh's
-// native run byte-for-byte: a small, already-investigated rounding residual remains between
-// the two backends' alpha-blend math (see that memory) alongside ordinary pixel-level
-// nondeterminism (the torch's animated flicker color isn't scripted/seeded the same way
-// between runs) -- exact hash parity isn't the right test here. Real backend-agreement
-// coverage for the blend math itself lives in rust/src/platform/pixel_parity_tests.rs's
-// blended_blit_* tests, which run headless and don't have this timing/rendering-path noise.
+// Compares against the same golden file scripts/menu_mouse_navigation_test.sh uses
+// (traces/menu_pixels/menu_mouse_navigation.pixels, generated from the C oracle) -- with a
+// fixed `seed=42` (torch-flicker animation, and anything else driven by prandom(), is
+// otherwise seeded from wall-clock time, which would make hashes differ between any two runs
+// for reasons that have nothing to do with a real rendering bug), wasm genuinely produces
+// byte-identical hashes to both native Rust and the C oracle. Confirmed this once the residual
+// alpha-blend rounding gap (project_wasm_menu_alpha_blend_bug memory) turned out to matter far
+// less than the earlier non-seeded comparison suggested -- most of that comparison's diff was
+// actually torch-flicker seed nondeterminism, not the blend formula.
 //
 // Usage: node scripts/wasm_menu_mouse_navigation_test.mjs
 
@@ -58,7 +60,7 @@ async function main() {
 
         const run = page.evaluate(
             ([argv, script, env]) => window.runHeadlessScriptedInput(argv, script, env),
-            [['prince', 'headless', 'megahit', '3'], scriptText, { POPMENUPIXELS_OUT: 'menu_pixels.out' }],
+            [['prince', 'headless', 'megahit', '3', 'seed=42'], scriptText, { POPMENUPIXELS_OUT: 'menu_pixels.out' }],
         ).then((r) => ({ ok: true, r })).catch((e) => ({ ok: false, e: String(e) }));
         const timeout = new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), TIMEOUT_MS));
 
@@ -71,14 +73,20 @@ async function main() {
             console.log(`FAIL: ${result.e}`);
             process.exit(1);
         }
-        const text = Buffer.from(result.r.files.POPMENUPIXELS_OUT || '', 'base64').toString('utf8');
-        const lines = text.trim().split('\n').filter(Boolean);
-        if (lines.length < 3) {
-            console.log(`FAIL: expected at least 3 captured menu frames, got ${lines.length}`);
+        const text = Buffer.from(result.r.files.POPMENUPIXELS_OUT || '', 'base64').toString('utf8').trim();
+        const golden = fs.readFileSync(
+            path.join(ROOT, 'traces', 'menu_pixels', 'menu_mouse_navigation.pixels'),
+            'utf8',
+        ).trim();
+        if (text !== golden) {
+            console.log('FAIL: menu-frame pixel hashes diverged from the golden (C oracle) trace');
+            console.log('--- got ---');
             console.log(text);
+            console.log('--- want ---');
+            console.log(golden);
             process.exit(1);
         }
-        console.log(`PASS: exited cleanly, captured ${lines.length} menu frames`);
+        console.log('PASS: exited cleanly, menu-frame pixel hashes match the golden (C oracle) trace');
         process.exit(0);
     } catch (err) {
         console.log(`FAIL: ${err}`);

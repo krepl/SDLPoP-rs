@@ -19,6 +19,7 @@ The authors of this program may be contacted at https://forum.princed.org
 */
 
 #include "common.h"
+#include "state_dump.h"
 
 #ifdef USE_MENU
 
@@ -2136,6 +2137,7 @@ void draw_menu() {
 		textstate.ptr_font = saved_font;
 		if (!need_close_menu) {
 			update_screen();
+			dump_menu_frame_pixels();
 		}
 //		printf("Drawing the menu took %.2f ms.\n", (SDL_GetPerformanceCounter() - begin) * milliseconds_per_counter);
 

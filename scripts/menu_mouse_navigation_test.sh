@@ -9,9 +9,14 @@
 # script's header for exactly what it does and why the coordinates/tick numbers are what
 # they are.
 #
-# Also asserts POPMENUPIXELS_OUT actually captured something: this is the mechanism that
-# would catch a real menu-rendering regression (see project_wasm_menu_alpha_blend_bug
-# memory for the bug it already caught once, during this feature's own development).
+# Compares POPMENUPIXELS_OUT against a real golden file generated from the C oracle
+# (traces/menu_pixels/menu_mouse_navigation.pixels) -- this is the mechanism that already
+# caught one real menu-rendering regression (see project_wasm_menu_alpha_blend_bug memory,
+# during this feature's own development) and is now genuine three-way (C oracle / native
+# Rust / wasm) parity coverage, not just "captured something." `seed=42` makes the run
+# deterministic: torch-flicker animation (and anything else driven by prandom()) is seeded
+# from wall-clock time otherwise, which would make every run's hashes differ for reasons
+# that have nothing to do with a real rendering bug.
 #
 # Usage: scripts/menu_mouse_navigation_test.sh
 
@@ -20,6 +25,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BINARY="$ROOT/target/debug/prince"
 SCRIPT="$ROOT/scripts/scripted_inputs/menu_mouse_navigation.txt"
+GOLDEN="$ROOT/traces/menu_pixels/menu_mouse_navigation.pixels"
 
 mkdir -p "$ROOT/target/debug"
 ln -sfn "$ROOT/data"        "$ROOT/target/debug/data"        2>/dev/null || true
@@ -35,8 +41,8 @@ log="$(mktemp)"
 pixels="$(mktemp)"
 trap 'rm -f "$log" "$pixels"' EXIT
 
-echo "== menu_mouse_navigation: mouse-driven menu nav must exit cleanly and capture frames =="
-timeout --kill-after=2 8 env POPTRACE_INPUT="$SCRIPT" POPMENUPIXELS_OUT="$pixels" "$BINARY" headless megahit 3 >"$log" 2>&1
+echo "== menu_mouse_navigation: mouse-driven menu nav must exit cleanly and match the golden pixel hashes =="
+timeout --kill-after=2 8 env POPTRACE_INPUT="$SCRIPT" POPMENUPIXELS_OUT="$pixels" "$BINARY" headless megahit 3 seed=42 >"$log" 2>&1
 code=$?
 
 if [ "$code" -ne 0 ]; then
@@ -46,12 +52,10 @@ if [ "$code" -ne 0 ]; then
   exit 1
 fi
 
-lines="$(wc -l < "$pixels" | tr -d ' ')"
-if [ "$lines" -lt 3 ]; then
-  echo "FAIL: expected at least 3 captured menu frames, got $lines"
-  cat "$pixels"
+if ! diff -u "$GOLDEN" "$pixels"; then
+  echo "FAIL: menu-frame pixel hashes diverged from the golden (C oracle) trace"
   exit 1
 fi
 
-echo "PASS: exited cleanly, captured $lines menu frames"
+echo "PASS: exited cleanly, menu-frame pixel hashes match the golden (C oracle) trace"
 exit 0

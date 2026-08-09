@@ -792,11 +792,20 @@ either original option anticipated:
    `blended_blit_*` tests for the new headless regression coverage. Exactly the outcome this
    item was built to enable.
 
-   **Deliberate scope limitation:** the new capture mechanism was NOT added to the C oracle
-   (`src/state_dump.c`/`src/menu.c`), so today's comparison is native-Rust-vs-wasm-Rust only,
-   not the three-way (C oracle / native Rust / wasm) parity the rest of the project's
-   "golden" methodology uses elsewhere. A real follow-up if menu-frame regressions turn out
-   to matter enough to want that stronger guarantee — not scheduled.
+   **C-oracle parity closed, 2026-08-09.** The scope limitation above was closed by porting
+   `dump_menu_frame_pixels` AND the entire scripted-input injection mechanism
+   (`inject_scripted_input`/`load_scripted_input`, `mousemove`/`mouseleft`/`mouseright`
+   lines, the `MENU_POLL_COUNTER` trick) to `src/seg009.c`/`src/state_dump.c`/`src/menu.c` --
+   neither existed in C before this (confirmed by grep; both were Rust-only additions). A
+   real golden file now lives at `traces/menu_pixels/menu_mouse_navigation.pixels`,
+   generated from the C oracle with a fixed `seed=42` (torch-flicker animation, and anything
+   else driven by `prandom()`, is otherwise seeded from wall-clock time -- an earlier,
+   non-seeded comparison had made the residual alpha-blend gap above look larger than it
+   actually is; most of that diff was just seed nondeterminism between runs, not the blend
+   formula). With the seed fixed, native Rust, wasm, and the C oracle all produce genuinely
+   **byte-identical** menu-frame pixel hashes. Both `menu_mouse_navigation_test.sh` and
+   `wasm_menu_mouse_navigation_test.mjs` now diff their real captured output against this
+   golden file instead of just checking "captured something."
 
 **Suggested order:** all four items are now substantively done as of 2026-08-08 (commits
 `4fdf86b`, `ba29640`, `afd4aca`, `69a17ef`) — every concrete crash risk and

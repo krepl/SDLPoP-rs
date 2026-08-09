@@ -19,6 +19,7 @@ The authors of this program may be contacted at https://forum.princed.org
 */
 
 #include "common.h"
+#include "state_dump.h"
 #include <time.h>
 #include <errno.h>
 
@@ -3424,7 +3425,205 @@ void toggle_fullscreen(void) {
 
 bool ignore_tab = false;
 
+// ============================================================================
+// Scripted input injection -- not in the original C, ported from rust/src/seg009.rs's
+// inject_scripted_input/load_scripted_input for C-oracle parity (Phase D item 4 follow-up,
+// docs/plans/13-platform-architecture-unification.md). Lets a headless run drive real
+// keyboard/mouse input via a script file instead of a real device; see that Rust function's
+// doc comment for the full script-format writeup (mirrored exactly here) and for why
+// SDL_WarpMouseInWindow, not a pushed SDL_MOUSEMOTION event, is what mousemove uses.
+//
+// Script format (path from the POPTRACE_INPUT env var, one event per line):
+//     <tick> <key> <down|up>
+//     <tick> mousemove <x> <y>
+//     <tick> mouseleft <down|up>
+//     <tick> mouseright <down|up>
+//     # blank lines and lines starting with '#' are ignored
+// <key> is one of: left right up down shift lshift rshift space return escape
+// ============================================================================
+
+typedef enum { SCRIPT_EVENT_KEY, SCRIPT_EVENT_MOUSEMOVE, SCRIPT_EVENT_MOUSEBUTTON } scripted_event_kind_t;
+
+typedef struct {
+	unsigned int tick;
+	scripted_event_kind_t kind;
+	union {
+		struct { int scancode; bool down; } key;
+		struct { int x, y; } mousemove;
+		struct { Uint8 button; } mousebutton;
+	} data;
+} scripted_event_t;
+
+#define MAX_SCRIPT_EVENTS 256
+static scripted_event_t script_events[MAX_SCRIPT_EVENTS];
+static int script_event_count = 0;
+static bool script_loaded = false;
+static int script_index = 0;
+
+// Maps a script's key name to an SDL scancode.
+static int scancode_from_key_name(const char* name) {
+	if (strcasecmp(name, "left") == 0) return SDL_SCANCODE_LEFT;
+	if (strcasecmp(name, "right") == 0) return SDL_SCANCODE_RIGHT;
+	if (strcasecmp(name, "up") == 0) return SDL_SCANCODE_UP;
+	if (strcasecmp(name, "down") == 0) return SDL_SCANCODE_DOWN;
+	if (strcasecmp(name, "shift") == 0 || strcasecmp(name, "lshift") == 0) return SDL_SCANCODE_LSHIFT;
+	if (strcasecmp(name, "rshift") == 0) return SDL_SCANCODE_RSHIFT;
+	if (strcasecmp(name, "space") == 0) return SDL_SCANCODE_SPACE;
+	if (strcasecmp(name, "return") == 0 || strcasecmp(name, "enter") == 0) return SDL_SCANCODE_RETURN;
+	if (strcasecmp(name, "escape") == 0) return SDL_SCANCODE_ESCAPE;
+	return -1;
+}
+
+static int script_event_cmp(const void* a, const void* b) {
+	unsigned int ta = ((const scripted_event_t*) a)->tick;
+	unsigned int tb = ((const scripted_event_t*) b)->tick;
+	if (ta < tb) return -1;
+	if (ta > tb) return 1;
+	return 0;
+}
+
+// Parses the POPTRACE_INPUT script into script_events, once. Malformed lines are reported
+// and skipped rather than fatal, so a typo in a long script does not lose the rest of it.
+static void load_scripted_input(void) {
+	script_loaded = true;
+	const char* path = getenv("POPTRACE_INPUT");
+	if (!path) return;
+	FILE* fp = fopen(path, "rb");
+	if (!fp) {
+		fprintf(stderr, "scripted_input: could not open %s\n", path);
+		return;
+	}
+
+	char line[256];
+	int lineno = 0;
+	while (fgets(line, sizeof(line), fp)) {
+		lineno++;
+		char* nl = strpbrk(line, "\r\n");
+		if (nl) *nl = '\0';
+
+		char* parts[4] = { NULL, NULL, NULL, NULL };
+		int nparts = 0;
+		char* tok = strtok(line, " \t");
+		while (tok && nparts < 4) {
+			parts[nparts++] = tok;
+			tok = strtok(NULL, " \t");
+		}
+		if (nparts == 0 || parts[0][0] == '#') continue;
+
+		unsigned int tick;
+		if (sscanf(parts[0], "%u", &tick) != 1) {
+			fprintf(stderr, "scripted_input: %s:%d: bad tick number\n", path, lineno);
+			continue;
+		}
+		if (nparts < 2) {
+			fprintf(stderr, "scripted_input: %s:%d: expected '<tick> <key> <down|up>'\n", path, lineno);
+			continue;
+		}
+		if (script_event_count >= MAX_SCRIPT_EVENTS) {
+			fprintf(stderr, "scripted_input: too many events (max %d)\n", MAX_SCRIPT_EVENTS);
+			break;
+		}
+
+		scripted_event_t* ev = &script_events[script_event_count];
+		ev->tick = tick;
+
+		if (strcasecmp(parts[1], "mousemove") == 0) {
+			if (nparts < 4 || sscanf(parts[2], "%d", &ev->data.mousemove.x) != 1 || sscanf(parts[3], "%d", &ev->data.mousemove.y) != 1) {
+				fprintf(stderr, "scripted_input: %s:%d: expected '<tick> mousemove <x> <y>'\n", path, lineno);
+				continue;
+			}
+			ev->kind = SCRIPT_EVENT_MOUSEMOVE;
+			script_event_count++;
+		} else if (strcasecmp(parts[1], "mouseleft") == 0 || strcasecmp(parts[1], "mouseright") == 0) {
+			if (nparts < 3) {
+				fprintf(stderr, "scripted_input: %s:%d: expected 'down' or 'up'\n", path, lineno);
+				continue;
+			}
+			if (strcasecmp(parts[2], "down") == 0) {
+				ev->kind = SCRIPT_EVENT_MOUSEBUTTON;
+				ev->data.mousebutton.button = (strcasecmp(parts[1], "mouseleft") == 0) ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
+				script_event_count++;
+			} else if (strcasecmp(parts[2], "up") == 0) {
+				// No event to inject -- see the format doc comment above (menu.c never
+				// consumes a button-up edge, only the down one).
+			} else {
+				fprintf(stderr, "scripted_input: %s:%d: expected 'down' or 'up'\n", path, lineno);
+			}
+		} else {
+			int scancode = scancode_from_key_name(parts[1]);
+			if (scancode < 0) {
+				fprintf(stderr, "scripted_input: %s:%d: unknown key name '%s'\n", path, lineno, parts[1]);
+				continue;
+			}
+			if (nparts < 3) {
+				fprintf(stderr, "scripted_input: %s:%d: expected 'down' or 'up'\n", path, lineno);
+				continue;
+			}
+			bool down;
+			if (strcasecmp(parts[2], "down") == 0) down = true;
+			else if (strcasecmp(parts[2], "up") == 0) down = false;
+			else {
+				fprintf(stderr, "scripted_input: %s:%d: expected 'down' or 'up'\n", path, lineno);
+				continue;
+			}
+			ev->kind = SCRIPT_EVENT_KEY;
+			ev->data.key.scancode = scancode;
+			ev->data.key.down = down;
+			script_event_count++;
+		}
+	}
+	fclose(fp);
+	qsort(script_events, script_event_count, sizeof(scripted_event_t), script_event_cmp);
+}
+
+// Pushes any scripted events whose tick has arrived onto SDL's real event queue.
+// menu_poll_counter mirrors the Rust MENU_POLL_COUNTER mechanism exactly: the pause menu's
+// own inner loop (draw_menu) freezes tick_counter solid for as long as it's open, so without
+// this a multi-step menu-navigation script could never schedule more than one action, all of
+// it landing on whatever tick the menu happened to open at. It's 0 whenever the menu is
+// closed (so effective tick == state_dump_next_tick() exactly, identical to every ordinary
+// gameplay script's behavior), and increments by 1 on every process_events() call while the
+// menu is open.
+static void inject_scripted_input(void) {
+	if (!script_loaded) {
+		load_scripted_input();
+	}
+	if (script_event_count == 0) return;
+
+	static unsigned int menu_poll_counter = 0;
+	if (is_menu_shown) {
+		menu_poll_counter++;
+	} else {
+		menu_poll_counter = 0;
+	}
+	unsigned int tick = state_dump_next_tick() + menu_poll_counter;
+
+	while (script_index < script_event_count && script_events[script_index].tick <= tick) {
+		scripted_event_t* ev = &script_events[script_index];
+		if (ev->kind == SCRIPT_EVENT_KEY) {
+			SDL_Event event;
+			memset(&event, 0, sizeof(event));
+			event.key.type = ev->data.key.down ? SDL_KEYDOWN : SDL_KEYUP;
+			event.key.state = ev->data.key.down ? SDL_PRESSED : SDL_RELEASED;
+			event.key.keysym.scancode = (SDL_Scancode) ev->data.key.scancode;
+			SDL_PushEvent(&event);
+		} else if (ev->kind == SCRIPT_EVENT_MOUSEMOVE) {
+			SDL_WarpMouseInWindow(window_, ev->data.mousemove.x, ev->data.mousemove.y);
+		} else if (ev->kind == SCRIPT_EVENT_MOUSEBUTTON) {
+			SDL_Event event;
+			memset(&event, 0, sizeof(event));
+			event.button.type = SDL_MOUSEBUTTONDOWN;
+			event.button.button = ev->data.mousebutton.button;
+			event.button.state = SDL_PRESSED;
+			event.button.clicks = 1;
+			SDL_PushEvent(&event);
+		}
+		script_index++;
+	}
+}
+
 void process_events() {
+	inject_scripted_input();
 	// Process all events in the queue.
 	// Previously, this procedure would wait for *one* event and process it, then return.
 	// Much like the x86 HLT instruction.
