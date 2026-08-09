@@ -86,7 +86,13 @@ async function main() {
     const sharedInput = await inputReady;
     set_shared_input_buffer(sharedInput);
     const paths = await fetchManifest();
-    postMessage({ type: 'status', message: `preloading ${paths.length} assets...` });
+    // The full asset set is ~4MB/~1000 files (confirmed by `du -sh data/`) -- small enough that
+    // whole-game preload-up-front (no lazy per-level loading) is the right call, not a
+    // corner cut. What a real preload strategy for a set this size still needs is loading
+    // *feedback*: a raw "preloading..." message gives no sense of progress on a slow
+    // connection, so report counts as files complete.
+    let loaded = 0;
+    postMessage({ type: 'status', message: `preloading 0/${paths.length} assets...` });
     // Simple bounded-concurrency fetch pool -- 1000+ simultaneous fetches works but is a
     // needlessly large number of in-flight requests for a local dev server to juggle at once.
     const CONCURRENCY = 24;
@@ -95,6 +101,8 @@ async function main() {
         while (next < paths.length) {
             const path = paths[next++];
             await preloadAsset(path);
+            loaded++;
+            postMessage({ type: 'status', message: `preloading ${loaded}/${paths.length} assets...`, progress: loaded / paths.length });
         }
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
