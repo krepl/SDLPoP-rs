@@ -15,7 +15,7 @@
 // thread will keep writing live keyboard/mouse state into directly, with no further messages
 // needed afterward. See set_shared_input_buffer's doc comment (rust/src/lib.rs) and
 // platform::wasm's "Live input" section for the full design.
-import init, { preload_file, run_game, resume_game_after_restart, set_shared_input_buffer } from './pkg/sdlpop.js';
+import init, { preload_file, run_game, resume_game_after_restart, set_shared_input_buffer, init_persistent_storage } from './pkg/sdlpop.js';
 
 // wasm32 has no working non-local-jump/unwind primitive (catch_unwind cannot catch anything
 // on this target -- see seg000.rs's start_game doc comment), so a game restart (title screen
@@ -98,6 +98,12 @@ async function main() {
         }
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+    // Loads any existing quicksave/PRINCE.SAV/PRINCE.HOF/SDLPoP.cfg from OPFS into the VFS,
+    // and opens the sync access handles fclose()/fflush() write through to for the rest of
+    // the session (rust/src/wasm_persist.rs). Must happen before run_game() -- same reason
+    // set_shared_input_buffer does: nothing here can run once run_game()'s blocking loop
+    // starts.
+    await init_persistent_storage();
     postMessage({ type: 'status', message: `preloaded ${paths.length} assets, starting game` });
     runWithRestartRetries(run_game);
 }

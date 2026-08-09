@@ -516,10 +516,12 @@ pub unsafe extern "C" fn __errno_location() -> *mut c_int {
 // Semantics: read-mode opens look up the exact path string in `VFS_STORE`; nothing is
 // fetched lazily here (a synchronous-XHR-inside-a-Worker fallback is a reasonable future
 // refinement, not implemented yet). Write-mode opens start with an empty buffer; on
-// `fclose`, the buffer is copied back into `VFS_STORE` under the same path, so a
-// quicksave-then-quickload round-trip works within one session even with no real backing
-// storage yet -- it just doesn't survive a page reload (another deferred refinement, e.g.
-// wiring to IndexedDB).
+// `fclose`/`fflush`, the buffer is copied back into `VFS_STORE` under the same path, so a
+// quicksave-then-quickload round-trip works within one session with no real backing storage
+// at all. A handful of known user-writable paths (quicksave, PRINCE.SAV, PRINCE.HOF,
+// SDLPoP.cfg) additionally get a real OPFS write-through here (`wasm_persist::
+// persist_if_tracked`), so those specific files DO survive a page reload -- everything else
+// (preloaded read-only assets, a recorded replay) stays in-memory-only, unchanged.
 // ============================================================================
 
 struct VfsFile {
@@ -706,6 +708,7 @@ pub unsafe extern "C" fn fwrite(ptr: *const c_void, size: usize, count: usize, s
 pub unsafe extern "C" fn fclose(stream: *mut c_void) -> c_int {
     if let Some(f) = open_files().remove(&(stream as usize)) {
         if f.writable {
+            crate::wasm_persist::persist_if_tracked(&f.path, &f.data);
             vfs_write(&f.path, f.data);
         }
     }
@@ -742,6 +745,7 @@ pub unsafe extern "C" fn feof(stream: *mut c_void) -> c_int {
 pub unsafe extern "C" fn fflush(stream: *mut c_void) -> c_int {
     if let Some(f) = open_files().get(&(stream as usize)) {
         if f.writable {
+            crate::wasm_persist::persist_if_tracked(&f.path, &f.data);
             vfs_write(&f.path, f.data.clone());
         }
     }

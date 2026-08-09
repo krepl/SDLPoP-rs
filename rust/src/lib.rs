@@ -124,6 +124,10 @@ pub mod wasm_libc;
 // that file) and platform::wasm (also compiled on native under `cargo test`, see there).
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod wasm_vfs;
+// OPFS-backed persistence for quicksave/save/HOF/config (Phase 2 feature work) -- wasm32-only,
+// uses web_sys types not available/needed on native.
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_persist;
 
 /// Browser entry point (Phase 2 exploratory milestone). `main()` in `main.rs` is the
 /// wasm module's `main` export, but wasm-bindgen's JS glue doesn't call it automatically

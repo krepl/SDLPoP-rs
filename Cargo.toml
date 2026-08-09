@@ -38,6 +38,7 @@ sdl2 = { version = "0.38.0", features = ["image"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "console",
@@ -45,5 +46,13 @@ web-sys = { version = "0.3", features = [
     "ImageData", "AudioContext", "AudioBuffer", "AudioBufferSourceNode",
     "ScriptProcessorNode", "AudioContextOptions", "Performance",
     "Storage", "KeyboardEvent", "MouseEvent",
+    # Origin Private File System (OPFS) -- real, synchronous file I/O from inside a Worker,
+    # used to persist quicksave/PRINCE.SAV/PRINCE.HOF/SDLPoP.cfg across page reloads
+    # (rust/src/wasm_persist.rs). FileSystemSyncAccessHandle's read/write/truncate/flush are
+    # genuinely synchronous (unlike IndexedDB), which is what makes this fit the existing
+    # blocking-call-inside-a-Worker architecture with no Atomics/second-Worker plumbing.
+    "WorkerGlobalScope", "WorkerNavigator", "StorageManager", "FileSystemDirectoryHandle",
+    "FileSystemFileHandle", "FileSystemGetFileOptions", "FileSystemSyncAccessHandle",
+    "FileSystemReadWriteOptions",
 ] }
 console_error_panic_hook = "0.1"
