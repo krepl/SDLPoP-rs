@@ -48,7 +48,7 @@
 
 use std::os::raw::{c_char, c_int, c_short, c_uint};
 use super::*;
-use crate::platform::Renderer;
+use crate::platform::{Rect, Renderer};
 
 extern "C" {
     fn mkdir(path: *const c_char, mode: c_uint) -> c_int;
@@ -993,7 +993,7 @@ pub unsafe extern "C" fn save_level_screenshot(want_extras: bool) {
                 // SDL_UpperBlit reads only x/y from dstrect and overwrites w/h
                 // with the clipped source size, which is why C can leave them
                 // uninitialised here.
-                let mut dest_rect = SDL_Rect {
+                let mut dest_rect = Rect {
                     x: x * 320,
                     y: y * 189,
                     w: 0,

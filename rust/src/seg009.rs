@@ -354,7 +354,7 @@ union SDL_Event {
 // (rust/src/platform/), reached via crate::platform::sdl::shared_renderer()/
 // shared_audio()/shared_input(). See those modules for the raw sdl2::sys calls.
 // ============================================================================
-use crate::platform::{AudioBackend, InputSource, Renderer};
+use crate::platform::{AudioBackend, InputSource, Rect, Renderer};
 
 // Defined in menu.c (still compiled as C); not in proto.h.
 extern "C" {
@@ -367,13 +367,13 @@ extern "C" {
 
 // SDL_BlitSurface and SDL_BlitScaled are macros for SDL_UpperBlit / SDL_UpperBlitScaled.
 #[inline]
-unsafe fn SDL_BlitSurface(src: *mut SDL_Surface, srcrect: *const SDL_Rect,
-                          dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int {
+unsafe fn SDL_BlitSurface(src: *mut SDL_Surface, srcrect: *const Rect,
+                          dst: *mut SDL_Surface, dstrect: *mut Rect) -> c_int {
     crate::platform::sdl::shared_renderer().blit(src, srcrect, dst, dstrect)
 }
 #[inline]
-unsafe fn SDL_BlitScaled(src: *mut SDL_Surface, srcrect: *const SDL_Rect,
-                         dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int {
+unsafe fn SDL_BlitScaled(src: *mut SDL_Surface, srcrect: *const Rect,
+                         dst: *mut SDL_Surface, dstrect: *mut Rect) -> c_int {
     crate::platform::sdl::shared_renderer().blit_scaled(src, srcrect, dst, dstrect)
 }
 
@@ -2445,7 +2445,7 @@ pub unsafe extern "C" fn input_str(
     color: c_int,
     bgcolor: c_int,
 ) -> c_int {
-    let mut sdlrect: SDL_Rect = core::mem::zeroed();
+    let mut sdlrect: Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut sdlrect);
     crate::platform::sdl::shared_input().start_text_input(sdlrect.x, sdlrect.y, sdlrect.w, sdlrect.h);
 
@@ -3680,7 +3680,7 @@ unsafe fn palette_rgb8(color: byte) -> (u8, u8, u8) {
 /// `(x, y, w, h)`.
 // seg009 rect_to_sdlrect
 #[no_mangle]
-pub unsafe extern "C" fn rect_to_sdlrect(rect: *const rect_type, sdlrect: *mut SDL_Rect) {
+pub unsafe extern "C" fn rect_to_sdlrect(rect: *const rect_type, sdlrect: *mut Rect) {
     (*sdlrect).x = (*rect).left as c_int;
     (*sdlrect).y = (*rect).top as c_int;
     (*sdlrect).w = ((*rect).right - (*rect).left) as c_int;
@@ -3694,9 +3694,9 @@ pub unsafe extern "C" fn rect_to_sdlrect(rect: *const rect_type, sdlrect: *mut S
 // seg009 method_1_blit_rect
 #[no_mangle]
 pub unsafe extern "C" fn method_1_blit_rect(target_surface: *mut surface_type, source_surface: *mut surface_type, target_rect: *const rect_type, source_rect: *const rect_type, blit: c_int) {
-    let mut src_rect: SDL_Rect = core::mem::zeroed();
+    let mut src_rect: Rect = core::mem::zeroed();
     rect_to_sdlrect(source_rect, &mut src_rect);
-    let mut dest_rect: SDL_Rect = core::mem::zeroed();
+    let mut dest_rect: Rect = core::mem::zeroed();
     rect_to_sdlrect(target_rect, &mut dest_rect);
 
     let transparent = blit != blitters_blitters_0_no_transp as c_int;
@@ -3747,8 +3747,8 @@ pub unsafe extern "C" fn method_3_blit_mono(image: *mut image_type, xpos: c_int,
     crate::platform::sdl::shared_renderer().unlock_surface(colored_image);
 
     let (image_w, image_h) = crate::platform::sdl::shared_renderer().surface_size(image);
-    let src_rect = SDL_Rect { x: 0, y: 0, w: image_w, h: image_h };
-    let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: image_w, h: image_h };
+    let src_rect = Rect { x: 0, y: 0, w: image_w, h: image_h };
+    let mut dest_rect = Rect { x: xpos, y: ypos, w: image_w, h: image_h };
 
     crate::platform::sdl::shared_renderer().set_blend_mode(colored_image, SDL_BLENDMODE_BLEND);
     crate::platform::sdl::shared_renderer().set_blend_mode(current_target_surface, SDL_BLENDMODE_BLEND);
@@ -3790,7 +3790,7 @@ unsafe fn RGB24_bug_check() -> bool {
 
 /// `SDL_FillRect` with the 24-bit channel order pre-swapped on affected SDL
 /// builds. See [`RGB24_bug_check`].
-unsafe fn safe_fill_rect(dst: *mut SDL_Surface, rect: *const SDL_Rect, mut color: u32) -> c_int {
+unsafe fn safe_fill_rect(dst: *mut SDL_Surface, rect: *const Rect, mut color: u32) -> c_int {
     if crate::platform::sdl::shared_renderer().surface_format_info(dst).bits_per_pixel == 24 && RGB24_bug_check() {
         color = ((color & 0xFF) << 16) | (color & 0xFF00) | ((color & 0xFF0000) >> 16);
     }
@@ -3801,7 +3801,7 @@ unsafe fn safe_fill_rect(dst: *mut SDL_Surface, rect: *const SDL_Rect, mut color
 // seg009 method_5_rect
 #[no_mangle]
 pub unsafe extern "C" fn method_5_rect(rect: *const rect_type, _blit: c_int, color: byte) -> *const rect_type {
-    let mut dest_rect: SDL_Rect = core::mem::zeroed();
+    let mut dest_rect: Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut dest_rect);
     let (pr, pg, pb) = palette_rgb8(color);
     let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba(crate::platform::sdl::shared_renderer().surface_format_ptr(current_target_surface), pr, pg, pb, 0xFF);
@@ -3821,7 +3821,7 @@ pub unsafe extern "C" fn method_5_rect(rect: *const rect_type, _blit: c_int, col
 // seg009 draw_rect_with_alpha
 #[no_mangle]
 pub unsafe extern "C" fn draw_rect_with_alpha(rect: *const rect_type, color: byte, alpha: byte) {
-    let mut dest_rect: SDL_Rect = core::mem::zeroed();
+    let mut dest_rect: Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut dest_rect);
     let (pr, pg, pb) = palette_rgb8(color);
     let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba(crate::platform::sdl::shared_renderer().surface_format_ptr(overlay_surface), pr, pg, pb, alpha);
@@ -3843,7 +3843,7 @@ pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte)
         crate::c_log(&format!("draw_rect_contours: not implemented for {} bit surfaces\n", crate::platform::sdl::shared_renderer().surface_format_info(current_target_surface).bits_per_pixel as c_int));
         return;
     }
-    let mut dest_rect: SDL_Rect = core::mem::zeroed();
+    let mut dest_rect: Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut dest_rect);
     let (pr, pg, pb) = palette_rgb8(color);
     let rgb_color: u32 = crate::platform::sdl::shared_renderer().map_rgba(crate::platform::sdl::shared_renderer().surface_format_ptr(overlay_surface), pr, pg, pb, 0xFF);
@@ -3885,7 +3885,7 @@ pub unsafe extern "C" fn draw_rect_contours(rect: *const rect_type, color: byte)
 /// SDL has no XOR blend mode, so the destination region is read out, XORed byte
 /// by byte with the image, and written back. Used for the flashing "press any
 /// key" style effects.
-unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, image: *mut SDL_Surface, src_rect: *mut SDL_Rect) {
+unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut Rect, image: *mut SDL_Surface, src_rect: *mut Rect) {
     if (*dest_rect).w != (*src_rect).w || (*dest_rect).h != (*src_rect).h {
         crate::c_log("blit_xor: dest_rect and src_rect have different sizes\n");
         quit(1);
@@ -3900,7 +3900,7 @@ unsafe fn blit_xor(target_surface: *mut SDL_Surface, dest_rect: *mut SDL_Rect, i
         sdlperror(cs!("blit_xor: SDL_CreateRGBSurface"));
         quit(1);
     }
-    let mut dest_rect2: SDL_Rect = *src_rect;
+    let mut dest_rect2: Rect = *src_rect;
     // Read what is currently where we want to draw the new image.
     if SDL_BlitSurface(target_surface, dest_rect, helper_surface, &mut dest_rect2) != 0 {
         sdlperror(cs!("blit_xor: SDL_BlitSurface"));
@@ -4000,8 +4000,8 @@ pub unsafe extern "C" fn method_6_blit_img_to_scr(image: *mut image_type, xpos: 
     }
 
     let (image_w, image_h) = crate::platform::sdl::shared_renderer().surface_size(image);
-    let mut src_rect = SDL_Rect { x: 0, y: 0, w: image_w, h: image_h };
-    let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: image_w, h: image_h };
+    let mut src_rect = Rect { x: 0, y: 0, w: image_w, h: image_h };
+    let mut dest_rect = Rect { x: xpos, y: ypos, w: image_w, h: image_h };
 
     if blit == blitters_blitters_3_xor as c_int {
         blit_xor(current_target_surface, &mut dest_rect, image, &mut src_rect);
@@ -4343,7 +4343,7 @@ unsafe fn draw_overlay() {
         } else {
             drawn_rect = screen_rect;
         }
-        let mut sdl_rect: SDL_Rect = core::mem::zeroed();
+        let mut sdl_rect: Rect = core::mem::zeroed();
         rect_to_sdlrect(&drawn_rect, &mut sdl_rect);
         SDL_BlitSurface(onscreen_surface_, core::ptr::null(), merged_surface, null_mut());
         SDL_BlitSurface(overlay_surface, &sdl_rect, merged_surface, &mut sdl_rect);
@@ -5096,7 +5096,7 @@ pub unsafe extern "C" fn init_timer(frequency: c_int) {
 // seg009:35F6 set_clip_rect
 #[no_mangle]
 pub unsafe extern "C" fn set_clip_rect(rect: *const rect_type) {
-    let mut clip_rect: SDL_Rect = core::mem::zeroed();
+    let mut clip_rect: Rect = core::mem::zeroed();
     rect_to_sdlrect(rect, &mut clip_rect);
     crate::platform::sdl::shared_renderer().set_clip_rect(current_target_surface, &clip_rect);
 }
@@ -5128,7 +5128,7 @@ pub unsafe extern "C" fn set_bg_attr(vga_pal_index: c_int, hc_pal_index: c_int) 
             sdlperror(cs!("set_bg_attr: SDL_SetColorKey"));
             quit(1);
         }
-        let mut rect = SDL_Rect { x: 0, y: 0, w: 0, h: 0 };
+        let mut rect = Rect { x: 0, y: 0, w: 0, h: 0 };
         let (offscreen_w, offscreen_h) = crate::platform::sdl::shared_renderer().surface_size(offscreen_surface);
         rect.w = offscreen_w;
         rect.h = offscreen_h;
@@ -5143,7 +5143,7 @@ pub unsafe extern "C" fn set_bg_attr(vga_pal_index: c_int, hc_pal_index: c_int) 
             flip_screen(offscreen_surface);
         }
         // Then draw the offscreen image onto it.
-        let rp = &mut rect as *mut SDL_Rect;
+        let rp = &mut rect as *mut Rect;
         if SDL_BlitSurface(offscreen_surface, rp, onscreen_surface_, rp) != 0 {
             sdlperror(cs!("set_bg_attr: SDL_BlitSurface"));
             quit(1);

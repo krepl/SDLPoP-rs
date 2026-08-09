@@ -35,7 +35,8 @@
 
 use std::os::raw::{c_char, c_int};
 use super::*;
-use crate::platform::Renderer;
+use crate::platform::{Rect, Renderer};
+use crate::seg009::rect_to_sdlrect;
 
 macro_rules! cs {
     ($s:literal) => {
@@ -46,9 +47,9 @@ macro_rules! cs {
 #[inline]
 unsafe fn SDL_BlitSurface(
     src: *mut SDL_Surface,
-    srcrect: *const SDL_Rect,
+    srcrect: *const Rect,
     dst: *mut SDL_Surface,
-    dstrect: *mut SDL_Rect,
+    dstrect: *mut Rect,
 ) -> c_int {
     crate::platform::sdl::shared_renderer().blit(src, srcrect, dst, dstrect)
 }
@@ -163,7 +164,7 @@ pub unsafe extern "C" fn redraw_lighting() {
 
         // Align the center of lighting mask to the center of the flame.
         let (mask_w, mask_h) = crate::platform::sdl::shared_renderer().surface_size(lighting_mask);
-        let mut dest_rect = SDL_Rect {
+        let mut dest_rect = Rect {
             x: x - mask_w / 2,
             y: y - mask_h / 2,
             w: mask_w,
@@ -198,9 +199,9 @@ pub unsafe extern "C" fn update_lighting(target_rect_ptr: *const rect_type) {
         return;
     }
 
-    let mut sdlrect: SDL_Rect = core::mem::zeroed();
+    let mut sdlrect: Rect = core::mem::zeroed();
     rect_to_sdlrect(target_rect_ptr, &mut sdlrect);
-    let rect = &mut sdlrect as *mut SDL_Rect;
+    let rect = &mut sdlrect as *mut Rect;
     let result = SDL_BlitSurface(screen_overlay, rect, onscreen_surface_, rect);
     if result != 0 {
         sdlperror(cs!("SDL_BlitSurface (screen_overlay)"));

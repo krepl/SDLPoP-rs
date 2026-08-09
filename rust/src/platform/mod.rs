@@ -53,7 +53,24 @@ pub mod sdl {
 
 use std::os::raw::c_int;
 
-use crate::{SDL_Color, SDL_PixelFormat, SDL_RWops, SDL_Rect, SDL_Surface};
+use crate::{SDL_Color, SDL_PixelFormat, SDL_RWops, SDL_Surface};
+
+/// Plain-data replacement for the bindgen-generated `SDL_Rect` at the `Renderer` trait
+/// boundary and in every shared (non-platform) call site that constructs a rect value --
+/// `SDL_Rect` has a simple, ABI-stable 4-`i32` layout with no coupling to any other SDL
+/// struct, unlike `SDL_Color` (whose abstraction is coupled to `SDL_Palette`'s
+/// bindgen-fixed `colors: *mut SDL_Color` field and deferred alongside it/`SDL_PixelFormat`
+/// -- see the task tracking this). Both backends (`sdl.rs`/`wasm.rs`) convert to/from the
+/// real SDL-shaped type internally; nothing outside `platform/` needs to know `SDL_Rect`
+/// exists anymore.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct Rect {
+    pub x: c_int,
+    pub y: c_int,
+    pub w: c_int,
+    pub h: c_int,
+}
 
 /// Plain-data copy of the `SDL_PixelFormat` fields game logic actually reads (Phase A of
 /// `docs/plans/13-platform-architecture-unification.md`) -- returned by
@@ -151,9 +168,9 @@ pub trait Renderer {
     /// thread. Not owned by the caller; SDL invalidates it on the next SDL call.
     unsafe fn get_error(&mut self) -> *const std::os::raw::c_char;
     /// Returns the raw SDL result code, same reasoning as `set_blend_mode`.
-    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int;
+    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const Rect, dst: *mut SDL_Surface, dst_rect: *mut Rect) -> c_int;
     /// Returns the raw SDL result code, same reasoning as `set_blend_mode`.
-    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect, color: u32) -> c_int;
+    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const Rect, color: u32) -> c_int;
     /// Pushes a surface to the screen (the present step at the end of each game-loop
     /// tick -- `SDL_UpdateTexture` + `SDL_RenderCopy` + `SDL_RenderPresent` today).
     unsafe fn present(&mut self, frame: *mut SDL_Surface);
@@ -193,7 +210,7 @@ pub trait Renderer {
     // that exists today, but the real renderer_/window_ pointers are already live.
     unsafe fn render_get_scale(&mut self, renderer: *mut crate::SDL_Renderer) -> (f32, f32);
     unsafe fn render_get_logical_size(&mut self, renderer: *mut crate::SDL_Renderer) -> (c_int, c_int);
-    unsafe fn render_get_viewport(&mut self, renderer: *mut crate::SDL_Renderer) -> SDL_Rect;
+    unsafe fn render_get_viewport(&mut self, renderer: *mut crate::SDL_Renderer) -> Rect;
     unsafe fn render_set_integer_scale(&mut self, renderer: *mut crate::SDL_Renderer, enable: bool) -> c_int;
 
     // ------------------------------------------------------------------------------
@@ -206,16 +223,16 @@ pub trait Renderer {
     // out of scope for Step C; see the plan's Step D notes on de-globalization.
     // ------------------------------------------------------------------------------
     unsafe fn map_rgb(&mut self, format: *const SDL_PixelFormat, r: u8, g: u8, b: u8) -> u32;
-    unsafe fn set_clip_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect) -> c_int;
+    unsafe fn set_clip_rect(&mut self, surf: *mut SDL_Surface, rect: *const Rect) -> c_int;
     unsafe fn convert_surface_format(&mut self, src: *mut SDL_Surface, pixel_format: u32, flags: u32) -> *mut SDL_Surface;
-    unsafe fn blit_scaled(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int;
+    unsafe fn blit_scaled(&mut self, src: *mut SDL_Surface, src_rect: *const Rect, dst: *mut SDL_Surface, dst_rect: *mut Rect) -> c_int;
     unsafe fn set_window_icon(&mut self, window: *mut crate::SDL_Window, icon: *mut SDL_Surface);
     unsafe fn rw_from_const_mem(&mut self, mem: *const std::os::raw::c_void, size: c_int) -> *mut SDL_RWops;
     unsafe fn create_texture(&mut self, renderer: *mut crate::SDL_Renderer, format: u32, access: c_int, w: c_int, h: c_int) -> *mut crate::SDL_Texture;
-    unsafe fn update_texture(&mut self, texture: *mut crate::SDL_Texture, rect: *const SDL_Rect, pixels: *const std::os::raw::c_void, pitch: c_int) -> c_int;
+    unsafe fn update_texture(&mut self, texture: *mut crate::SDL_Texture, rect: *const Rect, pixels: *const std::os::raw::c_void, pitch: c_int) -> c_int;
     unsafe fn set_render_target(&mut self, renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture) -> c_int;
     unsafe fn render_clear(&mut self, renderer: *mut crate::SDL_Renderer) -> c_int;
-    unsafe fn render_copy(&mut self, renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture, src_rect: *const SDL_Rect, dst_rect: *const SDL_Rect) -> c_int;
+    unsafe fn render_copy(&mut self, renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture, src_rect: *const Rect, dst_rect: *const Rect) -> c_int;
     unsafe fn render_present(&mut self, renderer: *mut crate::SDL_Renderer);
     unsafe fn render_set_logical_size(&mut self, renderer: *mut crate::SDL_Renderer, w: c_int, h: c_int) -> c_int;
     unsafe fn get_renderer_output_size(&mut self, renderer: *mut crate::SDL_Renderer) -> (c_int, c_int);

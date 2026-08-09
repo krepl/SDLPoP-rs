@@ -25,9 +25,9 @@
 use std::collections::HashMap;
 use std::os::raw::c_int;
 
-use crate::{SDL_Color, SDL_PixelFormat, SDL_RWops, SDL_Rect, SDL_Surface};
+use crate::{SDL_Color, SDL_PixelFormat, SDL_RWops, SDL_Surface};
 
-use super::{AudioBackend, FileSystem, InputSource, PixelFormatInfo, Renderer};
+use super::{AudioBackend, FileSystem, InputSource, PixelFormatInfo, Rect, Renderer};
 
 // ============================================================================
 // Surface store. Every `*mut SDL_Surface` handed to game code is really just an opaque
@@ -57,7 +57,7 @@ struct WasmSurface {
     color_key: Option<u32>,
     blend_mode: c_int,
     alpha_mod: u8,
-    clip_rect: Option<SDL_Rect>,
+    clip_rect: Option<Rect>,
     /// Real, heap-allocated `SDL_PixelFormat` mirroring this surface's own mask/depth
     /// fields (and `palette`'s pointer, if any) -- exists solely so `surface_format_ptr`
     /// can hand back something genuinely dereferenceable for the handful of call sites
@@ -739,15 +739,15 @@ impl Renderer for WasmRenderer {
         MSG.as_ptr() as *const std::os::raw::c_char
     }
 
-    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int {
+    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const Rect, dst: *mut SDL_Surface, dst_rect: *mut Rect) -> c_int {
         self.blit_impl(src, src_rect, dst, dst_rect, false)
     }
 
-    unsafe fn blit_scaled(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int {
+    unsafe fn blit_scaled(&mut self, src: *mut SDL_Surface, src_rect: *const Rect, dst: *mut SDL_Surface, dst_rect: *mut Rect) -> c_int {
         self.blit_impl(src, src_rect, dst, dst_rect, true)
     }
 
-    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect, color: u32) -> c_int {
+    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const Rect, color: u32) -> c_int {
         let s = surf_mut(surf);
         let (x0, y0, w, h) = match rect.as_ref() {
             Some(r) => (r.x, r.y, r.w, r.h),
@@ -965,12 +965,12 @@ impl Renderer for WasmRenderer {
     unsafe fn render_get_logical_size(&mut self, _renderer: *mut crate::SDL_Renderer) -> (c_int, c_int) {
         LOGICAL_SIZE
     }
-    unsafe fn render_get_viewport(&mut self, _renderer: *mut crate::SDL_Renderer) -> SDL_Rect {
+    unsafe fn render_get_viewport(&mut self, _renderer: *mut crate::SDL_Renderer) -> Rect {
         // No SDL_RenderSetViewport equivalent exists here (nothing in this codebase calls
         // one -- confirmed by grep), so the viewport is always the full logical render
         // target, matching real SDL's own default.
         let (w, h) = LOGICAL_SIZE;
-        SDL_Rect { x: 0, y: 0, w, h }
+        Rect { x: 0, y: 0, w, h }
     }
     unsafe fn render_set_integer_scale(&mut self, _renderer: *mut crate::SDL_Renderer, _enable: bool) -> c_int {
         // Reachable from the pause menu's "Use integer scaling" toggle (menu.rs, both
@@ -983,7 +983,7 @@ impl Renderer for WasmRenderer {
         0
     }
 
-    unsafe fn set_clip_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect) -> c_int {
+    unsafe fn set_clip_rect(&mut self, surf: *mut SDL_Surface, rect: *const Rect) -> c_int {
         surf_mut(surf).clip_rect = rect.as_ref().copied();
         1
     }
@@ -1013,7 +1013,7 @@ impl Renderer for WasmRenderer {
         textures().insert(id, WasmTexture { w, h, bytes_per_pixel, pixels });
         id as *mut crate::SDL_Texture
     }
-    unsafe fn update_texture(&mut self, texture: *mut crate::SDL_Texture, rect: *const SDL_Rect, pixels: *const std::os::raw::c_void, pitch: c_int) -> c_int {
+    unsafe fn update_texture(&mut self, texture: *mut crate::SDL_Texture, rect: *const Rect, pixels: *const std::os::raw::c_void, pitch: c_int) -> c_int {
         let Some(t) = textures().get_mut(&(texture as usize)) else { return -1 };
         let (x0, y0, w, h) = match rect.as_ref() {
             Some(r) => (r.x, r.y, r.w, r.h),
@@ -1041,7 +1041,7 @@ impl Renderer for WasmRenderer {
         pixels.fill(0);
         0
     }
-    unsafe fn render_copy(&mut self, _renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture, src_rect: *const SDL_Rect, dst_rect: *const SDL_Rect) -> c_int {
+    unsafe fn render_copy(&mut self, _renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture, src_rect: *const Rect, dst_rect: *const Rect) -> c_int {
         // Copying a texture onto itself (render target == source) isn't something real SDL
         // supports either -- reject it explicitly rather than let it slip through, since
         // `current_target_mut()`'s `'static` borrow doesn't let the compiler catch the
@@ -1329,7 +1329,7 @@ impl WasmRenderer {
     unsafe fn convert_to(&mut self, src: *mut SDL_Surface, depth: c_int, rmask: u32, gmask: u32, bmask: u32, amask: u32) -> *mut SDL_Surface {
         let (w, h) = self.surface_size(src);
         let dst = self.create_surface(w, h, depth, rmask, gmask, bmask, amask);
-        let full_rect = SDL_Rect { x: 0, y: 0, w, h };
+        let full_rect = Rect { x: 0, y: 0, w, h };
         let mut dst_rect = full_rect;
         self.blit_impl(src, &full_rect, dst, &mut dst_rect, false);
         dst
@@ -1353,7 +1353,7 @@ impl WasmRenderer {
     ///   value was simply never consulted).
     /// `ADD`/`MOD` compositing (`lighting.rs`'s overlay) is still not implemented -- nothing
     /// exercises it yet.
-    unsafe fn blit_impl(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect, scaled: bool) -> c_int {
+    unsafe fn blit_impl(&mut self, src: *mut SDL_Surface, src_rect: *const Rect, dst: *mut SDL_Surface, dst_rect: *mut Rect, scaled: bool) -> c_int {
         let s = surf_mut(src);
         let (sx0, sy0, sw, sh) = match src_rect.as_ref() {
             Some(r) => (r.x, r.y, r.w, r.h),

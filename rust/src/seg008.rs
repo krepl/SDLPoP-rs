@@ -83,7 +83,7 @@
 
 use std::os::raw::{c_int, c_short, c_char, c_void};
 use super::*;
-use crate::platform::Renderer;
+use crate::platform::{Rect, Renderer};
 use crate::state::State;
 
 extern "C" {
@@ -1520,8 +1520,8 @@ fn hflip(input: *mut SDL_Surface) -> *mut SDL_Surface {
         let mut source_x = 0;
         let mut target_x = width - 1;
         while source_x < width {
-            let srcrect = SDL_Rect { x: source_x, y: 0, w: 1, h: height };
-            let mut dstrect = SDL_Rect { x: target_x, y: 0, w: 1, h: height };
+            let srcrect = Rect { x: source_x, y: 0, w: 1, h: height };
+            let mut dstrect = Rect { x: target_x, y: 0, w: 1, h: height };
             if renderer.blit(input, &srcrect, output, &mut dstrect) != 0 {
                 sdlperror(b"hflip: SDL_BlitSurface\0".as_ptr() as *const c_char);
                 quit(1);

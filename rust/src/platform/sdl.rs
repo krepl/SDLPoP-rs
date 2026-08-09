@@ -21,9 +21,13 @@ use sdl2::AudioSubsystem;
 use sdl2::EventPump;
 use sdl2::TimerSubsystem;
 
-use crate::{SDL_Color, SDL_PixelFormat, SDL_Rect, SDL_Surface};
+use crate::{SDL_Color, SDL_PixelFormat, SDL_Surface};
 
 use super::{AudioBackend, FileSystem, InputSource, Platform, Renderer};
+// Aliased to avoid colliding with `sdl2::rect::Rect` (the crate's own safe wrapper,
+// imported above and still used at line ~555) -- this is `platform::Rect`, the plain type
+// the `Renderer` trait now uses instead of the bindgen `SDL_Rect`.
+use super::Rect as PlatformRect;
 
 // This crate's own bindgen invocation (build.rs, allowlisted to src/ only) doesn't
 // emit SDL_* function declarations -- only the struct types (SDL_Surface/SDL_Rect/
@@ -36,8 +40,11 @@ use super::{AudioBackend, FileSystem, InputSource, Platform, Renderer};
 unsafe fn as_sys_surface(surf: *mut SDL_Surface) -> *mut sdl2::sys::SDL_Surface {
     surf as *mut sdl2::sys::SDL_Surface
 }
-unsafe fn as_sys_rect(rect: *const SDL_Rect) -> *const sdl2::sys::SDL_Rect {
+unsafe fn as_sys_rect(rect: *const PlatformRect) -> *const sdl2::sys::SDL_Rect {
     rect as *const sdl2::sys::SDL_Rect
+}
+unsafe fn as_sys_rect_mut(rect: *mut PlatformRect) -> *mut sdl2::sys::SDL_Rect {
+    rect as *mut sdl2::sys::SDL_Rect
 }
 
 pub struct SdlRenderer {
@@ -178,11 +185,11 @@ impl Renderer for SdlRenderer {
         sdl2::sys::SDL_GetError()
     }
 
-    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int {
-        sdl2::sys::SDL_UpperBlit(as_sys_surface(src), as_sys_rect(src_rect), as_sys_surface(dst), dst_rect as *mut sdl2::sys::SDL_Rect)
+    unsafe fn blit(&mut self, src: *mut SDL_Surface, src_rect: *const PlatformRect, dst: *mut SDL_Surface, dst_rect: *mut PlatformRect) -> c_int {
+        sdl2::sys::SDL_UpperBlit(as_sys_surface(src), as_sys_rect(src_rect), as_sys_surface(dst), as_sys_rect_mut(dst_rect))
     }
 
-    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect, color: u32) -> c_int {
+    unsafe fn fill_rect(&mut self, surf: *mut SDL_Surface, rect: *const PlatformRect, color: u32) -> c_int {
         sdl2::sys::SDL_FillRect(as_sys_surface(surf), as_sys_rect(rect), color)
     }
 
@@ -276,10 +283,10 @@ impl Renderer for SdlRenderer {
         (w, h)
     }
 
-    unsafe fn render_get_viewport(&mut self, renderer: *mut crate::SDL_Renderer) -> SDL_Rect {
+    unsafe fn render_get_viewport(&mut self, renderer: *mut crate::SDL_Renderer) -> PlatformRect {
         let mut rect: sdl2::sys::SDL_Rect = std::mem::zeroed();
         sdl2::sys::SDL_RenderGetViewport(renderer as *mut sdl2::sys::SDL_Renderer, &mut rect);
-        SDL_Rect { x: rect.x, y: rect.y, w: rect.w, h: rect.h }
+        PlatformRect { x: rect.x, y: rect.y, w: rect.w, h: rect.h }
     }
 
     unsafe fn render_set_integer_scale(&mut self, renderer: *mut crate::SDL_Renderer, enable: bool) -> c_int {
@@ -291,7 +298,7 @@ impl Renderer for SdlRenderer {
         sdl2::sys::SDL_MapRGB(format as *const sdl2::sys::SDL_PixelFormat, r, g, b)
     }
 
-    unsafe fn set_clip_rect(&mut self, surf: *mut SDL_Surface, rect: *const SDL_Rect) -> c_int {
+    unsafe fn set_clip_rect(&mut self, surf: *mut SDL_Surface, rect: *const PlatformRect) -> c_int {
         sdl2::sys::SDL_SetClipRect(as_sys_surface(surf), as_sys_rect(rect)) as c_int
     }
 
@@ -299,8 +306,8 @@ impl Renderer for SdlRenderer {
         sdl2::sys::SDL_ConvertSurfaceFormat(as_sys_surface(src), pixel_format, flags) as *mut SDL_Surface
     }
 
-    unsafe fn blit_scaled(&mut self, src: *mut SDL_Surface, src_rect: *const SDL_Rect, dst: *mut SDL_Surface, dst_rect: *mut SDL_Rect) -> c_int {
-        sdl2::sys::SDL_UpperBlitScaled(as_sys_surface(src), as_sys_rect(src_rect), as_sys_surface(dst), dst_rect as *mut sdl2::sys::SDL_Rect)
+    unsafe fn blit_scaled(&mut self, src: *mut SDL_Surface, src_rect: *const PlatformRect, dst: *mut SDL_Surface, dst_rect: *mut PlatformRect) -> c_int {
+        sdl2::sys::SDL_UpperBlitScaled(as_sys_surface(src), as_sys_rect(src_rect), as_sys_surface(dst), as_sys_rect_mut(dst_rect))
     }
 
     unsafe fn set_window_icon(&mut self, window: *mut crate::SDL_Window, icon: *mut SDL_Surface) {
@@ -315,7 +322,7 @@ impl Renderer for SdlRenderer {
         sdl2::sys::SDL_CreateTexture(renderer as *mut sdl2::sys::SDL_Renderer, format, access, w, h) as *mut crate::SDL_Texture
     }
 
-    unsafe fn update_texture(&mut self, texture: *mut crate::SDL_Texture, rect: *const SDL_Rect, pixels: *const std::os::raw::c_void, pitch: c_int) -> c_int {
+    unsafe fn update_texture(&mut self, texture: *mut crate::SDL_Texture, rect: *const PlatformRect, pixels: *const std::os::raw::c_void, pitch: c_int) -> c_int {
         sdl2::sys::SDL_UpdateTexture(texture as *mut sdl2::sys::SDL_Texture, as_sys_rect(rect), pixels, pitch)
     }
 
@@ -327,7 +334,7 @@ impl Renderer for SdlRenderer {
         sdl2::sys::SDL_RenderClear(renderer as *mut sdl2::sys::SDL_Renderer)
     }
 
-    unsafe fn render_copy(&mut self, renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture, src_rect: *const SDL_Rect, dst_rect: *const SDL_Rect) -> c_int {
+    unsafe fn render_copy(&mut self, renderer: *mut crate::SDL_Renderer, texture: *mut crate::SDL_Texture, src_rect: *const PlatformRect, dst_rect: *const PlatformRect) -> c_int {
         sdl2::sys::SDL_RenderCopy(renderer as *mut sdl2::sys::SDL_Renderer, texture as *mut sdl2::sys::SDL_Texture, as_sys_rect(src_rect), as_sys_rect(dst_rect))
     }
 

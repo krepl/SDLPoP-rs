@@ -9,8 +9,8 @@
 use std::sync::{Mutex, Once};
 
 use crate::platform::wasm::WasmRenderer;
-use crate::platform::Renderer;
-use crate::{SDL_Color, SDL_Rect};
+use crate::platform::{Rect, Renderer};
+use crate::SDL_Color;
 
 static SDL_VIDEO_INIT: Once = Once::new();
 
@@ -45,8 +45,8 @@ unsafe fn draw_test_scene<R: Renderer>(r: &mut R) -> Vec<u8> {
     r.set_palette(src, &key as *const SDL_Color, 7, 1);
     r.fill_rect(src, std::ptr::null(), 5);
     // Punch one color-keyed hole at (1,1).
-    let hole_rect = SDL_Rect { x: 1, y: 1, w: 1, h: 1 };
-    r.fill_rect(src, &hole_rect as *const SDL_Rect, 7);
+    let hole_rect = Rect { x: 1, y: 1, w: 1, h: 1 };
+    r.fill_rect(src, &hole_rect as *const Rect, 7);
     r.set_color_key(src, true, 7);
 
     // 4x4 8bpp indexed destination, pre-filled with a sentinel index so we can see the
@@ -62,9 +62,9 @@ unsafe fn draw_test_scene<R: Renderer>(r: &mut R) -> Vec<u8> {
     r.set_surface_palette(dst, src_palette);
     r.fill_rect(dst, std::ptr::null(), 9);
 
-    let full = SDL_Rect { x: 0, y: 0, w: 4, h: 4 };
+    let full = Rect { x: 0, y: 0, w: 4, h: 4 };
     let mut dst_rect = full;
-    let blit_result = r.blit(src, &full as *const SDL_Rect, dst, &mut dst_rect as *mut SDL_Rect);
+    let blit_result = r.blit(src, &full as *const Rect, dst, &mut dst_rect as *mut Rect);
     assert_eq!(blit_result, 0, "blit failed");
 
     let (w, h) = r.surface_size(dst);
@@ -195,9 +195,9 @@ unsafe fn draw_blended_scene<R: Renderer>(r: &mut R, alpha: u8) -> Vec<u8> {
     let dst_color = r.map_rgba(&fmt as *const _, 200, 60, 5, 255);
     r.fill_rect(dst, std::ptr::null(), dst_color);
 
-    let full = SDL_Rect { x: 0, y: 0, w: 1, h: 1 };
+    let full = Rect { x: 0, y: 0, w: 1, h: 1 };
     let mut dst_rect = full;
-    let rc = r.blit(src, &full as *const SDL_Rect, dst, &mut dst_rect as *mut SDL_Rect);
+    let rc = r.blit(src, &full as *const Rect, dst, &mut dst_rect as *mut Rect);
     assert_eq!(rc, 0, "blend blit failed");
 
     let pitch = r.surface_pitch(dst);

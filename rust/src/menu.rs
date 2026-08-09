@@ -79,7 +79,8 @@
 use std::os::raw::{c_char, c_int, c_short, c_void};
 use core::ptr::{addr_of, addr_of_mut, null, null_mut};
 use super::*;
-use crate::platform::{InputSource, Renderer};
+use crate::platform::{InputSource, Rect, Renderer};
+use crate::seg009::rect_to_sdlrect;
 
 // ============================================================================
 // SDL / libc externs not present in bindings.rs
@@ -103,8 +104,8 @@ extern "C" {
 /// `SDL_BlitSurface` is a macro in SDL2 that expands to `SDL_UpperBlit`; here it
 /// goes through the platform renderer so the backend stays swappable.
 #[inline]
-unsafe fn SDL_BlitSurface(src: *mut SDL_Surface, srcrect: *const SDL_Rect,
-                           dst: *mut SDL_Surface, dstrect: *mut SDL_Rect) -> c_int {
+unsafe fn SDL_BlitSurface(src: *mut SDL_Surface, srcrect: *const Rect,
+                           dst: *mut SDL_Surface, dstrect: *mut Rect) -> c_int {
     crate::platform::sdl::shared_renderer().blit(src, srcrect, dst, dstrect)
 }
 
@@ -1824,8 +1825,8 @@ unsafe fn draw_setting_explanation(setting: *mut setting_type) {
 unsafe fn draw_image_with_blending(image: *mut image_type, xpos: c_int, ypos: c_int) {
     let renderer = crate::platform::sdl::shared_renderer();
     let (image_w, image_h) = renderer.surface_size(image);
-    let src_rect = SDL_Rect { x: 0, y: 0, w: image_w, h: image_h };
-    let mut dest_rect = SDL_Rect { x: xpos, y: ypos, w: image_w, h: image_h };
+    let src_rect = Rect { x: 0, y: 0, w: image_w, h: image_h };
+    let mut dest_rect = Rect { x: xpos, y: ypos, w: image_w, h: image_h };
     renderer.set_color_key(image, true, 0);
     if SDL_BlitSurface(image, &src_rect, current_target_surface, &mut dest_rect) != 0 {
         sdlperror(cs!("SDL_BlitSurface"));
@@ -1925,7 +1926,7 @@ unsafe fn draw_setting(setting: *mut setting_type, parent: *const rect_type, y_o
         at_scroll_up_boundary = (*setting).index == scroll_position;
         at_scroll_down_boundary = (*setting).index == scroll_position + 8;
 
-        let mut dest_rect: SDL_Rect = core::mem::zeroed();
+        let mut dest_rect: Rect = core::mem::zeroed();
         rect_to_sdlrect(&setting_box, &mut dest_rect);
         let renderer = crate::platform::sdl::shared_renderer();
         let overlay_format = renderer.surface_format_ptr(overlay_surface);
