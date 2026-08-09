@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <title>SDLPoP wasm (Worker harness, frames + audio + input)</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<meta name="theme-color" content="#222222">
 <style>
   body { background: #222; color: #eee; font-family: monospace; }
   canvas { image-rendering: pixelated; border: 1px solid #555; display: block; }
@@ -221,6 +224,16 @@
     status.textContent = `worker crashed: ${e.message}`;
     console.error('worker crashed', e);
   };
+
+  // PWA offline support (web/sw.js) -- precaches the app shell + all of data/ on first load so
+  // the game works with no network afterward. Registration failure (unsupported browser, or a
+  // context that isn't secure/localhost) is non-fatal: the game already worked fine before this
+  // existed, so just warn and keep going.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch((err) => {
+      console.warn('service worker registration failed (offline support unavailable):', err);
+    });
+  }
 </script>
 </body>
 </html>
