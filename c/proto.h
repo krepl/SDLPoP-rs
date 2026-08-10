@@ -611,6 +611,7 @@ int get_text_color(int cga_color,int low_half,int high_half_mask);
 void close_dat(dat_type* pointer);
 void *load_from_opendats_alloc(int resource, const char* extension, data_location* out_result, int* out_size);
 int load_from_opendats_to_area(int resource,void* area,int length, const char* extension);
+void rect_to_sdlrect(const rect_type* rect, SDL_Rect* sdlrect);
 void method_1_blit_rect(surface_type* target_surface,surface_type* source_surface,const rect_type* target_rect, const rect_type* source_rect,int blit);
 image_type* method_3_blit_mono(image_type* image,int xpos,int ypos,int blitter,byte color);
 const rect_type* method_5_rect(const rect_type* rect,int blit,byte color);

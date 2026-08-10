@@ -1,5 +1,5 @@
 /*
-Not part of the pinned C oracle build (src/CMakeLists.txt / src/Makefile stay untouched).
+Not part of the pinned C oracle build (c/CMakeLists.txt / c/Makefile stay untouched).
 Generates a real QUICKSAVE.SAV using the actual C quick_save() implementation, for use as
 a cross-compatibility fixture in the Rust port's tests (does the Rust port correctly read
 a save file the original C code wrote?). Run via scripts/gen_quicksave_fixture.sh.

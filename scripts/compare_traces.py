@@ -29,7 +29,7 @@ from pathlib import Path
 MAGIC = b"POPTRACE"
 VERSION = 1
 
-# char_type layout from src/types.h (16 bytes total):
+# char_type layout from c/types.h (16 bytes total):
 #   byte frame;       [0]
 #   byte x;           [1]
 #   byte y;           [2]

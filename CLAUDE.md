@@ -12,14 +12,14 @@ Dependencies: `SDL2` and `SDL2_image` development libraries.
 
 **Linux (make):**
 ```sh
-cd src
+cd c
 make
 # Binary is output to ../prince (project root)
 ```
 
 **Linux (CMake with Ninja — preferred for speed):**
 ```sh
-cd src/build          # CMakeLists.txt is in src/, not the project root
+cd c/build            # CMakeLists.txt is in c/, not the project root
 cmake -G Ninja ..
 ninja
 # Binary is output to the project root (../prince)
@@ -52,7 +52,7 @@ cargo xtask harness build         # just `cargo build` the binary under test
 
 The golden traces (`traces/golden.trace`, `traces/doc/*.trace`) were generated from the all-C build and are committed as the correctness reference. `compare_traces.py` supports `--all`, `--tick N`, `--ignore FIELD` (pass them after `cargo xtask harness compare A B`).
 
-Each replay also gets a golden **pixel-hash** file under `traces/pixels/` (mirrored path, `.pixels` extension): one FNV-1a hash per tick of the actual rendered surface (`dump_frame_pixels` in `rust/src/state_dump.rs` / `src/state_dump.c`, gated by `POPPIXELS_OUT` the same way `POPTRACE_OUT` gates the state trace). The state trace only proves game *state* matches the C oracle — it says nothing about what got drawn. `run_harness.sh` regenerates and compares the pixel-hash file alongside the state trace automatically, in the same replay run, so this is already part of `cargo xtask harness` / `cargo xtask harness regen` / `cargo xtask verify` with no extra steps. A pixel mismatch reports as `FAIL (pixel mismatch): <replay> -- <first differing tick/hash line>`. This only compares the native Rust build against the native C oracle — it cannot catch wasm-renderer-only bugs (see "WASM / browser build" below).
+Each replay also gets a golden **pixel-hash** file under `traces/pixels/` (mirrored path, `.pixels` extension): one FNV-1a hash per tick of the actual rendered surface (`dump_frame_pixels` in `rust/src/state_dump.rs` / `c/state_dump.c`, gated by `POPPIXELS_OUT` the same way `POPTRACE_OUT` gates the state trace). The state trace only proves game *state* matches the C oracle — it says nothing about what got drawn. `run_harness.sh` regenerates and compares the pixel-hash file alongside the state trace automatically, in the same replay run, so this is already part of `cargo xtask harness` / `cargo xtask harness regen` / `cargo xtask verify` with no extra steps. A pixel mismatch reports as `FAIL (pixel mismatch): <replay> -- <first differing tick/hash line>`. This only compares the native Rust build against the native C oracle — it cannot catch wasm-renderer-only bugs (see "WASM / browser build" below).
 
 Plain `cargo xtask harness` runs `scripts/smoke_test.sh` first: it launches the real binary via its normal interactive startup (not `validate`) and confirms it runs a few seconds without panicking. This exists because `validate` mode skips window creation and most of the live input path, so startup-only bugs (e.g. the missing `SdlPlatform` event-pump wiring fixed in commit `4a11238`) are invisible to the replay comparisons — 30/30 replays passed the entire time that bug existed. Run it standalone with `cargo xtask smoke-test [duration_seconds]`. It then runs `scripts/gameplay_smoke_test.sh` (`cargo xtask gameplay-smoke-test` standalone): scripted-input scenarios asserting the Kid's position actually moves the way real keyboard input should drive it. Then `scripts/menu_smoke_test.sh` (`cargo xtask menu-smoke-test` standalone): opens the pause menu via scripted input and confirms the native build doesn't crash — see "Scripted keyboard input" below for how, and its wasm counterpart, which is the side that actually matters for this specific check. Finally it compares all replay/golden-trace pairs.
 
@@ -96,7 +96,7 @@ For visually inspecting one specific frame rather than just its hash, `dump_fram
 
 ## Architecture
 
-All source is in `src/`. The codebase is pure C (C99), structured around the original DOS segments:
+All source is in `c/`. The codebase is pure C (C99), structured around the original DOS segments:
 
 | File | Responsibility |
 |------|---------------|
@@ -203,7 +203,7 @@ The game is being incrementally re-implemented in Rust. The Rust crate lives in 
 
 When a file is ported: add it as a `pub mod` in `rust/src/lib.rs`, remove it from `build.rs` (the `sources` array), and run the harness to confirm parity.
 
-**Do NOT remove from `src/CMakeLists.txt` or `src/Makefile`.** Those control the pure-C oracle binary used for `--regen`. They must stay complete so the oracle can always be rebuilt.
+**Do NOT remove from `c/CMakeLists.txt` or `c/Makefile`.** Those control the pure-C oracle binary used for `--regen`. They must stay complete so the oracle can always be rebuilt.
 
 ### Module boilerplate
 
@@ -345,7 +345,7 @@ Calling it: `ptr_add_table(...)` directly (not through `Option::unwrap`).
 
 ### SDL functions not in bindings.rs
 
-bindgen only processes `src/common.h`. SDL functions that `seg008.c` and `seg009.c` call directly must be declared in a module-level `extern "C"` block. Confirmed needed for seg008.rs:
+bindgen only processes `c/common.h`. SDL functions that `seg008.c` and `seg009.c` call directly must be declared in a module-level `extern "C"` block. Confirmed needed for seg008.rs:
 
 ```rust
 extern "C" {
@@ -451,7 +451,7 @@ core::ptr::addr_of!((*custom).demo_moves) as *const auto_move_type
    - Integer `!`: `grep -n '!\w' file.rs` — every hit must be on a `bool`
    - `u16` bare arithmetic: scan `+`/`-` on `word`/`u16` values — add `wrapping_add`/`wrapping_sub`
 6. **Run the harness** (`cargo xtask harness`) before marking the subsystem done.
-7. **Remove the C file** from `src/Makefile` and `src/CMakeLists.txt`. Run `cargo xtask verify` again.
+7. **Remove the C file** from `c/Makefile` and `c/CMakeLists.txt`. Run `cargo xtask verify` again.
 8. **Write tests aggressively (TDD).** For any function where you can set up `State` to make the output deterministic, write the test *before* porting the function. This includes non-pure functions — set up the relevant `State` fields, call the function, assert on resulting state. Derive expected values from the C source or by running the C binary with equivalent inputs.
 
    Each test gets its own `State` on the stack, so `&mut State` tests are naturally isolated from each other. **However**, C globals accessed via FFI are shared across tests and can leak — if your test touches C globals, reset them at the end (or call `set_options_to_default()` as a setup step):

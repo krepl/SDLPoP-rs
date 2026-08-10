@@ -53,12 +53,12 @@ prince
 # Dev-C++
 *.layout
 Makefile.win
-src/*_private.*
+c/*_private.*
 
 # CLion
 .idea/
-src/.idea/
-src/cmake-build*/
+c/.idea/
+c/cmake-build*/
 build/
 
 # Visual Studio
@@ -77,7 +77,7 @@ build.ninja
 Thumbs.db
 
 # The desktop file has to be recreated from the template.
-src/SDLPoP.desktop
+c/SDLPoP.desktop
 
 # backup files
 *~

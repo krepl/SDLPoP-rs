@@ -12,7 +12,7 @@
 #
 # Each replay also gets a golden *pixel*-hash file under traces/pixels/ (mirrored
 # path, .pixels extension): one FNV-1a hash per tick of the actual rendered
-# surface (see rust/src/state_dump.rs / src/state_dump.c, dump_frame_pixels).
+# surface (see rust/src/state_dump.rs / c/state_dump.c, dump_frame_pixels).
 # The state trace above only proves game *state* matches; this proves the pixels
 # drawn from that state match too -- catching rendering-only regressions the
 # state trace is blind to (see docs: the climb-animation z-order investigation

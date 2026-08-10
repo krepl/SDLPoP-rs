@@ -31,14 +31,14 @@ Then open the URL it prints (`http://localhost:8642/` by default).
 Kept as the test harness's reference oracle, not for everyday use.
 
 ```sh
-cd src/build && cmake -G Ninja .. && ninja   # builds ../prince
+cd c/build && cmake -G Ninja .. && ninja   # builds ../prince
 ```
 
 ### Dependencies
 
 * `SDL2` and `SDL2_image` development libraries: needed by the native Rust build and the
   original C build. The wasm build does *not* need them — it never links against real SDL2, and
-  a minimal stand-in header (`src/sdl_stub.h`) covers what the build needs to generate Rust
+  a minimal stand-in header (`c/sdl_stub.h`) covers what the build needs to generate Rust
   bindings, so a machine that only ever builds/serves the browser version needs nothing here.
   See [README.upstream.md's COMPILING section](README.upstream.md#compiling) for per-OS install
   instructions.
@@ -61,7 +61,7 @@ pieces, smoke tests, wasm tooling).
 
 ## Repository layout
 
-* `src/` original C source, kept as the harness's reference oracle
+* `c/` original C source, kept as the harness's reference oracle
 * `rust/` the Rust port
 * `web/` the wasm/browser build
 * `traces/`, `doc/replays-testcases/` golden test data
@@ -76,7 +76,7 @@ pieces, smoke tests, wasm tooling).
 
 ## License
 
-GPLv3, see `COPYING`. `src/opl3.c`/`.h` and `src/stb_vorbis.c` are third-party code under their
+GPLv3, see `COPYING`. `c/opl3.c`/`.h` and `c/stb_vorbis.c` are third-party code under their
 own licenses. Full author/contributor list in
 [README.upstream.md](README.upstream.md#authors).
 

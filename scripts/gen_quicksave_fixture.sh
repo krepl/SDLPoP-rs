@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Generates doc/test-fixtures/quicksave_c_oracle.sav: a real QUICKSAVE.SAV written by the
-# actual C quick_save() implementation (src/seg000.c), for the Rust port's cross-
+# actual C quick_save() implementation (c/seg000.c), for the Rust port's cross-
 # compatibility test (does Rust correctly read a save file the original C code wrote?).
 #
-# Does NOT touch src/CMakeLists.txt or src/Makefile (those stay pinned to build the full
-# `prince` oracle binary). Compiles src/test_quicksave_fixture.c directly against the same
+# Does NOT touch c/CMakeLists.txt or c/Makefile (those stay pinned to build the full
+# `prince` oracle binary). Compiles c/test_quicksave_fixture.c directly against the same
 # source files, swapping in a minimal main() instead of main.c's pop_main() entry point.
 # quick_save() has no SDL calls, so no SDL_Init/game-startup sequence is needed here.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="$ROOT/src"
+SRC="$ROOT/c"
 OUT_DIR="$ROOT/doc/test-fixtures"
 SAVE_DIR="$(mktemp -d)"
 trap 'rm -rf "$SAVE_DIR"' EXIT
