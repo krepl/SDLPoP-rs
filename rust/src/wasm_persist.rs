@@ -29,7 +29,18 @@
 //! assets are preloaded. From then on, `wasm_libc.rs`'s `fclose`/`fflush` call
 //! [`persist_if_tracked`] after every VFS write, which synchronously writes through to OPFS if
 //! the path is one of the tracked ones -- no other call site changes.
+//!
+//! **Reload race (fixed):** a page refresh starts the new page's Worker (and this function)
+//! before the browser has necessarily finished releasing the *previous* page's Worker's OPFS
+//! handles -- `create_sync_access_handle` then fails with `NoModificationAllowedError`
+//! ("another access handle... is already open"). Without a retry, that failure was permanent
+//! for the rest of the new page's lifetime (the filename never made it into `handles()`, so
+//! every later `persist_if_tracked` call for it silently no-oped). `open_sync_handle` now
+//! retries specifically on that error with a short backoff (`RELOAD_RACE_RETRY_DELAYS_MS`) --
+//! long enough to outlast normal handle-teardown latency, short enough not to meaningfully
+//! delay the common first-load case where no retry is ever needed.
 
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{FileSystemGetFileOptions, FileSystemSyncAccessHandle};
@@ -80,6 +91,13 @@ async fn get_opfs_root() -> Option<web_sys::FileSystemDirectoryHandle> {
     value.dyn_into().ok()
 }
 
+/// Retry backoff (ms) for `create_sync_access_handle` racing a still-closing handle from a
+/// previous page load's Worker (see the module doc's "reload race" section) -- 6 attempts,
+/// ~1.5s total, well above what teardown of a single OPFS handle should ever take, but short
+/// enough not to meaningfully delay startup on the (common) first-load case where no retry is
+/// needed at all.
+const RELOAD_RACE_RETRY_DELAYS_MS: &[i32] = &[50, 100, 200, 300, 400, 400];
+
 async fn open_sync_handle(root: &web_sys::FileSystemDirectoryHandle, name: &str) -> Option<FileSystemSyncAccessHandle> {
     let options = FileSystemGetFileOptions::new();
     options.set_create(true);
@@ -89,12 +107,48 @@ async fn open_sync_handle(root: &web_sys::FileSystemDirectoryHandle, name: &str)
         Err(e) => { web_sys::console::error_2(&"get_file_handle failed:".into(), &e); return None; }
     };
     let file_handle: web_sys::FileSystemFileHandle = file_handle_value.dyn_into().ok()?;
-    let access_promise = file_handle.create_sync_access_handle();
-    let access_value = match JsFuture::from(access_promise).await {
-        Ok(v) => v,
-        Err(e) => { web_sys::console::error_2(&"create_sync_access_handle failed:".into(), &e); return None; }
-    };
-    access_value.dyn_into().ok()
+
+    let mut attempt = 0usize;
+    loop {
+        let access_promise = file_handle.create_sync_access_handle();
+        match JsFuture::from(access_promise).await {
+            Ok(v) => return v.dyn_into().ok(),
+            Err(e) => {
+                // NoModificationAllowedError specifically means "another access handle for
+                // this file is still open" -- exactly the reload race, where the previous
+                // page's Worker hasn't finished releasing its handle yet. Any other error
+                // (quota, permission, ...) isn't going to resolve itself by waiting, so
+                // fail immediately rather than burning the retry budget on it.
+                let is_lock_contention = e
+                    .dyn_ref::<web_sys::DomException>()
+                    .map(|de| de.name() == "NoModificationAllowedError")
+                    .unwrap_or(false);
+                if !is_lock_contention || attempt >= RELOAD_RACE_RETRY_DELAYS_MS.len() {
+                    web_sys::console::error_2(&"create_sync_access_handle failed:".into(), &e);
+                    return None;
+                }
+                sleep_ms(RELOAD_RACE_RETRY_DELAYS_MS[attempt]).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// A `setTimeout`-backed delay, since this all runs inside a Worker (no `window`, but
+/// `WorkerGlobalScope` has the same `set_timeout_with_callback` mixin method).
+async fn sleep_ms(ms: i32) {
+    let global = js_sys::global();
+    let Ok(worker_scope) = global.dyn_into::<web_sys::WorkerGlobalScope>() else { return };
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let closure = Closure::once_into_js(move || {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::undefined());
+        });
+        let _ = worker_scope.set_timeout_with_callback_and_timeout_and_arguments_0(
+            closure.as_ref().unchecked_ref(),
+            ms,
+        );
+    });
+    let _ = JsFuture::from(promise).await;
 }
 
 fn read_all(handle: &FileSystemSyncAccessHandle) -> Option<Vec<u8>> {
