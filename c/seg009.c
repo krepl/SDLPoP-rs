@@ -4033,11 +4033,27 @@ void idle() {
 	update_screen();
 }
 
+// POPTRACE_NOWAIT: run as fast as the CPU allows instead of pacing to the frame timer,
+// without needing a replay. Mirrors no_wait_mode() in rust/src/seg009.rs -- the two builds
+// have to agree or live_surface_diff.sh compares runs that were paced differently.
+// Only the *spin* is skipped: update_screen() and one process_events() still happen, because
+// dropping those moves the point at which scripted input is injected and shifts the Kid's
+// frame by a tick. With that care taken, traces are byte-identical to a real-time run.
+static int no_wait_mode(void) {
+	static int cached = -1;
+	if (cached < 0) cached = (getenv("POPTRACE_NOWAIT") != NULL) ? 1 : 0;
+	return cached;
+}
+
 void do_simple_wait(int timer_index) {
 #ifdef USE_REPLAY
 	if ((replaying && skipping_replay) || is_validate_mode) return;
 #endif
 	update_screen();
+	if (no_wait_mode()) {
+		process_events();
+		return;
+	}
 	while (! has_timer_stopped(timer_index)) {
 		SDL_Delay(1);
 		process_events();
@@ -4050,6 +4066,12 @@ int do_wait(int timer_index) {
 	if ((replaying && skipping_replay) || is_validate_mode) return 0;
 #endif
 	update_screen();
+	if (no_wait_mode()) {
+		process_events();
+		int key = do_paused();
+		if (key != 0 && (word_1D63A != 0 || key == 0x1B)) return 1;
+		return 0;
+	}
 	while (! has_timer_stopped(timer_index)) {
 		SDL_Delay(1);
 		process_events();
@@ -4466,6 +4488,7 @@ int has_timer_stopped(int timer_index) {
 #ifdef USE_REPLAY
 	if ((replaying && skipping_replay) || is_validate_mode) return true;
 #endif
+	if (no_wait_mode()) return true;
 	//PSP: overshoot always too big, 333mhz mandatory to read input!
 	Uint64 current_counter = SDL_GetPerformanceCounter();
 	int ticks_elapsed = (int)((current_counter / perf_counters_per_tick) - (timer_last_counter[timer_index] / perf_counters_per_tick));

@@ -53,6 +53,11 @@ trap 'rm -rf "$tmp"' EXIT
 
 # SDL's ALSA fallback blocks ~30s with no audio server; same workaround run_harness.sh uses.
 export SDL_AUDIODRIVER=dummy
+# Run uncapped instead of pacing to the frame timer: ~30s per scenario becomes well under a
+# second. Verified byte-identical to a real-time run (state trace and pixel hashes) in both
+# builds -- see no_wait_mode() in rust/src/seg009.rs and c/seg009.c for why only the spin is
+# skipped and update_screen/process_events still run.
+export POPTRACE_NOWAIT=1
 
 run_one() {
   local bin="$1" tag="$2" workdir="$3"

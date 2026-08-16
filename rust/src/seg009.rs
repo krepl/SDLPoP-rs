@@ -4521,6 +4521,28 @@ enum ScriptedEvent {
     MouseButton { button: u8 },
 }
 static mut SCRIPT_EVENTS: Vec<(u32, ScriptedEvent)> = Vec::new();
+/// `POPTRACE_NOWAIT`: run the game as fast as the CPU allows instead of pacing to the frame
+/// timer, without needing a replay.
+///
+/// `is_validate_mode` already skips every wait, but only a `validate <replay>` run can set it.
+/// Scripted-input runs (`POPTRACE_INPUT`) were stuck at real-time pacing -- ~12 ticks/sec --
+/// which makes anything that evaluates many runs (scripts/beat_level.py's search) hopeless and
+/// the live-surface diff needlessly slow. Timing does not feed the simulation: validate mode
+/// skips these same waits and reproduces the golden traces exactly, which is what makes this
+/// safe. Unset, behavior is byte-identical to before.
+static mut NO_WAIT_MODE: c_int = -1;
+
+unsafe fn no_wait_mode() -> bool {
+    if NO_WAIT_MODE < 0 {
+        NO_WAIT_MODE = if getenv(b"POPTRACE_NOWAIT\0".as_ptr() as *const c_char).is_null() {
+            0
+        } else {
+            1
+        };
+    }
+    NO_WAIT_MODE != 0
+}
+
 static mut SCRIPT_LOADED: bool = false;
 static mut SCRIPT_INDEX: usize = 0;
 /// SDL modifier bitmask (KMOD_*) for the modifier keys the *script* currently holds down,
@@ -5097,6 +5119,16 @@ pub unsafe extern "C" fn do_simple_wait(timer_index: c_int) {
         return;
     }
     update_screen();
+    if no_wait_mode() {
+        // Skip only the *spin*, not the work. Dropping out of this function entirely (the
+        // first attempt) also skipped update_screen and every process_events call, which
+        // moved the point at which scripted input gets injected and shifted the Kid's frame
+        // by one tick at exactly the tick an input fired. Draining events once is equivalent
+        // to the real-time loop's repeated calls, because inject_scripted_input is keyed on
+        // the tick counter and so is idempotent within a single tick.
+        process_events();
+        return;
+    }
     while has_timer_stopped(timer_index) == 0 {
         crate::platform::sdl::shared_renderer().delay(1);
         process_events();
@@ -5115,6 +5147,16 @@ pub unsafe extern "C" fn do_wait(timer_index: c_int) -> c_int {
         return 0;
     }
     update_screen();
+    if no_wait_mode() {
+        // Same reasoning as do_simple_wait: drain events once, skip the spin. do_paused() is
+        // deliberately still called so a scripted Escape can still open the menu here.
+        process_events();
+        let key = do_paused();
+        if key != 0 && (word_1D63A != 0 || key == 0x1B) {
+            return 1;
+        }
+        return 0;
+    }
     while has_timer_stopped(timer_index) == 0 {
         crate::platform::sdl::shared_renderer().delay(1);
         process_events();
@@ -5570,7 +5612,7 @@ pub unsafe extern "C" fn set_chtab_palette(chtab: *mut chtab_type, mut colors: *
 // seg009 has_timer_stopped
 #[no_mangle]
 pub unsafe extern "C" fn has_timer_stopped(index: c_int) -> c_int {
-    if (replaying != 0 && skipping_replay != 0) || is_validate_mode != 0 {
+    if (replaying != 0 && skipping_replay != 0) || is_validate_mode != 0 || no_wait_mode() {
         return 1;
     }
     let mut current_counter = crate::platform::sdl::shared_renderer().performance_counter();
