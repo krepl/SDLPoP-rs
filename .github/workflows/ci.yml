@@ -64,6 +64,17 @@ jobs:
           npm install
           npx playwright install --with-deps chromium
 
+      # Built here so `cargo xtask live-diff` (invoked by verify) has a real oracle to diff
+      # against instead of skipping itself. This is also a second, incidental check that the
+      # C build still works.
+      - name: Install cmake/ninja and build the C oracle
+        run: |
+          sudo apt-get install -y ninja-build cmake
+          mkdir -p c/build
+          cd c/build
+          cmake -G Ninja ..
+          ninja
+
       - name: cargo xtask verify
         run: cargo xtask verify
 

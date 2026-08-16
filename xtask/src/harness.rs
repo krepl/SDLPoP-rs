@@ -157,6 +157,39 @@ pub fn wasm_verify(root: &Path) -> Result<(), String> {
     wasm_menu_mouse_navigation_test(root)
 }
 
+/// `cargo xtask live-diff`: run each live-surface scenario through both the C oracle and the
+/// Rust build and diff state + pixels (`scripts/live_surface_diff.sh`).
+///
+/// Deliberately **skips rather than fails** when the C oracle binary is absent. `verify`
+/// never builds the oracle -- it compares against already-committed golden traces -- so on a
+/// working tree where nobody has run cmake, a hard failure here would just be noise telling
+/// developers to build something they don't otherwise need. CI builds the oracle explicitly
+/// and so gets the real signal.
+///
+/// Menu-resident scenarios are excluded on purpose: draw_menu's inner loop blocks the tick
+/// loop so no trace is ever written. `menu_mouse_navigation_test` covers those instead.
+pub fn live_diff(root: &Path) -> Result<(), String> {
+    if !root.join("prince").is_file() {
+        println!(
+            "SKIP: live-diff needs the C oracle at {}/prince, which isn't built.\n      \
+             Build it with: mkdir -p c/build && cd c/build && cmake -G Ninja .. && ninja",
+            root.display()
+        );
+        return Ok(());
+    }
+    let scenarios = ["quickload.txt", "walk_right_then_stop.txt", "walk_right.txt"];
+    for scenario in scenarios {
+        let path = root.join("scripts").join("scripted_inputs").join(scenario);
+        run_status(
+            Command::new(script(root, "live_surface_diff.sh"))
+                .arg(&path)
+                .current_dir(root),
+            &format!("scripts/live_surface_diff.sh {scenario}"),
+        )?;
+    }
+    Ok(())
+}
+
 pub fn quicksave_fixture(root: &Path) -> Result<(), String> {
     run_status(
         Command::new(script(root, "gen_quicksave_fixture.sh")).current_dir(root),

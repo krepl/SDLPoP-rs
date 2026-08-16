@@ -73,6 +73,12 @@ enum Command {
     /// `verify`. Requires `npm install` -- fails with a clear message naming the fix if that
     /// hasn't been run.
     WasmVerify,
+    /// Diff the *live* surface (scripted keyboard input, not recorded replays) between the C
+    /// oracle and the Rust build: state trace plus pixel hashes. Covers what the replay
+    /// harness structurally cannot -- save/load and the live input path. Requires the C
+    /// oracle binary at the project root; skips with a clear message if it isn't built,
+    /// since `verify` never builds it.
+    LiveDiff,
     /// Compile the standalone C oracle binary and capture a fresh quicksave fixture.
     QuicksaveFixture,
     /// Run everything: cargo build, cargo test --lib, cargo check --target
@@ -122,6 +128,7 @@ fn main() -> ExitCode {
         Command::MenuMouseNavigationTest => harness::menu_mouse_navigation_test(&root),
         Command::WasmMenuMouseNavigationTest => harness::wasm_menu_mouse_navigation_test(&root),
         Command::WasmVerify => harness::wasm_verify(&root),
+        Command::LiveDiff => harness::live_diff(&root),
         Command::QuicksaveFixture => harness::quicksave_fixture(&root),
         Command::Verify => verify(&root),
     };
@@ -156,6 +163,10 @@ fn verify(root: &Path) -> Result<(), String> {
         "cargo check --target wasm32-unknown-unknown",
     )?;
     harness::run_full(root)?;
+    // Skips itself when the C oracle isn't built (see harness::live_diff) -- `verify` has
+    // never required a cmake build and shouldn't start now. CI builds the oracle, so it
+    // gets the real signal there.
+    harness::live_diff(root)?;
     harness::wasm_verify(root)
 }
 
