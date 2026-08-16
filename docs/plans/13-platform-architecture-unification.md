@@ -568,7 +568,24 @@ could be a safe reference" once the JS harness work settles down — not urgent,
 current pointer-returning version is verified correct (pixel-parity tests, harness, wasm32
 build all green).
 
-### Future consideration (deferred, not scheduled): asset manifest / preload strategy
+### Asset manifest / preload strategy — ✅ DONE (this section is retained as the design record)
+
+**Status corrected 2026-08-16.** This was written as "deferred, not scheduled" and never
+updated when the work actually landed. What shipped:
+
+- **Generated manifest** (`web/data_manifest.txt`, produced by `cargo xtask wasm-build`
+  walking `data/`) replaced the hand-maintained ad hoc preload list described below.
+- **Full up-front preload** with per-asset progress reporting (commit `f48cec4`).
+- **Offline play via PWA** (commit `2d5aec8`): `web/sw.js` precaches the app shell plus every
+  path in the manifest, so the game is fully playable with no network.
+- **Persistence across reloads** landed separately via OPFS (`rust/src/wasm_persist.rs`),
+  answering the "in-memory VFS forgets everything on reload" concern raised below.
+
+The one open question below that was *not* resolved: the lazy/next-level-prefetch strategy
+for online play. It was never needed — full up-front preload proved fast enough — so it
+remains an unexplored alternative rather than a pending task.
+
+The original design notes follow, unchanged, for the reasoning they record.
 
 Every asset preloaded into the VFS so far has been added by hand, one file at a time, as
 testing discovered each was needed (`SDLPoP.ini`, then `data/icon.png`, ...). A real build

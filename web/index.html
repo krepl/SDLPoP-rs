@@ -64,13 +64,36 @@
 
   // Standard SDL2 scancodes (USB HID usage IDs) for the keys this game's controls actually
   // use, keyed by the physical-key identifier browsers report in KeyboardEvent.code (layout-
-  // independent, unlike .key). Extend as more keys turn out to matter.
+  // independent, unlike .key).
+  //
+  // This list is derived from the game's own binding tables, not guessed -- the letter,
+  // bracket, Home/PageUp and keypad entries below are exactly the scancodes named in
+  // rust/src/seg000.rs (KEY_CTRL_*/KEY_SHIFT_* constants, ~lines 91-176) and
+  // rust/src/seg009.rs (~lines 491-533). Keep it that way: mapping only what the game binds
+  // means browser shortcuts the game *doesn't* use (Ctrl+W, Ctrl+T, Ctrl+N, ...) keep working
+  // normally, since an unmapped key returns early below without preventDefault.
+  //
+  // The letters were missing entirely until 2026-08-16, which silently made every documented
+  // Ctrl+<letter> control unreachable in the browser: Ctrl+A restart level, Ctrl+G save,
+  // Ctrl+L load, Ctrl+R return to intro, Ctrl+S sound toggle, Ctrl+Q quit, and the
+  // Shift+<letter> cheats. Home/PageUp (jump-left/right shortcuts) and the keypad movement
+  // alternates were missing for the same reason.
   const SCANCODE = {
     ArrowLeft: 80, ArrowRight: 79, ArrowUp: 82, ArrowDown: 81,
     Space: 44, Enter: 40, Escape: 41, Backspace: 42, Tab: 43, Delete: 76,
     ShiftLeft: 225, ShiftRight: 229, ControlLeft: 224, ControlRight: 228,
     AltLeft: 226, AltRight: 230, Backquote: 53,
     F1: 58, F2: 59, F3: 60, F4: 61, F5: 62, F6: 63, F7: 64, F8: 65, F9: 66, F10: 67, F11: 68, F12: 69,
+    // Letters the game binds (Ctrl+ and Shift+ shortcuts, plus Q for quit).
+    KeyA: 4, KeyB: 5, KeyC: 6, KeyF: 9, KeyG: 10, KeyH: 11, KeyI: 12, KeyJ: 13, KeyK: 14,
+    KeyL: 15, KeyN: 17, KeyQ: 20, KeyR: 21, KeyS: 22, KeyT: 23, KeyU: 24, KeyV: 25, KeyW: 26,
+    // Level-skip cheats.
+    BracketLeft: 47, BracketRight: 48,
+    // Jump-left / jump-right shortcuts.
+    Home: 74, PageUp: 75,
+    // Keypad movement alternates, and the keypad +/- cheats.
+    NumpadSubtract: 86, NumpadAdd: 87,
+    Numpad2: 90, Numpad4: 92, Numpad5: 93, Numpad6: 94, Numpad7: 95, Numpad8: 96, Numpad9: 97,
   };
 
   window.addEventListener('keydown', (e) => {

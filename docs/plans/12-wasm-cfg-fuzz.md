@@ -492,12 +492,24 @@ so C and Rust output should match sample-for-sample (no float tolerance needed):
 
 ## Order of work
 
-1. **Phase 1** (cfg gates) ✅ — annotation pass; harness passes on all replays
-2. **Phase 1.5** (replay coverage) — in progress; lvl1 completion done (see below)
-3. **Phase 3** (game-beating) and **Phase 2** (WASM) — independent after Phase 1 produces
-   a headless build; work in parallel
-4. **Phase 4** (CI fuzzing) — start as soon as Phase 1 is done; doesn't need WASM
-5. **Phase 5** (audio port verification) — deferred, low priority; after Phase 1.5
+1. **Phase 1** (cfg gates) ❌ **NOT BUILT — superseded.** This was previously marked "✅ done"
+   here; that marker was wrong and is corrected as of 2026-08-16. There is no `[features]`
+   table in `Cargo.toml` and zero `cfg(feature` anywhere in the crate — the annotation pass
+   never happened. What actually solved the underlying problem was doc 13's `Platform` trait
+   plus `#[cfg(target_arch = "wasm32")]` backend dispatch (`SdlRenderer`/`WasmRenderer`), a
+   different and simpler mechanism than ~20 per-subsystem Cargo features. Consequence: there
+   is still no `--no-default-features` headless/minimal build variant. Revisit only if
+   something concrete needs one; otherwise treat this phase as superseded, not pending.
+2. **Phase 1.5** (replay coverage) ✅ — done; 30 replays committed, coverage checklist below
+   fully worked through (two deliberate gaps noted at the end of it).
+3. **Phase 2** (WASM) ✅ — superseded and vastly expanded by doc 13 (Phases A–D all done).
+   **Phase 3** (game-beating) — never started; the "needs Phase 1's headless build first"
+   dependency assumed here is questionable, since the harness already runs replays
+   effectively headless via `SDL_AUDIODRIVER=dummy` + `validate` mode.
+4. **Phase 4** (CI fuzzing) — never started, and doubly blocked: Phase 1 never landed, and
+   the repo has **no CI of any kind** (no `.github/` at all), which this phase assumed.
+5. **Phase 5** (audio port verification) — still deferred, low priority. Accurate as written:
+   `rust/src/opl3.rs` and `midi.rs` have no tests and no sample-checksum trace field.
 
 ### Phase 1.5 — current scope
 
