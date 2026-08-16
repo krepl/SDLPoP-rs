@@ -3617,11 +3617,33 @@ static void inject_scripted_input(void) {
 	while (script_index < script_event_count && script_events[script_index].tick <= tick) {
 		scripted_event_t* ev = &script_events[script_index];
 		if (ev->kind == SCRIPT_EVENT_KEY) {
+			// Real SDL stamps every key event with the modifiers held at the time, and
+			// process_events() reads keysym.mod to build WITH_CTRL/WITH_SHIFT/WITH_ALT onto
+			// last_key_scancode. Leaving mod at 0 (as this used to) makes every scripted
+			// Ctrl+<letter> and Shift+<letter> combo silently unrecognised: the keys arrive,
+			// the modifier never does, and a scenario "passes" while exercising nothing.
+			// Track the modifier scancodes the script itself presses and stamp them as SDL would.
+			static Uint16 script_mod_state = 0;
+			Uint16 mod_bit = 0;
+			switch (ev->data.key.scancode) {
+				case SDL_SCANCODE_LSHIFT: mod_bit = KMOD_LSHIFT; break;
+				case SDL_SCANCODE_RSHIFT: mod_bit = KMOD_RSHIFT; break;
+				case SDL_SCANCODE_LCTRL:  mod_bit = KMOD_LCTRL;  break;
+				case SDL_SCANCODE_RCTRL:  mod_bit = KMOD_RCTRL;  break;
+				case SDL_SCANCODE_LALT:   mod_bit = KMOD_LALT;   break;
+				case SDL_SCANCODE_RALT:   mod_bit = KMOD_RALT;   break;
+				default: break;
+			}
+			if (mod_bit != 0) {
+				if (ev->data.key.down) script_mod_state |= mod_bit;
+				else script_mod_state &= ~mod_bit;
+			}
 			SDL_Event event;
 			memset(&event, 0, sizeof(event));
 			event.key.type = ev->data.key.down ? SDL_KEYDOWN : SDL_KEYUP;
 			event.key.state = ev->data.key.down ? SDL_PRESSED : SDL_RELEASED;
 			event.key.keysym.scancode = (SDL_Scancode) ev->data.key.scancode;
+			event.key.keysym.mod = script_mod_state;
 			SDL_PushEvent(&event);
 		} else if (ev->kind == SCRIPT_EVENT_MOUSEMOVE) {
 			SDL_WarpMouseInWindow(window_, ev->data.mousemove.x, ev->data.mousemove.y);

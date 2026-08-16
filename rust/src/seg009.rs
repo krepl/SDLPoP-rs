@@ -4523,6 +4523,9 @@ enum ScriptedEvent {
 static mut SCRIPT_EVENTS: Vec<(u32, ScriptedEvent)> = Vec::new();
 static mut SCRIPT_LOADED: bool = false;
 static mut SCRIPT_INDEX: usize = 0;
+/// SDL modifier bitmask (KMOD_*) for the modifier keys the *script* currently holds down,
+/// stamped onto every injected key event so Ctrl+/Shift+/Alt+ combos are recognised.
+static mut SCRIPT_MOD_STATE: u16 = 0;
 
 /// Maps a script's key name to an SDL scancode.
 fn scancode_from_key_name(name: &str) -> Option<c_int> {
@@ -4673,6 +4676,29 @@ unsafe fn inject_scripted_input() {
     while SCRIPT_INDEX < SCRIPT_EVENTS.len() && SCRIPT_EVENTS[SCRIPT_INDEX].0 <= tick {
         match &SCRIPT_EVENTS[SCRIPT_INDEX].1 {
             ScriptedEvent::Key { scancode, down } => {
+                // Real SDL stamps every key event with the modifiers held at the time, and
+                // process_events reads keysym.mod to build WITH_CTRL/WITH_SHIFT/WITH_ALT onto
+                // last_key_scancode. Injecting a hardcoded mod of 0 (as this used to) makes
+                // every scripted Ctrl+<letter> and Shift+<letter> combo silently unrecognised
+                // -- the keys arrive, the modifier never does, and a scenario "passes" while
+                // exercising nothing. Track the modifier scancodes the script itself presses
+                // and stamp them the way SDL would.
+                let mod_bit: u16 = match *scancode {
+                    SDL_SCANCODE_LSHIFT => 0x0001,
+                    SDL_SCANCODE_RSHIFT => 0x0002,
+                    SDL_SCANCODE_LCTRL => 0x0040,
+                    SDL_SCANCODE_RCTRL => 0x0080,
+                    SDL_SCANCODE_LALT => 0x0100,
+                    SDL_SCANCODE_RALT => 0x0200,
+                    _ => 0,
+                };
+                if mod_bit != 0 {
+                    if *down {
+                        SCRIPT_MOD_STATE |= mod_bit;
+                    } else {
+                        SCRIPT_MOD_STATE &= !mod_bit;
+                    }
+                }
                 let mut event: SDL_Event = core::mem::zeroed();
                 event.key = SDL_KeyboardEvent {
                     type_: if *down { SDL_KEYDOWN } else { SDL_KEYUP },
@@ -4682,7 +4708,12 @@ unsafe fn inject_scripted_input() {
                     repeat: 0,
                     padding2: 0,
                     padding3: 0,
-                    keysym: SDL_Keysym { scancode: *scancode as u32, sym: 0, r#mod: 0, unused: 0 },
+                    keysym: SDL_Keysym {
+                        scancode: *scancode as u32,
+                        sym: 0,
+                        r#mod: SCRIPT_MOD_STATE,
+                        unused: 0,
+                    },
                 };
                 crate::platform::sdl::shared_renderer().push_event(&mut event as *mut SDL_Event as *mut c_void);
             }

@@ -1,0 +1,8 @@
+# Ctrl+A (restart level) driven through the live key path. Replays can never reach this:
+# it's a live-input-only control, not something a recorded .p1r can contain.
+0 right down
+20 right up
+40 ctrl down
+42 a down
+44 a up
+46 ctrl up

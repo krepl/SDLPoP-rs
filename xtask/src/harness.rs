@@ -177,7 +177,15 @@ pub fn live_diff(root: &Path) -> Result<(), String> {
         );
         return Ok(());
     }
-    let scenarios = ["quickload.txt", "walk_right_then_stop.txt", "walk_right.txt"];
+    let scenarios = [
+        "quickload.txt",
+        "walk_right_then_stop.txt",
+        "walk_right.txt",
+        // Live-input-only paths: no recorded .p1r can contain a Ctrl+A or an F6/F9, so these
+        // are unreachable by the replay harness no matter how many replays get added.
+        "restart_level.txt",
+        "save_then_load.txt",
+    ];
     for scenario in scenarios {
         let path = root.join("scripts").join("scripted_inputs").join(scenario);
         run_status(

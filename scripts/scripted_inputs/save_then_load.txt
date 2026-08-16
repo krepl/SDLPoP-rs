@@ -1,0 +1,9 @@
+# Quicksave, walk away, quickload -- the full round trip in a single run, exercising
+# quick_save(), quick_load() and restore_room_after_quick_load()'s drawing tail. The
+# coverage checklist in docs/plans/12-wasm-cfg-fuzz.md calls those drawing tails untested.
+20 f6 down
+22 f6 up
+40 right down
+70 right up
+90 f9 down
+92 f9 up
