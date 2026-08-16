@@ -3471,6 +3471,22 @@ static int scancode_from_key_name(const char* name) {
 	if (strcasecmp(name, "space") == 0) return SDL_SCANCODE_SPACE;
 	if (strcasecmp(name, "return") == 0 || strcasecmp(name, "enter") == 0) return SDL_SCANCODE_RETURN;
 	if (strcasecmp(name, "escape") == 0) return SDL_SCANCODE_ESCAPE;
+	if (strcasecmp(name, "tab") == 0) return SDL_SCANCODE_TAB;
+	if (strcasecmp(name, "backspace") == 0) return SDL_SCANCODE_BACKSPACE;
+	if (strcasecmp(name, "ctrl") == 0 || strcasecmp(name, "lctrl") == 0) return SDL_SCANCODE_LCTRL;
+	if (strcasecmp(name, "rctrl") == 0) return SDL_SCANCODE_RCTRL;
+	// Quicksave/quickload, so save/load can be driven identically here and in the Rust
+	// build -- comparing the drawing tails of quick_load()/restore_room_after_quick_load()
+	// across the two needs one script that runs unchanged against both.
+	if (strcasecmp(name, "f6") == 0) return SDL_SCANCODE_F6;
+	if (strcasecmp(name, "f9") == 0) return SDL_SCANCODE_F9;
+	// Letters, for the Ctrl+<letter> controls. Scancodes are contiguous from A = 4.
+	if (name[0] != '\0' && name[1] == '\0' && name[0] >= 'a' && name[0] <= 'z') {
+		return SDL_SCANCODE_A + (name[0] - 'a');
+	}
+	if (name[0] != '\0' && name[1] == '\0' && name[0] >= 'A' && name[0] <= 'Z') {
+		return SDL_SCANCODE_A + (name[0] - 'A');
+	}
 	return -1;
 }
 
