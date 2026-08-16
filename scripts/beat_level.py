@@ -17,11 +17,27 @@ out whether search works at all, and building it first would have meant debuggin
 surgery and a search algorithm at the same time.
 
 Search is a beam over *input prefixes*: keep the best K prefixes, extend each by every
-candidate action for one segment, evaluate, keep the best K again. Scoring prefers, in order:
-reaching a later level, then getting deeper into the room graph, then surviving.
+candidate action for one segment, evaluate, keep the best K again. Scoring is exploration
+based -- see score_trace for why the obvious "did we get further" score does not work.
+
+Current status: honest partial. The machinery works end to end and the search makes real,
+measurable progress -- on level 2 it goes from 8 to 18 distinct tiles visited over 16
+generations, discovering movement on its own with no hand-holding. **It does not beat a level
+yet**: progress plateaus once easy exploration is exhausted, which is the actual research
+problem (better search, finer actions, backtracking) rather than a missing feature. Treat this
+as a working substrate to iterate on, not a solved game-beater.
+
+Two findings worth knowing before using it:
+
+  * **Level 1 does not respond to scripted input at all.** The Kid starts crouched
+    (frame 109) and nothing in the action set gets him moving; levels 2-5 all respond
+    immediately. This is *not* a port bug -- `scripts/live_surface_diff.sh` shows the C oracle
+    behaving identically over 150 ticks, pixels and state. Use level 2+ for now.
+  * **POPTRACE_NOWAIT is what makes this feasible.** Without it the game paces to the frame
+    timer at ~12 ticks/sec and one candidate costs tens of seconds; with it, ~0.17s.
 
 Usage:
-    python3 scripts/beat_level.py --level 1 [--beam 8] [--generations 12] [--out solved.txt]
+    python3 scripts/beat_level.py --level 2 [--beam 8] [--generations 12] [--out solved.txt]
 """
 
 import argparse
@@ -122,12 +138,24 @@ def evaluate(binary, level, prefix, seed, extra_ticks=60):
 def score_trace(trace_path, start_level):
     """Score a run. Higher is better.
 
-    Ordering of concerns, most to least important:
-      * finishing the level (current_level advanced) dwarfs everything else
-      * otherwise, visiting more distinct rooms means real progress through the level
-      * staying alive matters, but only as a tiebreak -- a corpse that got far is still a
-        more useful prefix than a coward standing at the start
+    Scoring is *exploration*-based, not goal-distance-based, and that is the whole trick.
+    The obvious score -- rooms visited, plus a small bonus for surviving longer -- does not
+    work: until the Kid happens to cross a room boundary, every candidate scores identically,
+    so the search has no gradient and the beam fills with arbitrary prefixes that merely ran
+    the longest. A 25-generation run scored `rooms=2` from first generation to last.
+
+    Counting distinct (room, column, row) cells the Kid has stood in gives a dense signal:
+    "walked three tiles further right" scores better than "stood still" immediately, without
+    anyone having to tell the search which direction the exit is in.
+
+    Ordering: finishing the level dwarfs everything; then new ground covered; then HP, as a
+    tiebreak so the search prefers routes that don't cost health. Elapsed ticks deliberately
+    do *not* score -- rewarding them just rewards stalling.
     """
+    from compare_traces import decode_char_type
+
+    cells_seen = set()
+    poses_seen = set()
     rooms_seen = set()
     max_level = start_level
     last_hp = 0
@@ -139,21 +167,34 @@ def score_trace(trace_path, start_level):
         lvl_off, lvl_size = fm["current_level"]
         room_off, room_size = fm["curr_room"]
         hp_off, hp_size = fm["hitp_curr"]
+        kid_off, kid_size = fm["Kid"]
         while True:
             tick, blob = read_frame(f, frame_size)
             if blob is None:
                 break
             ticks += 1
             max_level = max(max_level, read_u(blob, lvl_off, lvl_size))
-            rooms_seen.add(read_u(blob, room_off, room_size))
+            room = read_u(blob, room_off, room_size)
+            rooms_seen.add(room)
             last_hp = read_u(blob, hp_off, hp_size)
+
+            kid = dict((n, v) for n, v, _ in decode_char_type(blob[kid_off:kid_off + kid_size]))
+            cells_seen.add((kid.get("room"), kid.get("curr_col"), kid.get("curr_row")))
+            poses_seen.add(kid.get("frame"))
 
     score = 0.0
     score += 1e6 * (max_level - start_level)
-    score += 1000.0 * len(rooms_seen)
-    score += 10.0 * last_hp
-    score += 0.01 * ticks
-    detail = f"level={max_level} rooms={len(rooms_seen)} hp={last_hp} ticks={ticks}"
+    score += 100.0 * len(cells_seen)
+    # Pose novelty, weighted well below position. Without it the search cannot discover
+    # *prerequisites* that don't themselves move the Kid: level 1 starts him crouched, so
+    # "right" does nothing until "up" stands him up, and standing changes no tile
+    # coordinate. Position-only scoring is blind to that and the search stalls forever at
+    # the start tile. Counting distinct animation frames makes standing up register as
+    # progress, which is enough to keep it in the beam until walking pays off.
+    score += 5.0 * len(poses_seen)
+    score += 1.0 * last_hp
+    detail = (f"level={max_level} rooms={len(rooms_seen)} cells={len(cells_seen)} "
+              f"poses={len(poses_seen)} hp={last_hp} ticks={ticks}")
     return (score, max_level, detail)
 
 
