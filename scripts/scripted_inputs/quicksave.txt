@@ -1,0 +1,5 @@
+# Walk right a bit, then quicksave. Level 3 via `headless megahit 3`.
+0 right down
+25 right up
+45 f6 down
+47 f6 up

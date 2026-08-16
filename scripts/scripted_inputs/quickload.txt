@@ -1,0 +1,3 @@
+# Quickload at tick 30, then sit still. Does the Kid get drawn?
+30 f9 down
+32 f9 up
