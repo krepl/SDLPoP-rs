@@ -1,0 +1,89 @@
+# The repo's first CI. Runs exactly what a developer is told to run before calling a change
+# done -- `cargo xtask verify` -- so there is one definition of "green", not two that can
+# drift apart. That command covers: cargo build, cargo test --lib, a wasm32 check, the smoke
+# tests, all 30 replay/golden-trace comparisons (state *and* pixel hashes), and the wasm
+# menu regression tests.
+#
+# Deliberately NOT covered here, so nobody reads a green tick as more than it is:
+#
+#   * The standalone C oracle is never rebuilt from source. `cargo xtask verify` compares the
+#     Rust build against *already-committed* golden traces; it never invokes cmake/ninja/make
+#     on c/. A prototype or build-config regression in c/ can therefore pass CI -- exactly
+#     how a real one slipped through once (rect_to_sdlrect's prototype, restored in 9698503).
+#     The build-c-oracle job below closes that specific gap.
+#   * The wasm *pixel* harness (scripts/wasm_pixel_harness.mjs) is a manual/occasional check;
+#     a headless Chromium launch per replay is far heavier than the native binary.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # SDL's ALSA fallback blocks ~30s when it can't reach an audio server, which on a CI
+  # runner looks exactly like a hang. Same workaround scripts/run_harness.sh uses.
+  SDL_AUDIODRIVER: dummy
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libsdl2-image-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Must match the version pinned in Cargo.lock, which is what `cargo xtask wasm-build`
+      # checks against before it will run.
+      - name: Install wasm-bindgen-cli
+        run: |
+          version=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/version = |"/,""); print; exit}' Cargo.lock)
+          echo "Cargo.lock pins wasm-bindgen $version"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install Node deps and Playwright browsers
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: cargo xtask verify
+        run: cargo xtask verify
+
+  # The gap `verify` structurally cannot cover: prove the pure-C oracle still builds from
+  # source. Cheap, and it is the only thing standing between a c/ header change and a silent
+  # breakage of the reference implementation the golden traces came from.
+  build-c-oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2 and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev libsdl2-image-dev ninja-build cmake
+
+      - name: Build the C oracle from scratch
+        run: |
+          mkdir -p c/build
+          cd c/build
+          cmake -G Ninja ..
+          ninja

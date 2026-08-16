@@ -488,7 +488,10 @@ const SDL_CONTROLLER_AXIS_LEFTX: c_int = 0;
 const SDL_CONTROLLER_AXIS_LEFTY: c_int = 1;
 
 // SDL scancodes (not emitted by bindgen)
+const SDL_SCANCODE_A: c_int = 4; // letters are contiguous from here through Z = 29
 const SDL_SCANCODE_Q: c_int = 20;
+const SDL_SCANCODE_F6: c_int = 63;
+const SDL_SCANCODE_F9: c_int = 66;
 const SDL_SCANCODE_RETURN: c_int = 40;
 const SDL_SCANCODE_ESCAPE: c_int = 41;
 const SDL_SCANCODE_BACKSPACE: c_int = 42;
@@ -4533,6 +4536,21 @@ fn scancode_from_key_name(name: &str) -> Option<c_int> {
         "space" => SDL_SCANCODE_SPACE,
         "return" | "enter" => SDL_SCANCODE_RETURN,
         "escape" => SDL_SCANCODE_ESCAPE,
+        "tab" => SDL_SCANCODE_TAB,
+        "backspace" => SDL_SCANCODE_BACKSPACE,
+        "ctrl" | "lctrl" => SDL_SCANCODE_LCTRL,
+        "rctrl" => SDL_SCANCODE_RCTRL,
+        // Quicksave/quickload, so save/load can be exercised the same way on native and
+        // wasm -- the drawing tails of quick_load()/restore_room_after_quick_load() are
+        // called out as untested in plan 12's coverage checklist, and comparing them
+        // across backends needs both sides driveable from one script.
+        "f6" => SDL_SCANCODE_F6,
+        "f9" => SDL_SCANCODE_F9,
+        // Letters, for the Ctrl+<letter> controls (Ctrl+A restart level, Ctrl+G save,
+        // Ctrl+L load, ...). Scancodes are contiguous from SDL_SCANCODE_A = 4.
+        name if name.len() == 1 && name.as_bytes()[0].is_ascii_lowercase() => {
+            SDL_SCANCODE_A + (name.as_bytes()[0] - b'a') as c_int
+        }
         _ => return None,
     })
 }

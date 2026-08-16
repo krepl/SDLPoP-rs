@@ -1,0 +1,19 @@
+[
+  { "wait": 2000 },
+  { "key": "Enter", "hold": 200, "wait": 1500 },
+  { "key": "Enter", "hold": 200, "wait": 1500 },
+  { "key": "Enter", "hold": 200, "wait": 2500 },
+  { "shot": "01-gameplay" },
+
+  { "key": "ArrowRight", "hold": 1600, "wait": 1200 },
+  { "shot": "02-moved" },
+
+  { "key": "F6", "hold": 150, "wait": 2000 },
+  { "shot": "03-after-quicksave" },
+
+  { "chord": ["ControlLeft", "KeyA"], "hold": 250, "wait": 3500 },
+  { "shot": "04-after-restart" },
+
+  { "key": "F9", "hold": 150, "wait": 3500 },
+  { "shot": "05-after-quickload" }
+]

@@ -1,0 +1,17 @@
+[
+  { "wait": 2000 },
+  { "key": "Enter", "hold": 200, "wait": 1500 },
+  { "key": "Enter", "hold": 200, "wait": 1500 },
+  { "key": "Enter", "hold": 200, "wait": 2500 },
+
+  {
+    "as": "opfs-before-load",
+    "eval": "async () => { const root = await navigator.storage.getDirectory(); const out = []; for await (const [name, h] of root.entries()) { if (h.kind === 'file') { const f = await h.getFile(); out.push(name + ':' + f.size); } else { out.push(name + '/'); } } return out; }"
+  },
+
+  { "key": "F9", "hold": 150, "wait": 3500 },
+  { "shot": "01-after-quickload" },
+
+  { "key": "ArrowRight", "hold": 1200, "wait": 1500 },
+  { "shot": "02-after-moving-post-load" }
+]
