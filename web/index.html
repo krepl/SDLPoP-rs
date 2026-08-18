@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>SDLPoP wasm (Worker harness, frames + audio + input)</title>
+<title>Prince of Persia (SDLPoP, WebAssembly)</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icons/icon-192.png">
 <meta name="theme-color" content="#222222">
@@ -23,10 +23,17 @@
   }
   #start-overlay .headline { font-size: 1.2em; margin-bottom: 0.4em; }
   #start-overlay .subtext { font-size: 0.85em; opacity: 0.75; }
+  h3 .sub { font-weight: normal; opacity: 0.65; font-size: 0.7em; }
+  #controls { margin-top: 1em; max-width: 34em; font-size: 0.85em; }
+  #controls dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.15em 1em; margin: 0.5em 0; }
+  #controls dt { color: #cfcf9a; white-space: nowrap; }
+  #controls dd { margin: 0; opacity: 0.85; }
+  #controls .or { opacity: 0.5; }
+  #controls .note { opacity: 0.7; line-height: 1.45; }
 </style>
 </head>
 <body>
-<h3>SDLPoP wasm — Worker harness milestone: frames + audio + input</h3>
+<h3>Prince of Persia <span class="sub">— SDLPoP, running in your browser via WebAssembly</span></h3>
 <div id="canvas-wrap">
   <canvas id="screen" width="320" height="200" tabindex="0"></canvas>
   <div id="start-overlay">
@@ -37,7 +44,22 @@
   </div>
 </div>
 <p id="status">starting worker&hellip;</p>
-<p>Arrow keys / space / etc. to play. Open devtools console for log output.</p>
+<div id="controls">
+  <b>Controls</b>
+  <dl>
+    <dt>Arrow keys</dt><dd>move, climb, jump</dd>
+    <dt>Shift</dt><dd>pick up / draw sword / careful step</dd>
+    <dt>Esc <span class="or">or</span> P <span class="or">or</span> Backspace</dt><dd>pause menu</dd>
+    <dt>F6 / F9</dt><dd>quicksave / quickload</dd>
+    <dt>Space</dt><dd>show time remaining</dd>
+    <dt>Ctrl+A</dt><dd>restart level</dd>
+  </dl>
+  <p class="note">
+    In fullscreen, Esc is reserved by some browsers to leave fullscreen &mdash; use
+    <b>P</b> or <b>Backspace</b> to pause there. (In Chrome, Esc pauses as normal and
+    <em>holding</em> Esc leaves fullscreen.)
+  </p>
+</div>
 <script type="module">
   const canvas = document.getElementById('screen');
   const ctx = canvas.getContext('2d');
@@ -91,6 +113,16 @@
     BracketLeft: 47, BracketRight: 48,
     // Jump-left / jump-right shortcuts.
     Home: 74, PageUp: 75,
+    // Pause aliases. Both map onto scancodes the game already binds, so the engine sees
+    // nothing new and native/C parity is untouched -- this is browser-layer input mapping,
+    // not a new game binding.
+    //   KeyP -> Escape (41): P is the near-universal pause convention and is completely
+    //     unbound in the game (no SDL_SCANCODE_P anywhere in rust/src or c/), so it costs
+    //     nothing. This is the cross-browser fallback for pausing in fullscreen where
+    //     Keyboard Lock isn't available.
+    // Backspace (42) is already mapped above and opens the menu unconditionally
+    // (seg000.rs's SDL_SCANCODE_BACKSPACE arm) -- it needs no alias, just documenting.
+    KeyP: 41,
     // Keypad movement alternates, and the keypad +/- cheats.
     NumpadSubtract: 86, NumpadAdd: 87,
     Numpad2: 90, Numpad4: 92, Numpad5: 93, Numpad6: 94, Numpad7: 95, Numpad8: 96, Numpad9: 97,
@@ -133,7 +165,24 @@
   // can also exit fullscreen out-of-band (Escape, F11) -- so the Worker can't just assume its
   // last request succeeded, it has to poll the real DOM state.
   document.addEventListener('fullscreenchange', () => {
-    fullscreenState[0] = document.fullscreenElement === canvas ? 1 : 0;
+    const isFullscreen = document.fullscreenElement === canvas;
+    fullscreenState[0] = isFullscreen ? 1 : 0;
+    // Keyboard Lock: browsers reserve Escape in fullscreen to exit it, so Esc can never
+    // reach the game there and the pause menu becomes unreachable -- the one control the
+    // player is most likely to want mid-game. navigator.keyboard.lock() exists for exactly
+    // this case: with Escape locked, a tap reaches the page normally and *holding* it exits
+    // fullscreen instead. Chromium-only and requires a secure context; where it's missing
+    // (Firefox, Safari) this silently does nothing and the KeyP/Backspace fallbacks below
+    // are what cover pausing.
+    if (navigator.keyboard && navigator.keyboard.lock) {
+      if (isFullscreen) {
+        navigator.keyboard.lock(['Escape']).catch((err) => {
+          console.warn('keyboard.lock(Escape) failed; use P or Backspace to pause', err);
+        });
+      } else {
+        navigator.keyboard.unlock();
+      }
+    }
   });
 
   // Real Web Audio API playback of PCM chunks posted from the Worker (see pump_audio /

@@ -24,7 +24,7 @@
 // begins and ends between two polls produces no event at all. Holding for a realistic
 // duration is what a human keyboard actually does.
 
-import { chromium } from 'playwright';
+import { chromium, firefox, webkit } from 'playwright';
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -45,13 +45,25 @@ const consoleErrors = [];
 // most scenarios, useless for testing that saves survive a reload. Set UX_PROBE_PROFILE to a
 // directory to reuse one profile across runs, which is what makes cross-session persistence
 // (quicksave/HOF/config via OPFS, rust/src/wasm_persist.rs) actually testable.
+// UX_PROBE_BROWSER selects the engine. Worth exercising: the wasm build needs
+// SharedArrayBuffer (so cross-origin isolation) and, for pausing in fullscreen, either the
+// Keyboard Lock API (Chromium only) or the KeyP/Backspace fallbacks -- all of which differ
+// per engine, and none of which Chromium-only testing would ever catch.
+const BROWSERS = { chromium, firefox, webkit };
+const browserName = process.env.UX_PROBE_BROWSER || 'chromium';
+const browserType = BROWSERS[browserName];
+if (!browserType) {
+    console.error(`unknown UX_PROBE_BROWSER: ${browserName} (chromium|firefox|webkit)`);
+    process.exit(2);
+}
+
 const profileDir = process.env.UX_PROBE_PROFILE;
 let browser = null;
 let context;
 if (profileDir) {
-    context = await chromium.launchPersistentContext(profileDir, {}); // headless by default
+    context = await browserType.launchPersistentContext(profileDir, {}); // headless by default
 } else {
-    browser = await chromium.launch();
+    browser = await browserType.launch();
     context = await browser.newContext();
 }
 const page = context.pages()[0] ?? (await context.newPage());

@@ -1,0 +1,48 @@
+[
+  {
+    "wait": 2000
+  },
+  {
+    "as": "env",
+    "eval": "() => ({ sab: typeof SharedArrayBuffer !== 'undefined', isolated: window.crossOriginIsolated, kbdLock: !!(navigator.keyboard && navigator.keyboard.lock), ua: navigator.userAgent.slice(0,50) })"
+  },
+  {
+    "key": "Enter",
+    "hold": 200,
+    "wait": 1500
+  },
+  {
+    "key": "Enter",
+    "hold": 200,
+    "wait": 1500
+  },
+  {
+    "key": "Enter",
+    "hold": 200,
+    "wait": 2500
+  },
+  {
+    "shot": "01-gameplay"
+  },
+  {
+    "key": "KeyP",
+    "hold": 200,
+    "wait": 2000
+  },
+  {
+    "shot": "02-after-P"
+  },
+  {
+    "key": "Escape",
+    "hold": 200,
+    "wait": 1500
+  },
+  {
+    "key": "Backspace",
+    "hold": 200,
+    "wait": 2000
+  },
+  {
+    "shot": "03-after-backspace"
+  }
+]
