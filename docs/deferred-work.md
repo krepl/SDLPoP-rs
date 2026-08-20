@@ -16,6 +16,7 @@ Last updated 2026-08-19.
 
 | Item | Why parked | Cost to resume |
 |---|---|---|
+| **Fixing original-game bugs** | Design agreed and written up in `docs/plans/14-fixes-on-top-of-parity.md`: extend the existing 43-flag `fixes_options_type` mechanism, new fixes default off, so parity holds by construction. Deferred because the only currently-known candidate is cosmetic — the mechanism exists, what's missing is bugs worth spending it on. The native bug-hunt is the input. | Small per fix, plus a hand-written test each |
 | **#48 Controls discoverability** | Your call: nice-to-have, low priority. A partial down payment shipped in `b0802fc` (in-page controls reference replacing the dev-harness copy). The real thing is an in-game help overlay. | Small |
 | **#37 Residual 1px mismatch + bit-exact alpha blend** | Your explicit lowest priority. Cosmetic; no functional impact. Details in `project_wasm_1px_residual_bug` memory. | Medium, fiddly |
 | **#35 Safe reference accessors on wasm Renderer** | Genuinely blocked: Step D de-globalisation hasn't reached `platform/sdl.rs`/`wasm.rs`, which still use a raw `static mut SHARED_RENDERER`. Doing it before then means doing it twice. | Blocked |
@@ -32,8 +33,12 @@ Confirmed byte-identical to the C oracle. Changing any of these would violate th
 no-behaviour-changes directive. Recorded because each one *looks* like a bug.
 
 - **Kid isn't drawn after a quickload** until the player nudges him. C does this too.
-- **Level 1 ignores scripted input entirely** (Kid starts crouched, frame 109); levels 2–5
-  respond. C does this too.
+- **Level 1 entered via `megahit 1` (command-line start) ignores scripted input** (Kid starts
+  crouched, frame 109); levels 2–5 respond. C does this too, so it is not a port bug.
+  *Correction to an earlier note that stated this too broadly:* level 1 reached through the
+  normal title-screen flow **does** respond to input — verified in the browser, where the Kid
+  walks right immediately. So this is specific to the cheat/command-line entry path, not to
+  level 1 as such, and is worth re-examining before anyone treats it as settled.
 - **`Ctrl+G` does nothing on levels 1–2** — saving is levels 3–13 by design.
 - **0-byte `PRINCE.SAV`/`PRINCE.HOF` in OPFS** — placeholders, not failed writes.
 
