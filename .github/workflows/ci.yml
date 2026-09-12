@@ -14,6 +14,11 @@
 #   * The wasm *pixel* harness (scripts/wasm_pixel_harness.mjs) is a manual/occasional check;
 #     a headless Chromium launch per replay is far heavier than the native binary.
 
+# apt steps carry their own short timeout plus retries. On 2026-08-19 two consecutive runs
+# hung inside `apt-get update` when an Ubuntu mirror stopped responding, and with no timeout
+# of their own they sat there until the 45-minute job limit killed them -- 90 minutes of CI
+# burned to tell us nothing. A mirror outage should fail in two minutes, not forty-five.
+
 name: CI
 
 on:
@@ -35,9 +40,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install SDL2
+        timeout-minutes: 6
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libsdl2-image-dev
+          for attempt in 1 2 3; do
+            sudo apt-get update -o Acquire::Retries=3 \
+              && sudo apt-get install -y libsdl2-dev libsdl2-image-dev \
+              && exit 0
+            echo "apt attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          echo "apt failed after 3 attempts" >&2
+          exit 1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -68,8 +81,13 @@ jobs:
       # against instead of skipping itself. This is also a second, incidental check that the
       # C build still works.
       - name: Install cmake/ninja and build the C oracle
+        timeout-minutes: 10
         run: |
-          sudo apt-get install -y ninja-build cmake
+          for attempt in 1 2 3; do
+            sudo apt-get install -y ninja-build cmake && break
+            echo "apt attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
           mkdir -p c/build
           cd c/build
           cmake -G Ninja ..
@@ -88,9 +106,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install SDL2 and Ninja
+        timeout-minutes: 6
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libsdl2-dev libsdl2-image-dev ninja-build cmake
+          for attempt in 1 2 3; do
+            sudo apt-get update -o Acquire::Retries=3 \
+              && sudo apt-get install -y libsdl2-dev libsdl2-image-dev ninja-build cmake \
+              && exit 0
+            echo "apt attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          echo "apt failed after 3 attempts" >&2
+          exit 1
 
       - name: Build the C oracle from scratch
         run: |
